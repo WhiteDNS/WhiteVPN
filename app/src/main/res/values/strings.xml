@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">WhiteDNS VPN</string>
+    <string name="notification_channel_vpn">VPN connection</string>
+    <string name="notification_title">WhiteDNS VPN</string>
+    <string name="notification_starting">Connecting</string>
+    <string name="notification_connected">Connected</string>
+    <string name="notification_action_disconnect">Disconnect</string>
+    <string name="notification_action_reconnect">Reconnect</string>
+    <string name="footer_copyright">Copyright WhiteDNS VPN - https://t.me/whitedns</string>
+    <string name="footer_url">https://t.me/whitedns</string>
+    <string name="privacy_policy_title">Privacy policy</string>
+    <string name="privacy_policy_message">WhiteDNS VPN is a free VPN service that routes your device traffic through VPN servers when connected.\n\n- We do not ask for account details in this app.\n- The app may process technical connection information needed to provide the VPN, such as connection status, traffic usage, diagnostics, and service errors.\n- The app stores usage counters locally on your device.\n- Third-party network providers may process connection metadata required to deliver internet traffic.\n- You are responsible for how you use this service. Any illegal activity performed through the service is not the responsibility of WhiteDNS.\n- Do not use the service for unlawful activity. Service availability, speed, and privacy protections are provided without warranty.</string>
+    <string name="privacy_policy_checkbox">I have read and agree</string>
+    <string name="privacy_policy_accept">Accept</string>
+    <string name="privacy_policy_not_now">Not now</string>
+    <string name="location_selector_title">Select location</string>
+    <string name="split_tunnel_button_off">Split tunneling: Off</string>
+    <string name="split_tunnel_button_bypass">Bypass apps: %1$d</string>
+    <string name="split_tunnel_button_vpn_only">VPN apps: %1$d</string>
+    <string name="split_tunnel_title">Split tunneling</string>
+    <string name="split_tunnel_mode_off">Off</string>
+    <string name="split_tunnel_mode_bypass">Bypass selected apps</string>
+    <string name="split_tunnel_mode_vpn_only">VPN only selected apps</string>
+    <string name="split_tunnel_search_hint">Search apps</string>
+    <string name="split_tunnel_empty_apps">No launchable apps found.</string>
+    <string name="split_tunnel_empty_search">No apps match this search.</string>
+    <string name="split_tunnel_selected_count">%1$d selected</string>
+    <string name="split_tunnel_save">Save</string>
+    <string name="split_tunnel_cancel">Cancel</string>
+    <string name="split_tunnel_select_app_required">Select at least one app for this mode.</string>
+</resources>

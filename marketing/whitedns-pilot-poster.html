@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WhiteDNS VPN Pilot Poster</title>
+  <style>
+    :root {
+      --mint: #eefaf8;
+      --teal: #31b5aa;
+      --teal-dark: #147d78;
+      --ink: #101717;
+      --muted: #60706e;
+      --line: rgba(16, 23, 23, 0.12);
+      --warning: #f2b441;
+      --white: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      min-height: 100%;
+      background: #dcecea;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Arabic", "Geeza Pro", Tahoma, Arial, sans-serif;
+    }
+
+    .poster {
+      position: relative;
+      width: 1080px;
+      height: 1080px;
+      overflow: hidden;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(49, 181, 170, 0.10), transparent 36%),
+        radial-gradient(circle at 13% 18%, rgba(242, 180, 65, 0.20), transparent 26%),
+        radial-gradient(circle at 92% 88%, rgba(49, 181, 170, 0.18), transparent 32%),
+        repeating-linear-gradient(0deg, rgba(16, 23, 23, 0.035) 0 1px, transparent 1px 58px),
+        repeating-linear-gradient(90deg, rgba(16, 23, 23, 0.028) 0 1px, transparent 1px 58px),
+        #f7fbfa;
+    }
+
+    .poster::before {
+      content: "";
+      position: absolute;
+      inset: 52px;
+      border: 1px solid rgba(20, 125, 120, 0.20);
+      border-radius: 44px;
+      pointer-events: none;
+    }
+
+    .poster::after {
+      content: "";
+      position: absolute;
+      width: 520px;
+      height: 520px;
+      left: -160px;
+      bottom: -170px;
+      border: 78px solid rgba(49, 181, 170, 0.12);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    .content {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: 480px 1fr;
+      gap: 54px;
+      height: 100%;
+      padding: 86px 76px 70px;
+      align-items: center;
+    }
+
+    .mockup-wrap {
+      position: relative;
+      height: 780px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      direction: ltr;
+    }
+
+    .mockup-glow {
+      position: absolute;
+      width: 430px;
+      height: 630px;
+      border-radius: 80px;
+      background: rgba(49, 181, 170, 0.17);
+      filter: blur(34px);
+      transform: rotate(-5deg);
+    }
+
+    .phone {
+      position: relative;
+      width: 416px;
+      height: 690px;
+      padding: 14px;
+      border-radius: 48px;
+      background: linear-gradient(145deg, #111717, #2d3635);
+      box-shadow: 0 36px 90px rgba(11, 39, 37, 0.24);
+      transform: rotate(-2deg);
+    }
+
+    .phone::before {
+      content: "";
+      position: absolute;
+      top: 18px;
+      left: 50%;
+      width: 132px;
+      height: 20px;
+      border-radius: 0 0 16px 16px;
+      background: #111717;
+      transform: translateX(-50%);
+      z-index: 4;
+    }
+
+    .phone img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center top;
+      border-radius: 36px;
+      display: block;
+      background: #eef8f7;
+    }
+
+    .copy {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      align-items: flex-start;
+      text-align: right;
+    }
+
+    .brand-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: flex-start;
+      width: 100%;
+      margin-bottom: 28px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 18px;
+      border: 1px solid rgba(49, 181, 170, 0.32);
+      border-radius: 999px;
+      color: var(--teal-dark);
+      background: rgba(255, 255, 255, 0.76);
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 0;
+      box-shadow: 0 10px 30px rgba(28, 72, 69, 0.07);
+      white-space: nowrap;
+    }
+
+    .badge-mark {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--teal);
+      box-shadow: 0 0 0 7px rgba(49, 181, 170, 0.16);
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 500px;
+      font-size: 78px;
+      line-height: 1.06;
+      font-weight: 900;
+      letter-spacing: 0;
+      color: var(--ink);
+    }
+
+    h1 .latin {
+      display: inline-block;
+      direction: ltr;
+      font-weight: 950;
+      color: var(--teal-dark);
+      white-space: nowrap;
+    }
+
+    .lead {
+      margin: 28px 0 0;
+      max-width: 480px;
+      color: var(--muted);
+      font-size: 34px;
+      font-weight: 700;
+      line-height: 1.55;
+    }
+
+    .notice {
+      position: relative;
+      width: 100%;
+      margin-top: 38px;
+      padding: 30px 32px 28px;
+      border: 1px solid rgba(16, 23, 23, 0.10);
+      border-radius: 30px;
+      background: rgba(255, 255, 255, 0.82);
+      box-shadow: 0 22px 58px rgba(22, 77, 73, 0.12);
+    }
+
+    .notice::before {
+      content: "";
+      position: absolute;
+      top: 30px;
+      right: 28px;
+      width: 14px;
+      height: calc(100% - 60px);
+      border-radius: 999px;
+      background: linear-gradient(var(--warning), var(--teal));
+    }
+
+    .notice-title {
+      margin: 0 34px 16px 0;
+      color: var(--ink);
+      font-size: 30px;
+      font-weight: 900;
+      line-height: 1.35;
+    }
+
+    .notice p {
+      margin: 0 34px 12px 0;
+      color: #34413f;
+      font-size: 27px;
+      font-weight: 700;
+      line-height: 1.55;
+    }
+
+    .notice p:last-child {
+      margin-bottom: 0;
+    }
+
+    .footer {
+      display: flex;
+      width: 100%;
+      align-items: center;
+      justify-content: space-between;
+      gap: 22px;
+      margin-top: 38px;
+      padding-top: 28px;
+      border-top: 1px solid var(--line);
+      direction: ltr;
+    }
+
+    .link {
+      color: var(--teal-dark);
+      font-size: 31px;
+      font-weight: 900;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .tagline {
+      color: var(--muted);
+      font-size: 23px;
+      font-weight: 750;
+      line-height: 1.35;
+      direction: rtl;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <main class="poster" aria-label="WhiteDNS VPN pilot testing announcement poster">
+    <section class="content">
+      <div class="mockup-wrap" aria-hidden="true">
+        <div class="mockup-glow"></div>
+        <div class="phone">
+          <img src="./whitedns-app-screenshot.png" alt="">
+        </div>
+      </div>
+
+      <article class="copy">
+        <div class="brand-row">
+          <div class="badge"><span class="badge-mark"></span><span>تست جمعی / پایلوت</span></div>
+        </div>
+
+        <h1>شروع تست پایلوت <span class="latin">WhiteDNS VPN</span></h1>
+
+        <p class="lead">این نسخه برای تست جمعی منتشر شده است.</p>
+
+        <div class="notice">
+          <h2 class="notice-title">اطلاع مهم برای کاربران</h2>
+          <p>سرویس ممکن است هر زمان متوقف شود.</p>
+          <p>نسخه‌های جدید در روزهای آینده منتشر می‌شوند.</p>
+        </div>
+
+        <footer class="footer">
+          <div class="link">t.me/@whitedns</div>
+          <div class="tagline">تست کنید، بازخورد بدهید، بهتر بسازیم.</div>
+        </footer>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

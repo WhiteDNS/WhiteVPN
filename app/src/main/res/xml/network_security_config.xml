@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">whitedns.workers.dev</domain>
+        <!-- ponytail: Cloudflare leaf certs rotate; keep the issuing-chain pins unless this moves off Workers. -->
+        <pin-set expiration="2028-01-01">
+            <pin digest="SHA-256">kTZq5zdPqLEYIClbbQSyTJ1KP+mIgeESGz4TEGNOJHI=</pin>
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+            <pin digest="SHA-256">mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2bVBpiOjYQ0c=</pin>
+        </pin-set>
+    </domain-config>
+</network-security-config>

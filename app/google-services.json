@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "722188889376",
+    "project_id": "whitednsvpn",
+    "storage_bucket": "whitednsvpn.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:722188889376:android:929f36b4852b4a08413b45",
+        "android_client_info": {
+          "package_name": "com.whitedns.vpn"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBGfA67hjHPDv8RA2av-u0KxhUyV9JTv9s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

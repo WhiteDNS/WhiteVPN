@@ -1,0 +1,2 @@
+-keep class io.nekohasekai.libbox.** { *; }
+-keep class go.** { *; }

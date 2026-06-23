@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
+  <defs>
+    <linearGradient id="mintSweep" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.55" stop-color="#f6fbfa"/>
+      <stop offset="1" stop-color="#e6f6f3"/>
+    </linearGradient>
+    <linearGradient id="noticeLine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f2b441"/>
+      <stop offset="1" stop-color="#31b5aa"/>
+    </linearGradient>
+    <filter id="softShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="30" stdDeviation="28" flood-color="#0d3431" flood-opacity="0.20"/>
+    </filter>
+    <filter id="smallShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#184844" flood-opacity="0.10"/>
+    </filter>
+    <pattern id="grid" width="58" height="58" patternUnits="userSpaceOnUse">
+      <path d="M58 0H0V58" fill="none" stroke="#101717" stroke-opacity="0.045" stroke-width="1"/>
+    </pattern>
+    <clipPath id="screenshotClip">
+      <rect x="0" y="0" width="430" height="506" rx="34" ry="34"/>
+    </clipPath>
+    <style>
+      .fa {
+        font-family: Tahoma, "SF Arabic", "Geeza Pro", Arial, sans-serif;
+        direction: rtl;
+        unicode-bidi: plaintext;
+      }
+      .latin {
+        font-family: Arial, Tahoma, sans-serif;
+        direction: ltr;
+      }
+    </style>
+  </defs>
+
+  <rect width="1080" height="1080" fill="url(#mintSweep)"/>
+  <rect width="1080" height="1080" fill="url(#grid)"/>
+  <circle cx="124" cy="142" r="230" fill="#f2b441" opacity="0.13"/>
+  <circle cx="986" cy="930" r="310" fill="#31b5aa" opacity="0.12"/>
+  <circle cx="-30" cy="1060" r="270" fill="none" stroke="#31b5aa" stroke-width="76" opacity="0.12"/>
+  <rect x="52" y="52" width="976" height="976" rx="44" ry="44" fill="none" stroke="#147d78" stroke-opacity="0.20"/>
+
+  <g transform="translate(58 250) rotate(-2 215 253)" filter="url(#softShadow)">
+    <rect x="-16" y="-16" width="462" height="538" rx="52" ry="52" fill="#101717"/>
+    <rect x="0" y="0" width="430" height="506" rx="40" ry="40" fill="#eef8f7"/>
+    <g clip-path="url(#screenshotClip)">
+      <image href="whitedns-app-screenshot.png" x="0" y="0" width="430" height="506" preserveAspectRatio="xMidYMid slice"/>
+    </g>
+  </g>
+
+  <g filter="url(#smallShadow)">
+    <rect x="582" y="108" width="356" height="66" rx="33" fill="#ffffff" fill-opacity="0.78" stroke="#31b5aa" stroke-opacity="0.32"/>
+    <circle cx="907" cy="141" r="10" fill="#31b5aa"/>
+    <circle cx="907" cy="141" r="18" fill="none" stroke="#31b5aa" stroke-opacity="0.22" stroke-width="8"/>
+    <text class="fa" x="884" y="151" text-anchor="start" font-size="27" font-weight="800" fill="#147d78">تست جمعی / پایلوت</text>
+  </g>
+
+  <text class="fa" x="966" y="256" text-anchor="start" font-size="62" font-weight="900" fill="#101717">شروع تست</text>
+  <text class="fa" x="966" y="326" text-anchor="start" font-size="62" font-weight="900" fill="#101717">پایلوت</text>
+  <text class="latin" x="966" y="408" text-anchor="end" font-size="60" font-weight="900" fill="#147d78">WhiteDNS VPN</text>
+
+  <text class="fa" x="966" y="478" text-anchor="start" font-size="31" font-weight="700" fill="#60706e">این نسخه برای تست جمعی</text>
+  <text class="fa" x="966" y="526" text-anchor="start" font-size="31" font-weight="700" fill="#60706e">منتشر شده است.</text>
+
+  <g filter="url(#smallShadow)">
+    <rect x="532" y="578" width="450" height="304" rx="30" fill="#ffffff" fill-opacity="0.84" stroke="#101717" stroke-opacity="0.10"/>
+    <rect x="934" y="612" width="14" height="236" rx="7" fill="url(#noticeLine)"/>
+    <text class="fa" x="908" y="656" text-anchor="start" font-size="31" font-weight="900" fill="#101717">اطلاع مهم برای کاربران</text>
+    <text class="fa" x="908" y="704" text-anchor="start" font-size="26" font-weight="700" fill="#34413f">سرویس ممکن است</text>
+    <text class="fa" x="908" y="740" text-anchor="start" font-size="26" font-weight="700" fill="#34413f">هر زمان متوقف شود.</text>
+    <text class="fa" x="908" y="778" text-anchor="start" font-size="26" font-weight="700" fill="#34413f">نسخه‌های جدید</text>
+    <text class="fa" x="908" y="814" text-anchor="start" font-size="26" font-weight="700" fill="#34413f">در روزهای آینده</text>
+    <text class="fa" x="908" y="850" text-anchor="start" font-size="26" font-weight="700" fill="#34413f">منتشر می‌شوند.</text>
+  </g>
+
+  <line x1="536" y1="906" x2="982" y2="906" stroke="#101717" stroke-opacity="0.12"/>
+  <text class="latin" x="982" y="944" text-anchor="end" font-size="32" font-weight="900" fill="#147d78">t.me/@whitedns</text>
+  <text class="fa" x="700" y="944" text-anchor="start" font-size="25" font-weight="750" fill="#60706e">تست کنید، بازخورد بدهید، بهتر بسازیم.</text>
+</svg>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="whitedns_primary">#36AEA4</color>
+    <color name="whitedns_on_primary">#FFFFFFFF</color>
+    <color name="whitedns_primary_container">#EFF9F7</color>
+    <color name="whitedns_on_primary_container">#101615</color>
+    <color name="whitedns_secondary">#C78919</color>
+    <color name="whitedns_background">#F7FAF9</color>
+    <color name="whitedns_surface">#FFFFFFFF</color>
+    <color name="whitedns_surface_variant">#F0F5F3</color>
+    <color name="whitedns_on_surface">#101615</color>
+    <color name="whitedns_on_surface_variant">#6F7775</color>
+    <color name="whitedns_outline">#DEE6E3</color>
+    <color name="whitedns_error">#CE4848</color>
+</resources>
