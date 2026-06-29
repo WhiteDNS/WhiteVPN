@@ -1,6 +1,6 @@
 GRADLE ?= ./gradlew
 
-.PHONY: test debug libbox release clean
+.PHONY: test debug libclash mihomo-core release clean
 
 test:
 	$(GRADLE) test
@@ -8,8 +8,10 @@ test:
 debug:
 	$(GRADLE) assembleDebug
 
-libbox:
-	./scripts/build-libbox.sh
+mihomo-core:
+	./scripts/build-flclash-core.sh
+
+libclash: mihomo-core
 
 release:
 	./scripts/release.sh

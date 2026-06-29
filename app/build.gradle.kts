@@ -41,12 +41,18 @@ android {
 
     defaultConfig {
         applicationId = "com.whitedns.vpn"
-        minSdk = 23
+        minSdk = 26
         targetSdk = 35
         versionCode = 5
         versionName = "0.0.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
     }
 
     splits {
@@ -97,6 +103,19 @@ android {
         }
     }
 
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDir("src/main/jniLibs")
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     buildFeatures {
         buildConfig = true
     }
@@ -112,39 +131,40 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
-    val libboxAar = file("libs/libbox.aar")
-    if (libboxAar.exists()) {
-        implementation(files(libboxAar))
-    } else {
-        compileOnly(project(":libbox-stub"))
-    }
-
     testImplementation("junit:junit:4.13.2")
 }
 
-tasks.register("checkLibboxAar") {
+val buildFlClashCore = tasks.register<Exec>("buildFlClashCore") {
+    workingDir = rootProject.projectDir
+    commandLine(rootProject.file("scripts/build-flclash-core.sh").absolutePath)
+}
+
+tasks.matching { task ->
+    task.name.startsWith("configureCMake") ||
+        task.name.startsWith("buildCMake") ||
+        task.name.startsWith("externalNativeBuild") ||
+        task.name.startsWith("merge") && task.name.endsWith("JniLibFolders")
+}.configureEach {
+    dependsOn(buildFlClashCore)
+}
+
+tasks.register("checkFlClashCore") {
+    dependsOn(buildFlClashCore)
     doLast {
-        val libboxAar = file("libs/libbox.aar")
-        if (!libboxAar.exists()) {
-            logger.warn(
-                "app/libs/libbox.aar is missing. The app sources compile with a stub, " +
-                    "but the APK cannot run sing-box until scripts/build-libbox.sh creates the real AAR.",
-            )
+        val missing = listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64").filter { abi ->
+            !file("src/main/jniLibs/$abi/libclash.so").isFile ||
+                !file("src/main/cpp/includes/$abi/libclash.h").isFile ||
+                !file("src/main/cpp/includes/$abi/bride.h").isFile
+        }
+        if (missing.isNotEmpty()) {
+            throw GradleException("Missing FlClash core output for ABI(s): ${missing.joinToString()}")
         }
     }
 }
 
-tasks.named("preBuild") {
-    dependsOn("checkLibboxAar")
-}
-
 val validateReleaseInputs = tasks.register("validateReleaseInputs") {
+    dependsOn("checkFlClashCore")
     doLast {
-        if (!file("libs/libbox.aar").isFile) {
-            throw GradleException(
-                "Release builds require app/libs/libbox.aar. Run scripts/build-libbox.sh first.",
-            )
-        }
         if (!hasReleaseSigning) {
             throw GradleException(
                 "Release signing is not configured. Set WHITEDNS_RELEASE_STORE_FILE, " +

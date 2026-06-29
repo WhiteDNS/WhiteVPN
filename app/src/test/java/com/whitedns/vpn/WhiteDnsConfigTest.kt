@@ -7,12 +7,12 @@ class WhiteDnsConfigTest {
     @Test
     fun subscriptionUrlIsPinned() {
         assertEquals(
-            "https://whitedns-sub.whitedns.workers.dev/encrypted",
-            WhiteDnsConfig.SING_BOX_SUBSCRIPTION_URL,
+            "https://whitedns-sub.whitedns.workers.dev/mihomo/encrypted",
+            WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL,
         )
         assertEquals(
             "#2gzwj1##z%BVq*7M2sfxe6sV23ut1LQr87JagD4D#&",
-            WhiteDnsConfig.SUBSCRIPTION_ENCRYPTION_KEY,
+            WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
         )
     }
 

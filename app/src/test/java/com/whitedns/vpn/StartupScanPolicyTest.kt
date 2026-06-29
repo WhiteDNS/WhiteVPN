@@ -70,6 +70,22 @@ class StartupScanPolicyTest {
     }
 
     @Test
+    fun cachedRuntimeCandidatesExcludeActiveEndpoint() {
+        val active = CleanIpResult("104.16.0.2", 443, 120, 0.0, 1)
+        val cached = CleanIpResult("104.16.0.1", 443, 10, 0.0, 2)
+
+        val candidates = StartupScanPolicy.cachedRuntimeCandidates(
+            selection = selection(port = 443),
+            lastEndpoint = active,
+            cachedResults = listOf(cached),
+            frontingIpOverrideEnabled = false,
+            excludedEndpoint = active,
+        )
+
+        assertEquals(listOf(cached), candidates)
+    }
+
+    @Test
     fun excludeEndpointRemovesOnlyMatchingIpAndPort() {
         val active = CleanIpResult("104.16.0.1", 443, 10, 0.0, 1)
         val sameIpDifferentPort = CleanIpResult("104.16.0.1", 8443, 20, 0.0, 2)

@@ -30,15 +30,17 @@ object StartupScanPolicy {
         lastEndpoint: CleanIpResult?,
         cachedResults: List<CleanIpResult>,
         frontingIpOverrideEnabled: Boolean,
+        excludedEndpoint: CleanIpResult? = null,
     ): List<CleanIpResult> {
         if (frontingIpOverrideEnabled || selection == null) return emptyList()
         val selectedPort = selection.profile.port
         val last = lastEndpoint?.takeIf { it.port == selectedPort }
         val lastKey = last?.endpointKey()
-        return listOfNotNull(last) + cachedResults
+        val candidates = listOfNotNull(last) + cachedResults
             .filter { it.port == selectedPort && it.endpointKey() != lastKey }
             .distinctBy { it.endpointKey() }
             .sortedForConnection()
+        return excludeEndpoint(candidates, excludedEndpoint)
     }
 
     fun excludeEndpoint(

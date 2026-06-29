@@ -51,16 +51,6 @@ find_apksigner() {
   [[ -n "${candidate}" ]] && printf '%s\n' "${candidate}"
 }
 
-if [[ ! -f "${ROOT_DIR}/app/libs/libbox.aar" ]]; then
-  cat >&2 <<EOF
-app/libs/libbox.aar is missing.
-
-Build it first:
-  scripts/build-libbox.sh
-EOF
-  exit 1
-fi
-
 if ! has_env_signing && ! has_file_signing; then
   cat >&2 <<EOF
 Release signing is not configured.
@@ -75,6 +65,8 @@ Or create keystore.properties from keystore.properties.example.
 EOF
   exit 1
 fi
+
+"${ROOT_DIR}/scripts/build-flclash-core.sh"
 
 version_name="$(sed -n 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
 version_code="$(sed -n 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -n 1)"

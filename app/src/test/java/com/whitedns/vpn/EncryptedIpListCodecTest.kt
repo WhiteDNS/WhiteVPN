@@ -16,16 +16,32 @@ class EncryptedIpListCodecTest {
     fun decryptsRawAesGcmPayloadText() {
         val payload = encryptedPayload(
             plaintext = "dmxlc3M6Ly9leGFtcGxl",
-            passphrase = WhiteDnsConfig.SUBSCRIPTION_ENCRYPTION_KEY,
+            passphrase = WhiteDnsConfig.ENCRYPTED_IP_LIST_KEY,
         )
 
         val plaintext = EncryptedPayloadCodec.decryptText(
             payload,
-            WhiteDnsConfig.SUBSCRIPTION_ENCRYPTION_KEY,
+            WhiteDnsConfig.ENCRYPTED_IP_LIST_KEY,
             label = "encrypted subscription",
         )
 
         assertEquals("dmxlc3M6Ly9leGFtcGxl", plaintext)
+    }
+
+    @Test
+    fun decryptsEncryptedMihomoYamlPayloadText() {
+        val payload = encryptedPayload(
+            plaintext = "proxies:\n  - name: Example\n",
+            passphrase = WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
+        )
+
+        val plaintext = EncryptedPayloadCodec.decryptText(
+            payload,
+            WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
+            label = "encrypted Mihomo subscription",
+        )
+
+        assertEquals("proxies:\n  - name: Example\n", plaintext)
     }
 
     @Test

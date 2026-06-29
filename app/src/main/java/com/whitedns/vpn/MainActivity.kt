@@ -82,6 +82,7 @@ class MainActivity : Activity() {
     private lateinit var connectActionButton: MaterialButton
     private lateinit var refreshActionButton: MaterialButton
     private var connectionCountryFlag: String = ""
+    private var debugFrontingIp: String = ""
     private var advancedExpanded: Boolean = false
     private var frontingIps: List<String> = emptyList()
     private var frontingIpInputUpdating: Boolean = false
@@ -174,6 +175,7 @@ class MainActivity : Activity() {
             VpnRuntimeStateStore.read(this),
             VpnRuntimeStateStore.readSessionStartedAtElapsedMs(this),
             VpnRuntimeStateStore.readConnectionCountryFlag(this),
+            VpnRuntimeStateStore.readDebugFrontingIp(this),
         )
     }
 
@@ -810,17 +812,25 @@ class MainActivity : Activity() {
             state,
             intent.getLongExtra(Actions.EXTRA_SESSION_STARTED_AT_ELAPSED_MS, 0L),
             intent.getStringExtra(Actions.EXTRA_CONNECTION_COUNTRY_FLAG).orEmpty(),
+            intent.getStringExtra(Actions.EXTRA_DEBUG_FRONTING_IP).orEmpty(),
         )
     }
 
-    private fun applyRuntimeState(state: VpnState, startedAt: Long, countryFlag: String = "") {
+    private fun applyRuntimeState(
+        state: VpnState,
+        startedAt: Long,
+        countryFlag: String = "",
+        frontingIp: String = "",
+    ) {
         buttonModel.onStateChanged(state)
         if (state == VpnState.Started) {
             connectionCountryFlag = countryFlag
+            debugFrontingIp = frontingIp
             sessionStartedAtElapsedMs = if (startedAt > 0L) startedAt else SystemClock.elapsedRealtime()
             startTimerUpdates()
         } else if (state == VpnState.Stopped || state == VpnState.DailyLimitReached || state is VpnState.Error) {
             connectionCountryFlag = ""
+            debugFrontingIp = ""
             sessionStartedAtElapsedMs = 0L
             mainHandler.removeCallbacks(timerRunnable)
             resetTransferSpeeds()
@@ -1426,10 +1436,15 @@ class MainActivity : Activity() {
         signalArc.isEnabled = buttonModel.isEnabled()
         signalArc.contentDescription = buttonModel.label()
         statusText.setTextColor(colors.accent)
-        statusText.text = if (state == VpnState.Started && connectionCountryFlag.isNotBlank()) {
+        val baseStatus = if (state == VpnState.Started && connectionCountryFlag.isNotBlank()) {
             "$connectionCountryFlag ${presentation.title}"
         } else {
             "\u2022 ${presentation.title}"
+        }
+        statusText.text = if (state == VpnState.Started && debugFrontingIp.isNotBlank()) {
+            "$baseStatus\nFronting IP: $debugFrontingIp"
+        } else {
+            baseStatus
         }
         connectActionButton.text = buttonModel.label()
         connectActionButton.isEnabled = buttonModel.isEnabled()

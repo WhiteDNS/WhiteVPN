@@ -16,4 +16,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "WhiteDNSVPN"
 include(":app")
-include(":libbox-stub")

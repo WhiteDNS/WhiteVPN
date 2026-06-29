@@ -1,2 +1,2 @@
--keep class io.nekohasekai.libbox.** { *; }
+-keep class com.follow.clash.core.** { *; }
 -keep class go.** { *; }

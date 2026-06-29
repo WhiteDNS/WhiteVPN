@@ -10,7 +10,7 @@ import java.util.Locale
 object DiagnosticLogger {
     private const val TAG = "WhiteDNSDiag"
     private const val LOG_FILE_NAME = "whitedns-debug.log"
-    private const val LIBBOX_STDERR_FILE_NAME = "libbox-stderr.log"
+    private const val MIHOMO_STDERR_FILE_NAME = "service_error.log"
     private const val MAX_LOG_BYTES = 512 * 1024
     private const val TRIM_TO_BYTES = 384 * 1024
     private const val MAX_STDERR_READ_BYTES = 128 * 1024
@@ -19,7 +19,7 @@ object DiagnosticLogger {
         if (!BuildConfig.DEBUG) return
         synchronized(this) {
             logFile(context).writeText("")
-            runCatching { libboxStderrFile(context).writeText("") }
+            runCatching { mihomoStderrFile(context).writeText("") }
         }
     }
 
@@ -28,7 +28,7 @@ object DiagnosticLogger {
         return synchronized(this) {
             val file = logFile(context)
             val debugLog = if (!file.exists()) "" else file.readText()
-            val stderr = libboxStderrFile(context)
+            val stderr = mihomoStderrFile(context)
             if (!stderr.exists() || stderr.length() == 0L) {
                 debugLog
             } else {
@@ -37,7 +37,7 @@ object DiagnosticLogger {
                     if (isNotEmpty() && !endsWith("\n")) {
                         append("\n")
                     }
-                    append("\n--- libbox stderr ---\n")
+                    append("\n--- mihomo stderr ---\n")
                     append(stderr.readText().takeLast(MAX_STDERR_READ_BYTES).sanitizeForLog())
                 }
             }
@@ -101,8 +101,8 @@ object DiagnosticLogger {
         return File(context.filesDir, LOG_FILE_NAME)
     }
 
-    fun libboxStderrFile(context: Context): File {
-        return File(context.filesDir, LIBBOX_STDERR_FILE_NAME)
+    fun mihomoStderrFile(context: Context): File {
+        return File(context.filesDir, MIHOMO_STDERR_FILE_NAME)
     }
 
     private fun timestamp(): String {

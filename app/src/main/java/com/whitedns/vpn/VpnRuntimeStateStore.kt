@@ -8,12 +8,14 @@ object VpnRuntimeStateStore {
     private const val KEY_ERROR = "error"
     private const val KEY_SESSION_STARTED_AT_ELAPSED_MS = "session_started_at_elapsed_ms"
     private const val KEY_CONNECTION_COUNTRY_FLAG = "connection_country_flag"
+    private const val KEY_DEBUG_FRONTING_IP = "debug_fronting_ip"
 
     fun save(
         context: Context,
         state: VpnState,
         sessionStartedAtElapsedMs: Long = 0L,
         connectionCountryFlag: String = "",
+        debugFrontingIp: String = "",
     ) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
@@ -24,6 +26,7 @@ object VpnRuntimeStateStore {
                 if (state == VpnState.Started) sessionStartedAtElapsedMs else 0L,
             )
             .putString(KEY_CONNECTION_COUNTRY_FLAG, if (state == VpnState.Started) connectionCountryFlag else "")
+            .putString(KEY_DEBUG_FRONTING_IP, if (state == VpnState.Started) debugFrontingIp else "")
             .apply()
     }
 
@@ -48,6 +51,12 @@ object VpnRuntimeStateStore {
     fun readConnectionCountryFlag(context: Context): String {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_CONNECTION_COUNTRY_FLAG, null)
+            .orEmpty()
+    }
+
+    fun readDebugFrontingIp(context: Context): String {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_DEBUG_FRONTING_IP, null)
             .orEmpty()
     }
 }

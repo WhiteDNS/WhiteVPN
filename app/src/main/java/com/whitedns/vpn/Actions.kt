@@ -11,4 +11,5 @@ object Actions {
     const val EXTRA_ERROR = "extra_error"
     const val EXTRA_SESSION_STARTED_AT_ELAPSED_MS = "extra_session_started_at_elapsed_ms"
     const val EXTRA_CONNECTION_COUNTRY_FLAG = "extra_connection_country_flag"
+    const val EXTRA_DEBUG_FRONTING_IP = "extra_debug_fronting_ip"
 }

@@ -1,59 +1,51 @@
 # WhiteDNS VPN Android
 
-Minimal Android VPN app powered by sing-box. The first version intentionally shows only one button:
+Native Android VPN app powered by the Mihomo core through the FlClash Android JNI path.
 
-- `Connect` starts Android `VpnService`, fetches the default sing-box subscription, and starts sing-box.
-- `Disconnect` stops sing-box and tears down the Android VPN service.
+- `Connect` starts Android `VpnService`, fetches the WhiteDNS Mihomo YAML subscription, initializes Mihomo, and passes the Android TUN fd into the core.
+- `Disconnect` stops the Mihomo TUN/listeners and tears down the Android VPN service.
 
 Default subscription:
 
 ```text
-https://whitedns-sub.whitedns.workers.dev/encrypted
+https://sub.whitedns.one/sub/mihomo.yaml
 ```
-
-The app decrypts this AES-GCM subscription on device, decodes the base64
-proxy-link payload, converts supported profiles into sing-box outbounds, and
-tests only small sampled chunks so large subscriptions do not trigger full-list
-delay scans on the user's device.
 
 ## Build
 
-The app sources compile with a compile-only libbox stub until the real sing-box Android bridge is built. To make a runnable VPN APK, generate `app/libs/libbox.aar` first:
+The app builds the native Mihomo core from the local `FlClash/` source tree. There is no public `libclash.aar` artifact in this flow; `scripts/build-flclash-core.sh` compiles FlClash `core` as `libclash.so` for Android and generates the JNI headers used by CMake.
 
 ```bash
-scripts/build-libbox.sh
+./scripts/build-flclash-core.sh
 ./gradlew assembleDebug
 ```
 
-`scripts/build-libbox.sh` uses pinned sing-box `v1.13.13` and expects:
+The script expects:
 
 - JDK 17
-- Go 1.24.7 or a Go toolchain that can auto-download it
+- Go
 - Android SDK
 - Android NDK
+- local `FlClash/` source tree
 
 Local checks:
 
 ```bash
-./gradlew test
+./gradlew testDebugUnitTest
 ./gradlew assembleDebug
 ```
 
 ## Release
 
-Release builds require the real sing-box Android bridge and release signing
-credentials.
+Release builds require release signing credentials. The FlClash core build runs automatically before CMake/release packaging.
 
 ```bash
-scripts/build-libbox.sh
 cp keystore.properties.example keystore.properties
 # edit keystore.properties with the real keystore path and passwords
 make release
 ```
 
-`make release` runs tests, builds signed release APKs for `armeabi-v7a`,
-`arm64-v8a`, `x86`, `x86_64`, and `universal`, verifies APK signatures when
-`apksigner` is available, and writes outputs to `release/`.
+`make release` runs tests, builds signed release APKs for `armeabi-v7a`, `arm64-v8a`, `x86`, `x86_64`, and `universal`, verifies APK signatures when `apksigner` is available, and writes outputs to `release/`.
 
 You can also pass signing values without a local properties file:
 

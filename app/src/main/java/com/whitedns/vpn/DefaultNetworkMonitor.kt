@@ -6,8 +6,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
-import io.nekohasekai.libbox.InterfaceUpdateListener
-import io.nekohasekai.libbox.Libbox
 import java.net.Inet6Address
 import java.net.NetworkInterface
 
@@ -23,12 +21,6 @@ data class DefaultNetworkCandidate(
     val isExpensive: Boolean,
     val isConstrained: Boolean,
     val hasIpv6: Boolean,
-)
-
-data class DefaultNetworkInterfaceMetadata(
-    val type: Int,
-    val dnsServers: List<String>,
-    val isExpensive: Boolean,
 )
 
 object DefaultNetworkSelector {
@@ -54,7 +46,6 @@ class DefaultNetworkMonitor(private val context: Context) {
     private val connectivity =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-    private var listener: InterfaceUpdateListener? = null
     private var defaultNetworkChangeListener: ((DefaultNetworkCandidate?) -> Unit)? = null
     private var callback: ConnectivityManager.NetworkCallback? = null
     private var isRegistered = false
@@ -103,12 +94,6 @@ class DefaultNetworkMonitor(private val context: Context) {
         callback = null
         lastReported = null
         reportedNoNetwork = false
-        listener = null
-    }
-
-    fun setListener(listener: InterfaceUpdateListener?) {
-        this.listener = listener
-        notifyDefaultInterface()
     }
 
     fun setDefaultNetworkChangeListener(listener: ((DefaultNetworkCandidate?) -> Unit)?) {
@@ -128,20 +113,6 @@ class DefaultNetworkMonitor(private val context: Context) {
         return selectDefaultNetwork()
     }
 
-    fun interfaceMetadataByName(): Map<String, DefaultNetworkInterfaceMetadata> {
-        return connectivity.allNetworks.mapNotNull { network ->
-            val capabilities = connectivity.getNetworkCapabilities(network) ?: return@mapNotNull null
-            if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
-            val linkProperties = connectivity.getLinkProperties(network) ?: return@mapNotNull null
-            val name = linkProperties.interfaceName?.takeIf(String::isNotBlank) ?: return@mapNotNull null
-            name to DefaultNetworkInterfaceMetadata(
-                type = capabilities.interfaceType(),
-                dnsServers = linkProperties.dnsServers.map { it.hostAddress.orEmpty() }.filter(String::isNotBlank),
-                isExpensive = !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
-            )
-        }.toMap()
-    }
-
     private fun notifyDefaultInterface() {
         val selected = selectDefaultNetwork()
         if (selected == null) {
@@ -150,7 +121,6 @@ class DefaultNetworkMonitor(private val context: Context) {
             }
             lastReported = null
             reportedNoNetwork = true
-            listener?.updateDefaultInterface("", -1, false, false)
             defaultNetworkChangeListener?.invoke(null)
             return
         }
@@ -165,7 +135,6 @@ class DefaultNetworkMonitor(private val context: Context) {
             lastReported = selected
             defaultNetworkChangeListener?.invoke(selected)
         }
-        listener?.updateDefaultInterface(selected.name, selected.index, selected.isExpensive, selected.isConstrained)
     }
 
     private fun selectDefaultNetwork(): DefaultNetworkCandidate? {
@@ -199,12 +168,4 @@ class DefaultNetworkMonitor(private val context: Context) {
         )
     }
 
-    private fun NetworkCapabilities.interfaceType(): Int {
-        return when {
-            hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> Libbox.InterfaceTypeWIFI
-            hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> Libbox.InterfaceTypeCellular
-            hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> Libbox.InterfaceTypeEthernet
-            else -> Libbox.InterfaceTypeOther
-        }
-    }
 }
