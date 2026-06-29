@@ -175,7 +175,9 @@ class MainActivity : Activity() {
             VpnRuntimeStateStore.read(this),
             VpnRuntimeStateStore.readSessionStartedAtElapsedMs(this),
             VpnRuntimeStateStore.readConnectionCountryFlag(this),
-            VpnRuntimeStateStore.readDebugFrontingIp(this),
+            VpnRuntimeStateStore.readDebugFrontingIp(this)
+                .takeIf { it in frontingIpPreferenceStore.readFrontingIps() }
+                .orEmpty(),
         )
     }
 
@@ -275,8 +277,8 @@ class MainActivity : Activity() {
             addView(
                 TextView(this@MainActivity).apply {
                     text = "WhiteDNS"
-                    textSize = 22f
-                    letterSpacing = 0.04f
+                    textSize = 24f
+                    letterSpacing = 0.05f
                     typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                     setTextColor(TEXT_PRIMARY)
                     includeFontPadding = false
@@ -297,7 +299,7 @@ class MainActivity : Activity() {
                     setPadding(dp(12), dp(5), dp(12), dp(5))
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.RECTANGLE
-                        cornerRadius = dp(6).toFloat()
+                        cornerRadius = dp(8).toFloat()
                         setColor(palette.brandPillBackground)
                         setStroke(dp(1), palette.brandPillOutline)
                     }
@@ -345,14 +347,14 @@ class MainActivity : Activity() {
         }
         statusText = TextView(this).apply {
             gravity = Gravity.CENTER
-            textSize = 13f
+            textSize = 14f
             letterSpacing = 0.04f
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             includeFontPadding = false
         }
         timerText = TextView(this).apply {
             gravity = Gravity.CENTER
-            textSize = 44f
+            textSize = 48f
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
             includeFontPadding = false
         }
@@ -407,23 +409,23 @@ class MainActivity : Activity() {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                 ).apply {
-                    topMargin = dp(8)
+                    topMargin = dp(12)
                 },
             )
         }
         val advancedSection = buildAdvancedSection()
 
         connectActionButton = MaterialButton(this).apply {
-            textSize = 15f
+            textSize = 16f
             letterSpacing = 0.08f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             minHeight = dp(60)
             minimumHeight = dp(60)
             insetTop = 0
             insetBottom = 0
-            cornerRadius = dp(10)
+            cornerRadius = dp(14)
             strokeWidth = dp(2)
-            elevation = 0f
+            elevation = dp(4).toFloat()
             stateListAnimator = null
             setAllCaps(false)
             setOnClickListener { handleButtonClick() }
@@ -434,7 +436,7 @@ class MainActivity : Activity() {
         }
         refreshActionButton = MaterialButton(this).apply {
             text = "Refresh"
-            textSize = 15f
+            textSize = 16f
             letterSpacing = 0.02f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             minHeight = dp(60)
@@ -443,9 +445,9 @@ class MainActivity : Activity() {
             minimumWidth = dp(122)
             insetTop = 0
             insetBottom = 0
-            cornerRadius = dp(10)
+            cornerRadius = dp(14)
             strokeWidth = dp(2)
-            elevation = 0f
+            elevation = dp(4).toFloat()
             stateListAnimator = null
             setAllCaps(false)
             setIconResource(R.drawable.ic_refresh)
@@ -492,7 +494,7 @@ class MainActivity : Activity() {
         dashboardContent.apply {
             addView(
                 headerBlock,
-                contentParams(dp(48)).apply {
+                contentParams(dp(56)).apply {
                     bottomMargin = dp(14)
                 },
             )
@@ -502,26 +504,26 @@ class MainActivity : Activity() {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                 ).apply {
-                    topMargin = dp(28)
+                    topMargin = dp(32)
                 },
             )
             addView(
                 dataRows,
-                contentParams(dp(28)),
+                contentParams(dp(32)),
             )
             addView(
                 advancedSection,
-                contentParams(dp(8)),
+                contentParams(dp(12)),
             )
             addView(
                 actionButtons,
-                contentParams(dp(28)).apply {
+                contentParams(dp(32)).apply {
                     height = dp(60)
                 },
             )
             addView(
                 footerText,
-                contentParams(dp(28)),
+                contentParams(dp(32)),
             )
         }
         viewport.addView(

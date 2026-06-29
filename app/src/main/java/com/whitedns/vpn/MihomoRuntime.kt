@@ -2,7 +2,6 @@ package com.whitedns.vpn
 
 import android.content.Context
 import com.follow.clash.core.Core
-import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -20,6 +19,12 @@ object MihomoRuntimeDefaults {
     const val CONTROLLER_HOST = "127.0.0.1"
     const val HEALTH_URL = "https://www.gstatic.com/generate_204"
     const val EGRESS_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+}
+
+object MihomoDelayPolicy {
+    fun acceptedDelayMs(delayMs: Int?): Long? {
+        return delayMs?.takeIf { it > 0 }?.toLong()
+    }
 }
 
 object MihomoControllerPort {
@@ -131,23 +136,7 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             controlPort: Int = MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT,
         ): JSONObject {
             val tun = JSONObject()
-                .put("enable", true)
-                .put("stack", "gvisor")
-                .put("device", appName)
-                .put("auto-route", true)
-                .put("strict-route", true)
-                .put("auto-detect-interface", true)
-                .put("dns-hijack", JSONArray().put("any:53"))
-                .put("mtu", 4064)
-                .put("inet4-address", JSONArray().put("172.19.0.1/30"))
-                .put("inet6-address", JSONArray())
-
-            if (splitTunnelPlan.allowedPackages.isNotEmpty()) {
-                tun.put("include-package", JSONArray(splitTunnelPlan.allowedPackages))
-            }
-            if (splitTunnelPlan.disallowedPackages.isNotEmpty()) {
-                tun.put("exclude-package", JSONArray(splitTunnelPlan.disallowedPackages))
-            }
+                .put("enable", false)
 
             return JSONObject()
                 .put("mixed-port", MihomoRuntimeDefaults.MIXED_PORT)
@@ -225,6 +214,7 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             controlPort: Int = MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT,
         ): String {
             val subscriptionYaml = stripTopLevelKeys(rawYaml, FLCLASH_OVERRIDE_KEYS)
+            val dnsProxyGroup = dnsProxyGroup(rawYaml)
             return buildString {
                 if (subscriptionYaml.isNotBlank()) {
                     append(subscriptionYaml.trimEnd())
@@ -244,19 +234,38 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                 append("  enable: true\n")
                 append("  listen: 0.0.0.0:1053\n")
                 append("  ipv6: false\n")
+                append("  respect-rules: ${dnsProxyGroup != null}\n")
                 append("  enhanced-mode: fake-ip\n")
                 append("  fake-ip-range: 198.18.0.1/16\n")
                 append("  default-nameserver:\n")
                 append("    - 1.1.1.1\n")
                 append("    - 8.8.8.8\n")
                 append("  nameserver:\n")
-                append("    - 1.1.1.1\n")
-                append("    - 8.8.8.8\n")
-                append("    - tls://1.1.1.1:853\n")
-                append("    - tls://8.8.8.8:853\n")
+                if (dnsProxyGroup != null) {
+                    append("    - ${yamlSingleQuoted("tcp://1.1.1.1#$dnsProxyGroup")}\n")
+                    append("    - ${yamlSingleQuoted("tcp://8.8.8.8#$dnsProxyGroup")}\n")
+                    append("  proxy-server-nameserver:\n")
+                    append("    - 1.1.1.1\n")
+                    append("    - 8.8.8.8\n")
+                } else {
+                    append("    - 1.1.1.1\n")
+                    append("    - 8.8.8.8\n")
+                    append("    - tls://1.1.1.1:853\n")
+                    append("    - tls://8.8.8.8:853\n")
+                }
                 append("tun:\n")
                 append("  enable: false\n")
             }
+        }
+
+        private fun dnsProxyGroup(rawYaml: String): String? {
+            return runCatching {
+                MihomoSelectionPolicy.trafficProbeGroup(MihomoConfigParser.parseSummary(rawYaml))?.name
+            }.getOrNull()
+        }
+
+        private fun yamlSingleQuoted(value: String): String {
+            return "'${value.replace("'", "''")}'"
         }
 
         private fun stripTopLevelKeys(rawYaml: String, keys: Set<String>): String {

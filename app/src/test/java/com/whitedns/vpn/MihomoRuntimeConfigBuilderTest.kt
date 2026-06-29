@@ -8,7 +8,7 @@ import org.json.JSONObject
 
 class MihomoRuntimeConfigBuilderTest {
     @Test
-    fun corePatchUsesMihomoPortsTunDefaultsAndVpnOnlyPackages() {
+    fun corePatchUsesMihomoPortsAndDisablesConfigTun() {
         val patch = MihomoRuntimeConfigBuilder.corePatchJson(
             appName = "WhiteDNS VPN",
             secret = "secret-123",
@@ -26,16 +26,15 @@ class MihomoRuntimeConfigBuilderTest {
         assertEquals(2080, patch.getInt("mixed-port"))
         assertEquals("127.0.0.1:39123", patch.getString("external-controller"))
         assertEquals("secret-123", patch.getString("secret"))
-        assertTrue(tun.getBoolean("enable"))
-        assertEquals("gvisor", tun.getString("stack"))
-        assertEquals("WhiteDNS VPN", tun.getString("device"))
-        assertEquals("172.19.0.1/30", tun.getJSONArray("inet4-address").getString(0))
-        assertEquals("com.example.mail", tun.getJSONArray("include-package").getString(0))
+        assertFalse(tun.getBoolean("enable"))
+        assertFalse(tun.has("auto-route"))
+        assertFalse(tun.has("strict-route"))
+        assertFalse(tun.has("include-package"))
         assertFalse(tun.has("exclude-package"))
     }
 
     @Test
-    fun corePatchMapsBypassPackagesToMihomoExcludePackage() {
+    fun corePatchDoesNotApplyBypassPackagesToDisabledConfigTun() {
         val patch = MihomoRuntimeConfigBuilder.corePatchJson(
             appName = "WhiteDNS VPN",
             secret = "secret-123",
@@ -48,7 +47,7 @@ class MihomoRuntimeConfigBuilderTest {
             ),
         )
 
-        assertEquals("com.example.chat", patch.getJSONObject("tun").getJSONArray("exclude-package").getString(0))
+        assertFalse(patch.getJSONObject("tun").has("exclude-package"))
     }
 
     @Test
@@ -115,8 +114,36 @@ class MihomoRuntimeConfigBuilderTest {
         assertTrue(runtimeYaml.contains("external-controller: 127.0.0.1:39125"))
         assertTrue(runtimeYaml.contains("secret: \"secret-123\""))
         assertTrue(runtimeYaml.contains("dns:\n  enable: true"))
+        assertTrue(runtimeYaml.contains("respect-rules: false"))
         assertTrue(runtimeYaml.contains("enhanced-mode: fake-ip"))
         assertTrue(runtimeYaml.contains("tun:\n  enable: false"))
+    }
+
+    @Test
+    fun flClashRuntimeYamlRoutesDnsThroughWhiteDnsProxyGroup() {
+        val yaml = """
+            proxies:
+              - name: Node
+                type: http
+                server: example.com
+                port: 443
+            proxy-groups:
+              - name: 🚀 WhiteDNS Proxy
+                type: select
+                proxies:
+                  - Node
+        """.trimIndent()
+
+        val runtimeYaml = MihomoRuntimeConfigBuilder.flClashRuntimeYaml(
+            rawYaml = yaml,
+            secret = "secret-123",
+            controlPort = 39125,
+        )
+
+        assertTrue(runtimeYaml.contains("respect-rules: true"))
+        assertTrue(runtimeYaml.contains("- 'tcp://1.1.1.1#🚀 WhiteDNS Proxy'"))
+        assertTrue(runtimeYaml.contains("- 'tcp://8.8.8.8#🚀 WhiteDNS Proxy'"))
+        assertTrue(runtimeYaml.contains("proxy-server-nameserver:\n    - 1.1.1.1\n    - 8.8.8.8"))
     }
 
     @Test
@@ -191,5 +218,13 @@ class MihomoRuntimeConfigBuilderTest {
         """.trimIndent()
 
         assertEquals("NL", MihomoRuntimeHealth.countryCodeFromTrace(trace))
+    }
+
+    @Test
+    fun mihomoDelayPolicyAcceptsOnlyPositiveDelay() {
+        assertEquals(42L, MihomoDelayPolicy.acceptedDelayMs(42))
+        assertEquals(null, MihomoDelayPolicy.acceptedDelayMs(0))
+        assertEquals(null, MihomoDelayPolicy.acceptedDelayMs(-1))
+        assertEquals(null, MihomoDelayPolicy.acceptedDelayMs(null))
     }
 }

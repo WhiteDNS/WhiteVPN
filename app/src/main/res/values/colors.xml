@@ -1,15 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="whitedns_primary">#36AEA4</color>
+    <!-- Primary colors -->
+    <color name="whitedns_primary">#10B981</color>
     <color name="whitedns_on_primary">#FFFFFFFF</color>
-    <color name="whitedns_primary_container">#EFF9F7</color>
-    <color name="whitedns_on_primary_container">#101615</color>
-    <color name="whitedns_secondary">#C78919</color>
-    <color name="whitedns_background">#F7FAF9</color>
+    <color name="whitedns_primary_container">#D1FAE5</color>
+    <color name="whitedns_on_primary_container">#065F46</color>
+
+    <!-- Secondary colors -->
+    <color name="whitedns_secondary">#F59E0B</color>
+
+    <!-- Background and surface -->
+    <color name="whitedns_background">#F8FAFB</color>
     <color name="whitedns_surface">#FFFFFFFF</color>
-    <color name="whitedns_surface_variant">#F0F5F3</color>
-    <color name="whitedns_on_surface">#101615</color>
-    <color name="whitedns_on_surface_variant">#6F7775</color>
-    <color name="whitedns_outline">#DEE6E3</color>
-    <color name="whitedns_error">#CE4848</color>
+    <color name="whitedns_surface_variant">#F0F4F8</color>
+
+    <!-- Surface elevations -->
+    <color name="surface_elevated_1">#FFFFFFFF</color>
+    <color name="surface_elevated_2">#FAFBFC</color>
+    <color name="surface_elevated_3">#F5F7FA</color>
+
+    <!-- On surface colors -->
+    <color name="whitedns_on_surface">#0F1419</color>
+    <color name="whitedns_on_surface_variant">#5B6471</color>
+
+    <!-- Text hierarchy -->
+    <color name="text_tertiary">#8B95A1</color>
+    <color name="text_muted">#C1C9D2</color>
+
+    <!-- Outline -->
+    <color name="whitedns_outline">#E2E8F0</color>
+
+    <!-- Error -->
+    <color name="whitedns_error">#EF4444</color>
+
+    <!-- State container colors -->
+    <color name="teal_container">#D1FAE5</color>
+    <color name="amber_container">#FEF3C7</color>
+    <color name="red_container">#FEE2E2</color>
+
+    <!-- Gradient colors -->
+    <color name="background_gradient_start">#F8FAFB</color>
+    <color name="background_gradient_end">#FFFFFF</color>
+    <color name="accent_gradient_start">#10B981</color>
+    <color name="accent_gradient_end">#06B6D4</color>
 </resources>

@@ -10,7 +10,7 @@ class MihomoConfigParserTest {
         val snapshot = MihomoConfigParser.parse(FIXTURE, fetchedAt = 123L)
 
         assertEquals(2, snapshot.catalog.profiles.size)
-        assertEquals(4, snapshot.summary.groups.size)
+        assertEquals(6, snapshot.summary.groups.size)
         assertEquals("\uD83C\uDDFA\uD83C\uDDF8 | @WhiteDNS | US1|10MB/s", snapshot.catalog.profiles[0].tag)
         assertEquals("vless", snapshot.catalog.profiles[0].type)
         assertEquals("203.0.113.1", snapshot.catalog.profiles[0].server)
@@ -31,6 +31,23 @@ class MihomoConfigParserTest {
         assertEquals("\u267B\uFE0F Auto Select", auto?.selectedGroup)
         assertEquals("\uD83D\uDE80 Proxy Select", unitedStates?.selectorGroup)
         assertEquals("\uD83C\uDDFA\uD83C\uDDF8 United States Nodes", unitedStates?.selectedGroup)
+    }
+
+    @Test
+    fun selectedCountryAlsoTargetsWhiteDnsTrafficGroup() {
+        val summary = MihomoConfigParser.parseSummary(FIXTURE)
+
+        val selections = MihomoSelectionPolicy.desiredSelections(summary, selectedCountryCode = "US")
+
+        assertEquals(
+            listOf(
+                MihomoGroupSelection("\uD83D\uDE80 Proxy Select", "\uD83C\uDDFA\uD83C\uDDF8 United States Nodes"),
+                MihomoGroupSelection("\uD83D\uDE80 WhiteDNS Proxy", "\uD83C\uDFC1Countries"),
+                MihomoGroupSelection("\uD83C\uDFC1Countries", "\uD83C\uDDFA\uD83C\uDDF8 United States Nodes"),
+            ),
+            selections,
+        )
+        assertEquals("\uD83D\uDE80 WhiteDNS Proxy", MihomoSelectionPolicy.trafficProbeGroup(summary)?.name)
     }
 
     private companion object {
@@ -55,6 +72,14 @@ class MihomoConfigParserTest {
                 type: url-test
               - name: "\U0001F1E9\U0001F1EA Germany Nodes"
                 type: url-test
+              - name: "\U0001F680 WhiteDNS Proxy"
+                type: select
+                proxies:
+                  - "\U0001F3C1Countries"
+              - name: "\U0001F3C1Countries"
+                type: select
+                proxies:
+                  - "\U0001F1FA\U0001F1F8 United States Nodes"
         """.trimIndent()
     }
 }

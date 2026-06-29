@@ -6,7 +6,9 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+import java.net.Inet4Address
 import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.NetworkInterface
 
 data class DefaultNetworkCandidate(
@@ -21,6 +23,7 @@ data class DefaultNetworkCandidate(
     val isExpensive: Boolean,
     val isConstrained: Boolean,
     val hasIpv6: Boolean,
+    val dnsServers: List<String> = emptyList(),
 )
 
 object DefaultNetworkSelector {
@@ -163,9 +166,18 @@ class DefaultNetworkMonitor(private val context: Context) {
                         val address = linkAddress.address
                         address is Inet6Address && !address.isLoopbackAddress && !address.isLinkLocalAddress
                     },
+                    dnsServers = linkProperties.dnsServers.mapNotNull { it.dnsEndpointOrNull() },
                 )
             },
         )
+    }
+
+    private fun InetAddress.dnsEndpointOrNull(): String? {
+        return when (this) {
+            is Inet4Address -> "${hostAddress.orEmpty()}:53"
+            is Inet6Address -> "[${hostAddress.orEmpty().substringBefore('%')}]:53"
+            else -> null
+        }
     }
 
 }

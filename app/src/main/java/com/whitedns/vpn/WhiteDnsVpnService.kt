@@ -45,7 +45,7 @@ class WhiteDnsVpnService : VpnService() {
     private var startupJob: Job? = null
     private var stopJob: Job? = null
     private var subscriptionRefreshJob: Job? = null
-    private var networkRecoveryJob: Job? = null
+    private var encryptedIpScanJob: Job? = null
     private val uidPackageNameCache = mutableMapOf<Int, String>()
 
     private data class StartedMihomoRuntime(
@@ -54,6 +54,14 @@ class WhiteDnsVpnService : VpnService() {
         val delayMs: Long,
         val paths: MihomoRuntimePaths,
         val delayProbeName: String,
+        val cacheEndpoint: Boolean,
+        val selectedCountryCode: String?,
+    )
+
+    private data class StartupTopIpCandidatePlan(
+        val primaryPhase: String,
+        val primaryCandidates: List<CleanIpResult>,
+        val exhaustiveCandidates: List<CleanIpResult>,
     )
 
     @Volatile
@@ -71,11 +79,11 @@ class WhiteDnsVpnService : VpnService() {
     @Volatile
     private var activeConnectionCountryFlag: String = ""
     @Volatile
-    private var lastNetworkRecoveryAtMs: Long = 0L
-    @Volatile
-    private var isNetworkRecoveryActive: Boolean = false
+    private var activeFrontingIp: String = ""
     @Volatile
     private var lastDefaultNetworkKey: String? = null
+    @Volatile
+    private var lastDefaultDns: String = ""
 
     override fun onCreate() {
         super.onCreate()
@@ -89,7 +97,7 @@ class WhiteDnsVpnService : VpnService() {
         encryptedIpListRepository = EncryptedIpListRepository(this)
         frontingIpPreferenceStore = FrontingIpPreferenceStore(this)
         networkMonitor.setDefaultNetworkChangeListener { candidate ->
-            scheduleNetworkChangeRecovery(candidate)
+            handleDefaultNetworkChanged(candidate)
         }
         createNotificationChannel()
         DiagnosticLogger.info(this, "service.onCreate")
@@ -115,7 +123,7 @@ class WhiteDnsVpnService : VpnService() {
         startupJob?.cancel(CancellationException("Service destroyed"))
         stopJob?.cancel()
         subscriptionRefreshJob?.cancel()
-        networkRecoveryJob?.cancel()
+        encryptedIpScanJob?.cancel()
         stopCoreImmediately()
         scope.cancel()
         super.onDestroy()
@@ -163,7 +171,7 @@ class WhiteDnsVpnService : VpnService() {
         DiagnosticLogger.info(this, "reconnect.start")
         publishState(VpnState.Starting)
         startForeground(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_starting)))
-        launchConnectionStartup("reconnect") { stopCoreService() }
+        launchConnectionStartup("reconnect") { stopActiveCoreForReplacement() }
     }
 
     private fun refreshVpn() {
@@ -183,22 +191,21 @@ class WhiteDnsVpnService : VpnService() {
         startForeground(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_starting)))
         launchConnectionStartup(
             eventPrefix = "refresh",
-            bypassConnectionCache = true,
             excludedEndpoint = excludedEndpoint,
-        ) {
-            stopCoreService()
-        }
+            preserveRuntimeOnFailure = activeRuntimePaths,
+        )
     }
 
     private fun launchConnectionStartup(
         eventPrefix: String,
         bypassConnectionCache: Boolean = false,
         excludedEndpoint: CleanIpResult? = null,
+        preserveRuntimeOnFailure: MihomoRuntimePaths? = null,
         beforeStartup: suspend () -> Unit = {},
     ) {
         startupJob?.cancel(CancellationException("Startup superseded"))
         subscriptionRefreshJob?.cancel()
-        networkRecoveryJob?.cancel()
+        encryptedIpScanJob?.cancel()
         val job = scope.launch {
             try {
                 beforeStartup()
@@ -206,8 +213,12 @@ class WhiteDnsVpnService : VpnService() {
             } catch (error: CancellationException) {
                 DiagnosticLogger.info(this@WhiteDnsVpnService, "$eventPrefix.canceled", error.message.orEmpty())
             } catch (error: Throwable) {
-                DiagnosticLogger.error(this@WhiteDnsVpnService, "$eventPrefix.failed", error = error)
-                stopAfterFailure(error)
+                if (preserveRuntimeOnFailure != null && activeRuntimePaths == preserveRuntimeOnFailure) {
+                    keepActiveRuntimeAfterStartupFailure(eventPrefix, error)
+                } else {
+                    DiagnosticLogger.error(this@WhiteDnsVpnService, "$eventPrefix.failed", error = error)
+                    stopAfterFailure(error)
+                }
             }
         }
         startupJob = job
@@ -228,181 +239,295 @@ class WhiteDnsVpnService : VpnService() {
         networkMonitor.start()
 
         val selectedCountryCode = locationPreferenceStore.readSelectedCountryCode()
-        if (bypassConnectionCache) {
-            DiagnosticLogger.info(this, "startup.cache.skipped", "source=$eventPrefix reason=bypassConnectionCache")
-        } else {
-            startCachedMihomoRuntimeIfAvailable(eventPrefix, selectedCountryCode, excludedEndpoint)?.let { startedRuntime ->
-                ensureStartupActive(eventPrefix)
-                applyStartedRuntime(startedRuntime, eventPrefix)
-                return
-            }
-        }
-
-        val snapshot = configRepository.fetchOrCachedMihomoConfig()
+        val snapshot = configRepository.readCachedMihomoConfigOrNull()
+            ?: configRepository.fetchOrCachedMihomoConfig()
         ensureStartupActive(eventPrefix)
         val profiles = profilesForSelectedLocation(
             profiles = eligibleProfilesForRuntime(snapshot.catalog),
             selectedCountryCode = selectedCountryCode,
         )
-        val topIpCandidates = findStartupTopIpCandidates(
+        val splitTunnelPlan = resolveSplitTunnelRuntimePlan()
+        val frontingIps = frontingIpPreferenceStore.readFrontingIps()
+        var startupNotice: String? = null
+        val startedRuntime = if (frontingIps.isNotEmpty()) {
+            connectWithFrontingIpsOrOriginal(
+                eventPrefix = eventPrefix,
+                snapshot = snapshot,
+                profiles = profiles,
+                splitTunnelPlan = splitTunnelPlan,
+                selectedCountryCode = selectedCountryCode,
+                excludedEndpoint = excludedEndpoint,
+                frontingIps = frontingIps,
+            ).also { result ->
+                startupNotice = result.second
+            }.first
+        } else if (bypassConnectionCache) {
+            connectWithTopIpCandidates(
+                eventPrefix = eventPrefix,
+                snapshot = snapshot,
+                profiles = profiles,
+                splitTunnelPlan = splitTunnelPlan,
+                selectedCountryCode = selectedCountryCode,
+                bypassConnectionCache = bypassConnectionCache,
+                excludedEndpoint = excludedEndpoint,
+                frontingIps = frontingIps,
+            )
+        } else {
+            startMihomoRuntimeAttempt(
+                snapshot = snapshot,
+                splitTunnelPlan = splitTunnelPlan,
+                selectedCountryCode = selectedCountryCode,
+                topEndpoint = null,
+                validateConnectivity = false,
+            )
+        }
+        applyStartedRuntime(
+            startedRuntime = startedRuntime,
+            eventPrefix = eventPrefix,
+            notice = startupNotice,
+        )
+        startBackgroundEncryptedIpScan(profiles)
+    }
+
+    private suspend fun connectWithFrontingIpsOrOriginal(
+        eventPrefix: String,
+        snapshot: MihomoSubscriptionSnapshot,
+        profiles: List<ConnectionProfile>,
+        splitTunnelPlan: SplitTunnelRuntimePlan,
+        selectedCountryCode: String?,
+        excludedEndpoint: CleanIpResult?,
+        frontingIps: List<String>,
+    ): Pair<StartedMihomoRuntime, String?> {
+        return try {
+            connectWithTopIpCandidates(
+                eventPrefix = eventPrefix,
+                snapshot = snapshot,
+                profiles = profiles,
+                splitTunnelPlan = splitTunnelPlan,
+                selectedCountryCode = selectedCountryCode,
+                bypassConnectionCache = false,
+                excludedEndpoint = excludedEndpoint,
+                frontingIps = frontingIps,
+                useCachedFirst = false,
+            ) to null
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            DiagnosticLogger.warn(this, "frontingIp.fallback.original", "ips=${frontingIps.size}", error)
+            stopCoreService()
+            startMihomoRuntimeAttempt(
+                snapshot = snapshot,
+                splitTunnelPlan = splitTunnelPlan,
+                selectedCountryCode = selectedCountryCode,
+                topEndpoint = null,
+                validateConnectivity = false,
+            ) to FRONTING_FALLBACK_NOTICE
+        }
+    }
+
+    private suspend fun connectWithTopIpCandidates(
+        eventPrefix: String,
+        snapshot: MihomoSubscriptionSnapshot,
+        profiles: List<ConnectionProfile>,
+        splitTunnelPlan: SplitTunnelRuntimePlan,
+        selectedCountryCode: String?,
+        bypassConnectionCache: Boolean,
+        excludedEndpoint: CleanIpResult?,
+        frontingIps: List<String> = frontingIpPreferenceStore.readFrontingIps(),
+        useCachedFirst: Boolean = true,
+    ): StartedMihomoRuntime {
+        if (frontingIps.isEmpty() && useCachedFirst) {
+            cachedTopIpCandidatePlan(profiles, excludedEndpoint)?.let { cachedPlan ->
+                try {
+                    return connectStartupTopIpCandidates(
+                        eventPrefix = eventPrefix,
+                        candidatePlan = cachedPlan,
+                        snapshot = snapshot,
+                        splitTunnelPlan = splitTunnelPlan,
+                        selectedCountryCode = selectedCountryCode,
+                    )
+                } catch (error: Throwable) {
+                    if (error is CancellationException) throw error
+                    DiagnosticLogger.warn(this, "startup.cachedTopIp.failed", "source=$eventPrefix", error)
+                    stopCoreService()
+                }
+            }
+        }
+        val candidatePlan = findStartupTopIpCandidates(
             profiles = profiles,
-            bypassConnectionCache = bypassConnectionCache,
+            bypassConnectionCache = if (frontingIps.isEmpty()) true else bypassConnectionCache,
+            excludedEndpoint = excludedEndpoint,
+            frontingIps = frontingIps,
+        )
+        return connectStartupTopIpCandidates(
+            eventPrefix = eventPrefix,
+            candidatePlan = candidatePlan,
+            snapshot = snapshot,
+            splitTunnelPlan = splitTunnelPlan,
+            selectedCountryCode = selectedCountryCode,
+        )
+    }
+
+    private fun cachedTopIpCandidatePlan(
+        profiles: List<ConnectionProfile>,
+        excludedEndpoint: CleanIpResult?,
+    ): StartupTopIpCandidatePlan? {
+        val candidates = StartupScanPolicy.cachedEncryptedCandidates(
+            subscriptionPorts = profiles.map { it.port },
+            lastEndpoint = scanStateStore.readLastEndpoint(),
+            cachedResults = cleanIpCache.readResults(),
             excludedEndpoint = excludedEndpoint,
         )
-        val splitTunnelPlan = resolveSplitTunnelRuntimePlan()
+        if (candidates.isEmpty()) return null
+        DiagnosticLogger.info(
+            this,
+            "startup.cachedTopIp.ready",
+            "candidates=${candidates.size} best=${candidates.first().ip}:${candidates.first().port} latencyMs=${candidates.first().latencyMs}",
+        )
+        return StartupTopIpCandidatePlan(
+            primaryPhase = "cached",
+            primaryCandidates = candidates,
+            exhaustiveCandidates = emptyList(),
+        )
+    }
+
+    private suspend fun connectStartupTopIpCandidates(
+        eventPrefix: String,
+        candidatePlan: StartupTopIpCandidatePlan,
+        snapshot: MihomoSubscriptionSnapshot,
+        splitTunnelPlan: SplitTunnelRuntimePlan,
+        selectedCountryCode: String?,
+    ): StartedMihomoRuntime {
+        val primaryCandidates = primaryRuntimeCandidates(candidatePlan)
+        if (primaryCandidates.isNotEmpty()) {
+            try {
+                return connectStartupTopIpCandidates(
+                    eventPrefix = eventPrefix,
+                    phase = candidatePlan.primaryPhase,
+                    candidates = primaryCandidates,
+                    snapshot = snapshot,
+                    splitTunnelPlan = splitTunnelPlan,
+                    selectedCountryCode = selectedCountryCode,
+                )
+            } catch (error: Throwable) {
+                if (error is CancellationException || candidatePlan.exhaustiveCandidates.isEmpty()) throw error
+                DiagnosticLogger.info(
+                    this,
+                    "startup.topIp.exhaustive.fallback",
+                    "source=$eventPrefix reason=${candidatePlan.primaryPhase}Failed candidates=${candidatePlan.exhaustiveCandidates.size}",
+                )
+                stopCoreService()
+            }
+        } else if (candidatePlan.exhaustiveCandidates.isNotEmpty()) {
+            DiagnosticLogger.info(
+                this,
+                "startup.topIp.exhaustive.fallback",
+                "source=$eventPrefix reason=${candidatePlan.primaryPhase}CandidatesEmpty candidates=${candidatePlan.exhaustiveCandidates.size}",
+            )
+        }
+
+        return connectStartupTopIpCandidates(
+            eventPrefix = eventPrefix,
+            phase = "exhaustive",
+            candidates = candidatePlan.exhaustiveCandidates,
+            snapshot = snapshot,
+            splitTunnelPlan = splitTunnelPlan,
+            selectedCountryCode = selectedCountryCode,
+        )
+    }
+
+    private fun primaryRuntimeCandidates(candidatePlan: StartupTopIpCandidatePlan): List<CleanIpResult> {
+        if (candidatePlan.primaryPhase != "quick") return candidatePlan.primaryCandidates
+        return candidatePlan.primaryCandidates.take(CleanIpDefaults.STARTUP_RUNTIME_ATTEMPTS.coerceAtLeast(1))
+    }
+
+    private suspend fun connectStartupTopIpCandidates(
+        eventPrefix: String,
+        phase: String,
+        candidates: List<CleanIpResult>,
+        snapshot: MihomoSubscriptionSnapshot,
+        splitTunnelPlan: SplitTunnelRuntimePlan,
+        selectedCountryCode: String?,
+    ): StartedMihomoRuntime {
+        if (candidates.isEmpty()) {
+            throw IOException("No $phase top-IP candidates are available")
+        }
 
         var lastFailure: Throwable? = null
-        val runtimeCandidates = topIpCandidates.take(CleanIpDefaults.STARTUP_RUNTIME_ATTEMPTS.coerceAtLeast(1))
-        for ((index, endpoint) in runtimeCandidates.withIndex()) {
+        for ((index, endpoint) in candidates.withIndex()) {
             ensureStartupActive(eventPrefix)
             val attempt = index + 1
             try {
                 DiagnosticLogger.info(
                     this,
                     "startup.topIp.try",
-                    "attempt=$attempt/${runtimeCandidates.size} endpoint=${endpoint.ip}:${endpoint.port} latencyMs=${endpoint.latencyMs} lossRate=${endpoint.lossRate}",
+                    "phase=$phase attempt=$attempt/${candidates.size} endpoint=${endpoint.ip}:${endpoint.port} latencyMs=${endpoint.latencyMs} lossRate=${endpoint.lossRate}",
                 )
                 if (index > 0) {
                     stopCoreService()
                 }
-                val startedRuntime = startMihomoRuntimeAttempt(
+                return startMihomoRuntimeAttempt(
                     snapshot = snapshot,
                     splitTunnelPlan = splitTunnelPlan,
                     selectedCountryCode = selectedCountryCode,
                     topEndpoint = endpoint,
-                )
-                applyStartedRuntime(
-                    startedRuntime = startedRuntime,
-                    eventPrefix = eventPrefix,
-                )
-                DiagnosticLogger.info(
-                    this,
-                    "startup.topIp.connected",
-                    "attempt=$attempt/${runtimeCandidates.size} endpoint=${startedRuntime.endpoint.ip}:${startedRuntime.endpoint.port}",
-                )
-                return
+                ).also { startedRuntime ->
+                    DiagnosticLogger.info(
+                        this,
+                        "startup.topIp.connected",
+                        "phase=$phase attempt=$attempt/${candidates.size} endpoint=${startedRuntime.endpoint.ip}:${startedRuntime.endpoint.port}",
+                    )
+                }
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
                 lastFailure = error
                 DiagnosticLogger.warn(
                     this,
                     "startup.topIp.rejected",
-                    "attempt=$attempt/${runtimeCandidates.size} endpoint=${endpoint.ip}:${endpoint.port}",
+                    "phase=$phase attempt=$attempt/${candidates.size} endpoint=${endpoint.ip}:${endpoint.port}",
                     error,
                 )
                 stopCoreService()
             }
         }
-        throw IOException("No patched top-IP profile passed runtime health check", lastFailure)
-    }
-
-    private suspend fun startCachedMihomoRuntimeIfAvailable(
-        eventPrefix: String,
-        selectedCountryCode: String?,
-        excludedEndpoint: CleanIpResult?,
-    ): StartedMihomoRuntime? {
-        return try {
-            val frontingIps = frontingIpPreferenceStore.readFrontingIps()
-            if (frontingIps.isNotEmpty()) {
-                DiagnosticLogger.info(
-                    this,
-                    "startup.cache.skipped",
-                    "source=$eventPrefix reason=frontingIpOverride count=${frontingIps.size}",
-                )
-                return null
-            }
-
-            val snapshot = configRepository.readCachedMihomoConfigOrNull()
-            if (snapshot == null) {
-                DiagnosticLogger.info(this, "startup.cache.miss", "source=$eventPrefix reason=noCachedMihomoConfig")
-                return null
-            }
-            val profiles = profilesForSelectedLocation(
-                profiles = eligibleProfilesForRuntime(snapshot.catalog),
-                selectedCountryCode = selectedCountryCode,
-            )
-            val selection = scanStateStore.readLastSelectedProfileSelection(profiles)
-            val candidates = StartupScanPolicy.cachedRuntimeCandidates(
-                selection = selection,
-                lastEndpoint = scanStateStore.readLastEndpoint(),
-                cachedResults = cleanIpCache.readResults(),
-                frontingIpOverrideEnabled = false,
-                excludedEndpoint = excludedEndpoint,
-            )
-            if (candidates.isEmpty()) {
-                DiagnosticLogger.info(
-                    this,
-                    "startup.cache.miss",
-                    "source=$eventPrefix reason=noEndpoint profile=${selection?.profile?.tag.orEmpty()}",
-                )
-                return null
-            }
-
-            val cached = cleanIpScanner(
-                ports = candidates.map { it.port },
-                candidateIps = emptyList(),
-            ).findFirstCachedWorking(candidates)
-            if (cached == null) {
-                DiagnosticLogger.info(this, "startup.cache.fallback", "source=$eventPrefix candidates=${candidates.size}")
-                return null
-            }
-
-            DiagnosticLogger.info(
-                this,
-                "startup.cache.try",
-                "source=$eventPrefix endpoint=${cached.ip}:${cached.port} latencyMs=${cached.latencyMs}",
-            )
-            startMihomoRuntimeAttempt(
-                snapshot = snapshot,
-                splitTunnelPlan = resolveSplitTunnelRuntimePlan(),
-                selectedCountryCode = selectedCountryCode,
-                topEndpoint = cached,
-            ).also { startedRuntime ->
-                DiagnosticLogger.info(
-                    this,
-                    "startup.cache.connected",
-                    "source=$eventPrefix endpoint=${startedRuntime.endpoint.ip}:${startedRuntime.endpoint.port}",
-                )
-            }
-        } catch (error: Throwable) {
-            if (error is CancellationException) throw error
-            stopCoreService()
-            DiagnosticLogger.warn(this, "startup.cache.failed", "source=$eventPrefix", error)
-            null
-        }
+        throw IOException("No $phase top-IP candidate passed Mihomo delay and runtime health check", lastFailure)
     }
 
     private suspend fun startMihomoRuntimeAttempt(
         snapshot: MihomoSubscriptionSnapshot,
         splitTunnelPlan: SplitTunnelRuntimePlan,
         selectedCountryCode: String?,
-        topEndpoint: CleanIpResult,
+        topEndpoint: CleanIpResult?,
+        validateConnectivity: Boolean = true,
     ): StartedMihomoRuntime {
+        val serverOverrideIp = topEndpoint?.ip
         val frontedYaml = MihomoFrontingPatcher.patchProxyServers(
             rawYaml = snapshot.rawConfig,
-            serverOverrideIp = topEndpoint.ip,
+            serverOverrideIp = serverOverrideIp,
         )
         val paths = MihomoRuntimeConfigBuilder(this).write(
             rawYaml = frontedYaml,
             splitTunnelPlan = splitTunnelPlan,
         )
-        activeRuntimePaths = paths
         DiagnosticLogger.info(
             this,
             "mihomo.runtime.files",
-            "config=${paths.runtimeConfigYaml.absolutePath} service=${paths.serviceJson.absolutePath} patch=${paths.patchFinalJson.absolutePath} controller=${MihomoRuntimeDefaults.CONTROLLER_HOST}:${paths.controlPort} topIp=${topEndpoint.ip}",
+            "config=${paths.runtimeConfigYaml.absolutePath} service=${paths.serviceJson.absolutePath} patch=${paths.patchFinalJson.absolutePath} controller=${MihomoRuntimeDefaults.CONTROLLER_HOST}:${paths.controlPort} serverOverride=${serverOverrideIp.orEmpty()}",
         )
         DiagnosticLogger.info(
             this,
             "mihomo.startup.flow",
-            "frontingScanner=true randomController=true encryptedSubscription=true profiles=${snapshot.summary.proxies.size} groups=${snapshot.summary.groups.size}",
+            "frontingScanner=${serverOverrideIp != null} randomController=true encryptedSubscription=true profiles=${snapshot.summary.proxies.size} groups=${snapshot.summary.groups.size}",
         )
 
+        if (state == VpnState.Starting && activeRuntimePaths != null) {
+            stopActiveCoreForReplacement()
+        }
         startCoreServiceAndWait(paths, splitTunnelPlan)
+        activeRuntimePaths = paths
         val controller = MihomoControllerClient(paths.secret, port = paths.controlPort)
         waitForController(controller, paths)
-        val selection = MihomoSelectionPolicy.desiredSelection(snapshot.summary, selectedCountryCode)
-        if (selection != null) {
+        val selections = MihomoSelectionPolicy.desiredSelections(snapshot.summary, selectedCountryCode)
+        selections.forEach { selection ->
             withContext(Dispatchers.IO) {
                 controller.selectProxy(selection.selectorGroup, selection.selectedGroup)
             }
@@ -411,7 +536,8 @@ class WhiteDnsVpnService : VpnService() {
                 "mihomo.selection.applied",
                 "selector=${selection.selectorGroup} selected=${selection.selectedGroup}",
             )
-        } else {
+        }
+        if (selections.isEmpty()) {
             DiagnosticLogger.info(
                 this,
                 "mihomo.selection.skipped",
@@ -419,9 +545,10 @@ class WhiteDnsVpnService : VpnService() {
             )
         }
 
-        val selectedName = selection?.selectedGroup ?: snapshot.summary.proxies.firstOrNull()?.name.orEmpty()
-        val delayMs = topEndpoint.latencyMs
-        DiagnosticLogger.info(this, "mihomo.delay.skipped", "name=$selectedName fallbackLatencyMs=$delayMs")
+        val selection = selections.firstOrNull()
+        val selectedName = MihomoSelectionPolicy.trafficProbeGroup(snapshot.summary)?.name
+            ?: selection?.selectedGroup
+            ?: snapshot.summary.proxies.firstOrNull()?.name.orEmpty()
         val activeProxyName = runCatching {
             withContext(Dispatchers.IO) {
                 controller.activeProxyName(selectedName)
@@ -434,40 +561,78 @@ class WhiteDnsVpnService : VpnService() {
             "mihomo.active.proxy",
             "selected=$selectedName active=${activeProxyName.orEmpty()}",
         )
-        verifyRuntimeHealth()
+        val delayProbeName = activeProxyName?.takeIf(String::isNotBlank) ?: selectedName
+        if (delayProbeName.isBlank()) {
+            throw IOException("No Mihomo proxy selected for delay test")
+        }
+        val delayMs = if (validateConnectivity) {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    MihomoDelayPolicy.acceptedDelayMs(
+                        controller.delay(delayProbeName, timeoutMs = FOREGROUND_MIHOMO_DELAY_TIMEOUT_MS),
+                    )
+                }
+            }.getOrElse { error ->
+                throw IOException("Mihomo delay test failed for $delayProbeName", error)
+            } ?: throw IOException("Mihomo delay test returned no positive delay for $delayProbeName")
+        } else {
+            -1L
+        }
+        if (validateConnectivity) {
+            DiagnosticLogger.info(
+                this,
+                "mihomo.delay.ok",
+                "name=$delayProbeName delayMs=$delayMs",
+            )
+            verifyRuntimeHealth()
+        } else {
+            DiagnosticLogger.info(this, "mihomo.delay.deferred", "name=$delayProbeName")
+        }
         DiagnosticLogger.info(
             this,
             "startup.topIp.validated",
-            "endpoint=${topEndpoint.ip}:${topEndpoint.port} selected=$selectedName active=${activeProxyName.orEmpty()}",
+            "endpoint=${topEndpoint?.let { "${it.ip}:${it.port}" } ?: "original"} selected=$selectedName active=${activeProxyName.orEmpty()} delayProbe=$delayProbeName delayMs=$delayMs validated=$validateConnectivity",
         )
 
         val profile = activeProfile(snapshot, selectedCountryCode, selection, activeProxyName)
-        val endpoint = runtimeEndpointForSelection(
-            topEndpoint = topEndpoint,
-            snapshot = snapshot,
-            selectedCountryCode = selectedCountryCode,
-            selection = selection,
-            activeProxyName = activeProxyName,
-            delayMs = delayMs,
-        )
+        val endpoint = if (topEndpoint == null) {
+            originalEndpointForSelection(snapshot, selectedCountryCode, activeProxyName, delayMs)
+        } else {
+            runtimeEndpointForSelection(
+                topEndpoint = topEndpoint,
+                snapshot = snapshot,
+                selectedCountryCode = selectedCountryCode,
+                selection = selection,
+                activeProxyName = activeProxyName,
+                delayMs = delayMs,
+            )
+        }
         return StartedMihomoRuntime(
             profile = profile,
             endpoint = endpoint,
             delayMs = delayMs,
             paths = paths,
-            delayProbeName = selectedName,
+            delayProbeName = delayProbeName,
+            cacheEndpoint = topEndpoint != null,
+            selectedCountryCode = ConnectionLocationPolicy.normalizeCountryCode(selectedCountryCode),
         )
     }
 
     private fun applyStartedRuntime(
         startedRuntime: StartedMihomoRuntime,
         eventPrefix: String,
+        notice: String? = null,
     ) {
         activeProfile = startedRuntime.profile
         activeEndpoint = startedRuntime.endpoint
         activeDelayMs = startedRuntime.delayMs
         activeRuntimePaths = startedRuntime.paths
-        activeConnectionCountryFlag = startedRuntime.profile.let(ConnectionLocationPolicy::countryForProfile)?.flag.orEmpty()
+        activeConnectionCountryFlag = startedRuntime.selectedCountryCode
+            ?.let(ConnectionLocationPolicy::countryFromCode)
+            ?.flag
+            ?: startedRuntime.profile.let(ConnectionLocationPolicy::countryForProfile)?.flag.orEmpty()
+        val configuredFrontingIps = frontingIpPreferenceStore.readFrontingIps()
+        activeFrontingIp = startedRuntime.endpoint.ip.takeIf { it in configuredFrontingIps }.orEmpty()
         scanStateStore.saveLastSelectedProfile(
             SelectedConnectionProfile(
                 profile = startedRuntime.profile,
@@ -475,12 +640,12 @@ class WhiteDnsVpnService : VpnService() {
                 selectedAt = System.currentTimeMillis(),
             ),
         )
-        if (startedRuntime.endpoint.ip !in frontingIpPreferenceStore.readFrontingIps()) {
+        if (startedRuntime.cacheEndpoint && startedRuntime.endpoint.ip !in configuredFrontingIps) {
             cleanIpCache.saveResult(startedRuntime.endpoint)
             scanStateStore.saveLastEndpoint(startedRuntime.endpoint)
         }
         sessionStartedAtElapsedMs = SystemClock.elapsedRealtime()
-        publishState(VpnState.Started)
+        publishState(VpnState.Started, notice)
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_connected)))
         DiagnosticLogger.info(
@@ -490,7 +655,9 @@ class WhiteDnsVpnService : VpnService() {
         )
         startBackgroundSubscriptionRefresh()
         refreshDelayInBackground(startedRuntime)
-        refreshEgressCountryInBackground(startedRuntime)
+        if (startedRuntime.selectedCountryCode == null) {
+            refreshEgressCountryInBackground(startedRuntime)
+        }
     }
 
     private fun refreshDelayInBackground(startedRuntime: StartedMihomoRuntime) {
@@ -498,7 +665,7 @@ class WhiteDnsVpnService : VpnService() {
         scope.launch(Dispatchers.IO) {
             val delayMs = runCatching {
                 MihomoControllerClient(startedRuntime.paths.secret, port = startedRuntime.paths.controlPort)
-                    .delay(name, timeoutMs = BACKGROUND_DELAY_TIMEOUT_MS)
+                    .delay(name, timeoutMs = BACKGROUND_MIHOMO_DELAY_TIMEOUT_MS)
                     ?.toLong()
             }.onFailure { error ->
                 DiagnosticLogger.warn(this@WhiteDnsVpnService, "mihomo.delay.background.failed", "name=$name", error)
@@ -514,7 +681,7 @@ class WhiteDnsVpnService : VpnService() {
             scanStateStore.saveLastSelectedProfile(
                 SelectedConnectionProfile(startedRuntime.profile, delayMs.toInt(), System.currentTimeMillis()),
             )
-            if (endpoint.ip !in frontingIpPreferenceStore.readFrontingIps()) {
+            if (startedRuntime.cacheEndpoint && endpoint.ip !in frontingIpPreferenceStore.readFrontingIps()) {
                 cleanIpCache.saveResult(endpoint)
                 scanStateStore.saveLastEndpoint(endpoint)
             }
@@ -600,7 +767,8 @@ class WhiteDnsVpnService : VpnService() {
         profiles: List<ConnectionProfile>,
         bypassConnectionCache: Boolean = false,
         excludedEndpoint: CleanIpResult? = null,
-    ): List<CleanIpResult> {
+        frontingIps: List<String> = frontingIpPreferenceStore.readFrontingIps(),
+    ): StartupTopIpCandidatePlan {
         val subscriptionPorts = profiles
             .map { it.port }
             .filter { it > 0 }
@@ -608,23 +776,32 @@ class WhiteDnsVpnService : VpnService() {
 
         val priorityPorts = StartupScanPolicy.priorityPorts(subscriptionPorts)
         val fallbackPorts = StartupScanPolicy.fallbackPorts(subscriptionPorts)
+        val connectionPorts = StartupScanPolicy.orderedConnectionPorts(subscriptionPorts)
         logScanInfo(
             "scanner.startup.ports",
-            "priority=$priorityPorts fallback=$fallbackPorts subscription=${subscriptionPorts.distinct().sorted()}",
+            "priority=$priorityPorts fallback=$fallbackPorts connection=$connectionPorts subscription=${subscriptionPorts.distinct().sorted()}",
         )
 
-        frontingIpPreferenceStore.readFrontingIps().takeIf { it.isNotEmpty() }?.let { frontingIps ->
-            val port = priorityPorts.firstOrNull() ?: fallbackPorts.first()
-            DiagnosticLogger.info(this, "frontingIp.override", "enabled=true count=${frontingIps.size} port=$port")
-            val checkedAt = System.currentTimeMillis()
-            return StartupScanPolicy.excludeEndpoint(
-                candidates = frontingIps.map { frontingIp ->
-                    CleanIpResult(frontingIp, port, 1L, 0.0, checkedAt)
-                },
-                excludedEndpoint = excludedEndpoint,
-            ).ifEmpty {
+        frontingIps.takeIf { it.isNotEmpty() }?.let { frontingIps ->
+            val candidates = StartupScanPolicy.frontingCandidates(
+                frontingIps = frontingIps,
+                subscriptionPorts = subscriptionPorts,
+                checkedAt = System.currentTimeMillis(),
+                excludedEndpoint = null,
+            )
+            if (candidates.isEmpty()) {
                 throw IOException("No alternate fronting IP is available")
             }
+            DiagnosticLogger.info(
+                this,
+                "frontingIp.override",
+                "enabled=true ips=${frontingIps.size} ports=$connectionPorts candidates=${candidates.size}",
+            )
+            return StartupTopIpCandidatePlan(
+                primaryPhase = "fronting",
+                primaryCandidates = candidates,
+                exhaustiveCandidates = emptyList(),
+            )
         }
 
         val decryptedIps = runCatching {
@@ -632,6 +809,12 @@ class WhiteDnsVpnService : VpnService() {
         }.onFailure { error ->
             DiagnosticLogger.warn(this, "encryptedIpList.fetchOrDecrypt.failed", error = error)
         }.getOrDefault(emptyList())
+        val exhaustiveCandidates = StartupScanPolicy.exhaustiveEncryptedCandidates(
+            candidateIps = decryptedIps,
+            subscriptionPorts = subscriptionPorts,
+            checkedAt = System.currentTimeMillis(),
+            excludedEndpoint = excludedEndpoint,
+        )
 
         val freshCandidates = mutableListOf<CleanIpResult>()
         if (decryptedIps.isNotEmpty()) {
@@ -656,16 +839,35 @@ class WhiteDnsVpnService : VpnService() {
                 .sortedForConnection()
             val connectableFresh = StartupScanPolicy.excludeEndpoint(rankedFresh, excludedEndpoint)
             if (connectableFresh.isNotEmpty()) {
+                val untriedExhaustive = StartupScanPolicy.untriedFallbackCandidates(
+                    primaryCandidates = connectableFresh,
+                    fallbackCandidates = exhaustiveCandidates,
+                )
                 logScanInfo(
                     "scanner.encryptedTop.quick",
-                    "candidates=${connectableFresh.size} best=${connectableFresh.first().ip}:${connectableFresh.first().port} latencyMs=${connectableFresh.first().latencyMs} lossRate=${connectableFresh.first().lossRate} cacheAfterRuntimeValidation=${!bypassConnectionCache}",
+                    "candidates=${connectableFresh.size} exhaustiveFallback=${untriedExhaustive.size} best=${connectableFresh.first().ip}:${connectableFresh.first().port} latencyMs=${connectableFresh.first().latencyMs} lossRate=${connectableFresh.first().lossRate} cacheAfterRuntimeValidation=${!bypassConnectionCache}",
                 )
-                return connectableFresh
+                return StartupTopIpCandidatePlan(
+                    primaryPhase = "quick",
+                    primaryCandidates = connectableFresh,
+                    exhaustiveCandidates = untriedExhaustive,
+                )
             }
             logScanWarn(
                 "scanner.encryptedTop.quick.empty",
                 "ips=${decryptedIps.size} priority=$priorityPorts fallback=$fallbackPorts",
             )
+            if (exhaustiveCandidates.isNotEmpty()) {
+                logScanInfo(
+                    "scanner.encryptedTop.exhaustive.ready",
+                    "candidates=${exhaustiveCandidates.size} ips=${decryptedIps.size} ports=$connectionPorts",
+                )
+                return StartupTopIpCandidatePlan(
+                    primaryPhase = "quick",
+                    primaryCandidates = emptyList(),
+                    exhaustiveCandidates = exhaustiveCandidates,
+                )
+            }
         }
 
         if (bypassConnectionCache) {
@@ -685,7 +887,11 @@ class WhiteDnsVpnService : VpnService() {
                 "scanner.encryptedTop.cached",
                 "endpoint=${cached.ip}:${cached.port} latencyMs=${cached.latencyMs} lossRate=${cached.lossRate} speedBps=${cached.downloadBytesPerSecond} cacheAfterRuntimeValidation=true",
             )
-            return listOf(cached)
+            return StartupTopIpCandidatePlan(
+                primaryPhase = "cached",
+                primaryCandidates = listOf(cached),
+                exhaustiveCandidates = emptyList(),
+            )
         }
 
         throw IOException("No working encrypted-list IP is available")
@@ -755,16 +961,36 @@ class WhiteDnsVpnService : VpnService() {
         )
     }
 
+    private fun originalEndpointForSelection(
+        snapshot: MihomoSubscriptionSnapshot,
+        selectedCountryCode: String?,
+        activeProxyName: String?,
+        delayMs: Long,
+    ): CleanIpResult {
+        val countryCode = ConnectionLocationPolicy.normalizeCountryCode(selectedCountryCode)
+        val countryProxy = countryCode?.let { code ->
+            snapshot.summary.proxies.firstOrNull { proxy ->
+                ConnectionLocationPolicy.countryFromText(proxy.name, proxy.server)?.code == code
+            }
+        }
+        val proxy = countryProxy ?: activeProxyName
+            ?.let { name -> snapshot.summary.proxies.firstOrNull { proxy -> proxy.name == name } }
+            ?: snapshot.summary.proxies.firstOrNull()
+        return CleanIpResult(
+            ip = proxy?.server ?: MihomoRuntimeDefaults.CONTROLLER_HOST,
+            port = proxy?.port?.takeIf { it > 0 } ?: MihomoRuntimeDefaults.MIXED_PORT,
+            latencyMs = delayMs,
+            lossRate = 0.0,
+            checkedAt = System.currentTimeMillis(),
+        )
+    }
+
     private fun runtimePortForSelection(
         snapshot: MihomoSubscriptionSnapshot,
         selectedCountryCode: String?,
         selection: MihomoGroupSelection?,
         activeProxyName: String?,
     ): Int? {
-        val activeProxy = activeProxyName?.let { name ->
-            snapshot.summary.proxies.firstOrNull { proxy -> proxy.name == name }
-        }
-        if (activeProxy?.port?.takeIf { it > 0 } != null) return activeProxy.port
         val countryCode = ConnectionLocationPolicy.normalizeCountryCode(selectedCountryCode)
         val countryProfile = countryCode?.let { code ->
             snapshot.catalog.profiles.firstOrNull { profile ->
@@ -772,6 +998,10 @@ class WhiteDnsVpnService : VpnService() {
             }
         }
         if (countryProfile?.port?.takeIf { it > 0 } != null) return countryProfile.port
+        val activeProxy = activeProxyName?.let { name ->
+            snapshot.summary.proxies.firstOrNull { proxy -> proxy.name == name }
+        }
+        if (activeProxy?.port?.takeIf { it > 0 } != null) return activeProxy.port
         val selectedProxy = selection?.selectedGroup?.let { selected ->
             snapshot.summary.proxies.firstOrNull { proxy -> proxy.name == selected }
         }
@@ -791,7 +1021,7 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     private fun ensureStartupActive(eventPrefix: String) {
-        if (state == VpnState.Starting) return
+        if (state == VpnState.Starting || state == VpnState.Started) return
         throw CancellationException("$eventPrefix canceled while state=${state.wireName}")
     }
 
@@ -844,7 +1074,7 @@ class WhiteDnsVpnService : VpnService() {
                 resolverProcess = this@WhiteDnsVpnService::resolveProcess,
                 stack = MIHOMO_TUN_STACK,
                 address = MIHOMO_TUN_ADDRESS,
-                dns = MIHOMO_TUN_DNS_HIJACK,
+                dns = MIHOMO_TUN_DNS_SERVER,
             )
         }
         DiagnosticLogger.info(this, "mihomo.core.started", "config=${paths.runtimeConfigYaml.absolutePath}")
@@ -871,22 +1101,28 @@ class WhiteDnsVpnService : VpnService() {
         return result.orEmpty()
     }
 
-    private fun establishTun(splitTunnelPlan: SplitTunnelRuntimePlan): Int {
-        val builder = Builder()
-            .addAddress(MIHOMO_TUN_IPV4_ADDRESS, MIHOMO_TUN_IPV4_PREFIX_LENGTH)
-            .addRoute(MIHOMO_TUN_ROUTE_ANY, 0)
-            .addDnsServer(MIHOMO_TUN_DNS_SERVER)
-            .setMtu(MIHOMO_TUN_MTU)
-            .setSession(getString(R.string.app_name))
-            .setBlocking(false)
+    private suspend fun establishTun(splitTunnelPlan: SplitTunnelRuntimePlan): Int {
+        for (attempt in 1..TUN_ESTABLISH_ATTEMPTS) {
+            val builder = Builder()
+                .addAddress(MIHOMO_TUN_IPV4_ADDRESS, MIHOMO_TUN_IPV4_PREFIX_LENGTH)
+                .addRoute(MIHOMO_TUN_ROUTE_ANY, 0)
+                .addDnsServer(MIHOMO_TUN_DNS_SERVER)
+                .setMtu(MIHOMO_TUN_MTU)
+                .setSession(getString(R.string.app_name))
+                .setBlocking(false)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            builder.setMetered(false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                builder.setMetered(false)
+            }
+
+            applySplitTunnel(builder, splitTunnelPlan)
+            builder.establish()?.detachFd()?.let { return it }
+            if (attempt < TUN_ESTABLISH_ATTEMPTS) {
+                DiagnosticLogger.warn(this, "mihomo.tun.establish.retry", "attempt=$attempt/$TUN_ESTABLISH_ATTEMPTS")
+                delay(TUN_ESTABLISH_RETRY_DELAY_MS)
+            }
         }
-
-        applySplitTunnel(builder, splitTunnelPlan)
-        return builder.establish()?.detachFd()
-            ?: throw IOException("Android rejected the VPN tunnel")
+        throw IOException("Android rejected the VPN tunnel")
     }
 
     private fun applySplitTunnel(
@@ -950,13 +1186,14 @@ class WhiteDnsVpnService : VpnService() {
     private suspend fun waitForController(
         controller: MihomoControllerClient,
         paths: MihomoRuntimePaths,
+        timeoutMs: Long = CONTROLLER_READY_TIMEOUT_MS,
     ) {
         DiagnosticLogger.info(
             this,
             "mihomo.controller.wait.start",
-            "endpoint=${controller.endpoint} timeoutMs=$CONTROLLER_READY_TIMEOUT_MS runtimeConfigBytes=${paths.runtimeConfigYaml.length()} profileBytes=${paths.profileYaml.length()} serviceBytes=${paths.serviceJson.length()} patchBytes=${paths.patchFinalJson.length()}",
+            "endpoint=${controller.endpoint} timeoutMs=$timeoutMs runtimeConfigBytes=${paths.runtimeConfigYaml.length()} profileBytes=${paths.profileYaml.length()} serviceBytes=${paths.serviceJson.length()} patchBytes=${paths.patchFinalJson.length()}",
         )
-        val ready = withTimeoutOrNull(CONTROLLER_READY_TIMEOUT_MS) {
+        val ready = withTimeoutOrNull(timeoutMs) {
             while (isActive) {
                 val ok = withContext(Dispatchers.IO) {
                     runCatching {
@@ -1050,10 +1287,6 @@ class WhiteDnsVpnService : VpnService() {
         selection: MihomoGroupSelection?,
         activeProxyName: String?,
     ): ConnectionProfile {
-        activeProxyName?.let { name ->
-            snapshot.catalog.profiles.firstOrNull { profile -> profile.tag == name }?.let { return it }
-        }
-
         val countryCode = ConnectionLocationPolicy.normalizeCountryCode(selectedCountryCode)
         val countryProfile = countryCode?.let { code ->
             snapshot.catalog.profiles.firstOrNull { profile ->
@@ -1061,6 +1294,10 @@ class WhiteDnsVpnService : VpnService() {
             }
         }
         if (countryProfile != null) return countryProfile
+
+        activeProxyName?.let { name ->
+            snapshot.catalog.profiles.firstOrNull { profile -> profile.tag == name }?.let { return it }
+        }
 
         val tag = selection?.selectedGroup
             ?: MihomoSelectionPolicy.autoGroup(snapshot.summary)?.name
@@ -1086,7 +1323,7 @@ class WhiteDnsVpnService : VpnService() {
         DiagnosticLogger.info(this, "disconnect.start", "state=${state.wireName}")
         startupJob?.cancel(CancellationException("Disconnect requested"))
         subscriptionRefreshJob?.cancel()
-        networkRecoveryJob?.cancel()
+        encryptedIpScanJob?.cancel()
         publishState(VpnState.Stopping)
         stopJob?.cancel()
         stopJob = scope.launch {
@@ -1097,7 +1334,7 @@ class WhiteDnsVpnService : VpnService() {
 
     private suspend fun stopAfterFailure(error: Throwable) {
         subscriptionRefreshJob?.cancel()
-        networkRecoveryJob?.cancel()
+        encryptedIpScanJob?.cancel()
         stopCoreService()
         sessionStartedAtElapsedMs = 0L
         activeProfile = null
@@ -1105,10 +1342,24 @@ class WhiteDnsVpnService : VpnService() {
         activeRuntimePaths = null
         activeEndpoint = null
         activeConnectionCountryFlag = ""
+        activeFrontingIp = ""
         runCatching { networkMonitor.stop() }
         stopForegroundCompat()
         publishState(VpnState.Error(error.message ?: "Unable to start VPN"))
         stopSelf()
+    }
+
+    private fun keepActiveRuntimeAfterStartupFailure(eventPrefix: String, error: Throwable) {
+        DiagnosticLogger.warn(this, "$eventPrefix.failed.keptActive", error = error)
+        publishState(VpnState.Started)
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_connected)))
+        startBackgroundSubscriptionRefresh()
+    }
+
+    private suspend fun stopActiveCoreForReplacement() {
+        stopCoreService()
+        activeRuntimePaths = null
     }
 
     private suspend fun stopCoreService() {
@@ -1157,9 +1408,9 @@ class WhiteDnsVpnService : VpnService() {
         activeRuntimePaths = null
         activeEndpoint = null
         activeConnectionCountryFlag = ""
-        lastNetworkRecoveryAtMs = 0L
-        isNetworkRecoveryActive = false
+        activeFrontingIp = ""
         lastDefaultNetworkKey = null
+        lastDefaultDns = ""
         runCatching { networkMonitor.stop() }
         stopForegroundCompat()
         publishState(VpnState.Stopped)
@@ -1167,33 +1418,24 @@ class WhiteDnsVpnService : VpnService() {
         stopSelf()
     }
 
-    private fun scheduleNetworkChangeRecovery(candidate: DefaultNetworkCandidate?) {
-        val networkKey = candidate.networkRecoveryKey()
-        if (networkKey == lastDefaultNetworkKey) return
+    private fun handleDefaultNetworkChanged(candidate: DefaultNetworkCandidate?) {
+        val networkKey = candidate.defaultNetworkKey()
+        val dns = candidate?.dnsServers.orEmpty().distinct().joinToString(",")
+        if (networkKey == lastDefaultNetworkKey && dns == lastDefaultDns) return
         lastDefaultNetworkKey = networkKey
-        DiagnosticLogger.info(this, "network.recovery.changed", "network=$networkKey state=${state.wireName}")
-        if (state != VpnState.Started) return
-
-        networkRecoveryJob?.cancel()
-        networkRecoveryJob = scope.launch {
-            delay(NetworkChangeRecoveryPolicy.DEFAULT_DEBOUNCE_MS)
-            val nowMs = SystemClock.elapsedRealtime()
-            if (!NetworkChangeRecoveryPolicy.shouldRecover(state, nowMs, lastNetworkRecoveryAtMs, isNetworkRecoveryActive)) {
-                return@launch
+        lastDefaultDns = dns
+        DiagnosticLogger.info(this, "network.default.changed", "network=$networkKey dns=${candidate?.dnsServers?.size ?: 0} state=${state.wireName}")
+        if (dns.isBlank()) return
+        runCatching { Core.updateDNS(dns) }
+            .onFailure { DiagnosticLogger.warn(this, "network.dns.update.failed", "dnsCount=${candidate?.dnsServers?.size ?: 0}", it) }
+            .onSuccess {
+                DiagnosticLogger.info(this, "network.dns.update.ok", "dnsCount=${candidate?.dnsServers?.size ?: 0}")
             }
-            isNetworkRecoveryActive = true
-            lastNetworkRecoveryAtMs = nowMs
-            try {
-                reconnectVpn()
-            } finally {
-                isNetworkRecoveryActive = false
-            }
-        }
     }
 
-    private fun DefaultNetworkCandidate?.networkRecoveryKey(): String {
+    private fun DefaultNetworkCandidate?.defaultNetworkKey(): String {
         if (this == null) return "none"
-        return listOf(name, index.toString(), isValidated.toString(), isWifi.toString(), isCellular.toString())
+        return listOf(name, index.toString(), isWifi.toString(), isCellular.toString(), isEthernet.toString())
             .joinToString("|")
     }
 
@@ -1222,7 +1464,37 @@ class WhiteDnsVpnService : VpnService() {
         }
     }
 
-    private fun publishState(newState: VpnState) {
+    private fun startBackgroundEncryptedIpScan(profiles: List<ConnectionProfile>) {
+        encryptedIpScanJob?.cancel()
+        if (frontingIpPreferenceStore.readFrontingIps().isNotEmpty()) return
+        val ports = StartupScanPolicy.orderedConnectionPorts(profiles.map { it.port })
+        if (ports.isEmpty()) return
+        encryptedIpScanJob = scope.launch(Dispatchers.IO) {
+            while (isActive && state == VpnState.Started) {
+                runCatching {
+                    val candidateIps = encryptedIpListRepository.fetchIps()
+                    if (candidateIps.isEmpty()) return@runCatching 0
+                    scanQuickEncryptedIps(
+                        phase = "background",
+                        candidateIps = candidateIps,
+                        ports = ports,
+                        maxScanDurationMs = BACKGROUND_ENCRYPTED_IP_SCAN_MS,
+                    ).onEach(cleanIpCache::saveResult).size
+                }.onSuccess { count ->
+                    DiagnosticLogger.info(
+                        this@WhiteDnsVpnService,
+                        "scanner.encryptedTop.background.done",
+                        "saved=$count ports=$ports",
+                    )
+                }.onFailure { error ->
+                    DiagnosticLogger.warn(this@WhiteDnsVpnService, "scanner.encryptedTop.background.failed", error = error)
+                }
+                delay(BACKGROUND_ENCRYPTED_IP_SCAN_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun publishState(newState: VpnState, notice: String? = null) {
         state = newState
         val countryFlag = if (newState == VpnState.Started) {
             activeConnectionCountryFlag
@@ -1230,7 +1502,7 @@ class WhiteDnsVpnService : VpnService() {
             ""
         }
         val debugFrontingIp = if (newState == VpnState.Started) {
-            activeEndpoint?.ip.orEmpty()
+            activeFrontingIp
         } else {
             ""
         }
@@ -1247,6 +1519,9 @@ class WhiteDnsVpnService : VpnService() {
             .putExtra(Actions.EXTRA_DEBUG_FRONTING_IP, debugFrontingIp)
         if (newState is VpnState.Error) {
             intent.putExtra(Actions.EXTRA_ERROR, newState.message)
+        }
+        if (!notice.isNullOrBlank()) {
+            intent.putExtra(Actions.EXTRA_NOTICE, notice)
         }
         sendBroadcast(intent)
     }
@@ -1333,14 +1608,19 @@ class WhiteDnsVpnService : VpnService() {
         const val CONTROLLER_LOG_TAIL_CHARS = 4_000
         const val RUNTIME_HEALTH_TIMEOUT_MS = 12_000L
         const val RUNTIME_HEALTH_POLL_INTERVAL_MS = 500L
-        const val BACKGROUND_DELAY_TIMEOUT_MS = 3_000
+        const val FOREGROUND_MIHOMO_DELAY_TIMEOUT_MS = 1_500
+        const val BACKGROUND_MIHOMO_DELAY_TIMEOUT_MS = 3_000
+        const val BACKGROUND_ENCRYPTED_IP_SCAN_MS = 12_000L
+        const val BACKGROUND_ENCRYPTED_IP_SCAN_INTERVAL_MS = 10 * 60 * 1_000L
+        const val TUN_ESTABLISH_ATTEMPTS = 3
+        const val TUN_ESTABLISH_RETRY_DELAY_MS = 250L
+        const val FRONTING_FALLBACK_NOTICE = "None of the Fronting IPs were reachable. Used original connection."
         const val SCAN_DIAGNOSTICS_ENABLED = true
         const val MIHOMO_TUN_STACK = "gvisor"
         const val MIHOMO_TUN_IPV4_ADDRESS = "172.19.0.1"
         const val MIHOMO_TUN_IPV4_PREFIX_LENGTH = 30
         const val MIHOMO_TUN_ADDRESS = "172.19.0.1/30"
         const val MIHOMO_TUN_DNS_SERVER = "172.19.0.2"
-        const val MIHOMO_TUN_DNS_HIJACK = "0.0.0.0"
         const val MIHOMO_TUN_ROUTE_ANY = "0.0.0.0"
         const val MIHOMO_TUN_MTU = 9000
     }

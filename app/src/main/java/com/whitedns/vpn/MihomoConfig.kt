@@ -230,6 +230,33 @@ object MihomoSelectionPolicy {
         return MihomoGroupSelection(selectorGroup = selector.name, selectedGroup = selected.name)
     }
 
+    fun desiredSelections(
+        summary: MihomoConfigSummary,
+        selectedCountryCode: String?,
+    ): List<MihomoGroupSelection> {
+        val main = desiredSelection(summary, selectedCountryCode)
+        val traffic = trafficProxyGroup(summary)
+        val countries = countriesGroup(summary)
+        val country = countryGroup(summary, selectedCountryCode)
+        return listOfNotNull(
+            main,
+            if (traffic != null && countries != null && country != null) {
+                MihomoGroupSelection(traffic.name, countries.name)
+            } else {
+                null
+            },
+            if (countries != null && country != null) {
+                MihomoGroupSelection(countries.name, country.name)
+            } else {
+                null
+            },
+        ).distinct()
+    }
+
+    fun trafficProbeGroup(summary: MihomoConfigSummary): MihomoProxyGroup? {
+        return trafficProxyGroup(summary)
+    }
+
     fun mainSelectorGroup(summary: MihomoConfigSummary): MihomoProxyGroup? {
         return summary.groups.firstOrNull { it.name.contains("Proxy Select", ignoreCase = true) }
             ?: summary.groups.firstOrNull { it.type.equals("select", ignoreCase = true) }
@@ -254,6 +281,14 @@ object MihomoSelectionPolicy {
             .sortedWith(compareByDescending<MihomoProxyGroup> { it.type.equals("url-test", ignoreCase = true) }
                 .thenBy { it.name })
             .firstOrNull()
+    }
+
+    private fun trafficProxyGroup(summary: MihomoConfigSummary): MihomoProxyGroup? {
+        return summary.groups.firstOrNull { it.name.contains("WhiteDNS Proxy", ignoreCase = true) }
+    }
+
+    private fun countriesGroup(summary: MihomoConfigSummary): MihomoProxyGroup? {
+        return summary.groups.firstOrNull { it.name.contains("Countries", ignoreCase = true) }
     }
 
     private fun String.normalized(): String {

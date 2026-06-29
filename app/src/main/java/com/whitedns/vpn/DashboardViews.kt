@@ -35,9 +35,12 @@ data class WhiteDnsPalette(
     val isDark: Boolean,
     val background: Int,
     val surface: Int,
+    val surfaceElevated1: Int,
+    val surfaceElevated2: Int,
     val surfaceVariant: Int,
     val textPrimary: Int,
     val textSecondary: Int,
+    val textTertiary: Int,
     val neutral: Int,
     val outline: Int,
     val teal: Int,
@@ -51,21 +54,30 @@ data class WhiteDnsPalette(
     val redTrack: Int,
     val idleRing: Int,
     val majorTick: Int,
+    val tealGradientStart: Int,
+    val tealGradientEnd: Int,
+    val amberGradientStart: Int,
+    val amberGradientEnd: Int,
+    val redGradientStart: Int,
+    val redGradientEnd: Int,
 )
 
 object WhiteDnsDesignTokens {
     private val Light = WhiteDnsPalette(
         isDark = false,
-        background = 0xFFFFFFFF.toInt(),
-        surface = 0xFFFFFFFF.toInt(),
-        surfaceVariant = 0xFFF7F9FB.toInt(),
-        textPrimary = 0xFF080E1D.toInt(),
-        textSecondary = 0xFF9AA8B5.toInt(),
-        neutral = 0xFF54606E.toInt(),
-        outline = 0xFFDEE5EC.toInt(),
-        teal = 0xFF00B867.toInt(),
-        amber = 0xFFFF9500.toInt(),
-        red = 0xFFFF3B30.toInt(),
+        background = 0xFFF8FAFB.toInt(),           // Softer off-white
+        surface = 0xFFFFFFFF.toInt(),              // Pure white for cards
+        surfaceElevated1 = 0xFFFFFFFF.toInt(),     // White cards
+        surfaceElevated2 = 0xFFF7F9FB.toInt(),     // Subtle tinted cards
+        surfaceVariant = 0xFFF0F4F8.toInt(),       // Stronger variant
+        textPrimary = 0xFF0B1117.toInt(),          // Darker, richer black
+        textSecondary = 0xFF64748B.toInt(),        // Modern slate gray
+        textTertiary = 0xFF94A3B8.toInt(),         // Lighter tertiary
+        neutral = 0xFF475569.toInt(),              // Richer neutral
+        outline = 0xFFE2E8F0.toInt(),              // Softer outline
+        teal = 0xFF06D6A0.toInt(),                 // Brighter, more modern teal
+        amber = 0xFFFF9F1C.toInt(),                // Warmer amber
+        red = 0xFFEF476F.toInt(),                  // Modern red
         onAccent = 0xFFFFFFFF.toInt(),
         onProminent = 0xFFFFFFFF.toInt(),
         brandPillBackground = 0xFFE4F6EE.toInt(),
@@ -74,28 +86,43 @@ object WhiteDnsDesignTokens {
         redTrack = 0xFFFFD6D3.toInt(),
         idleRing = 0xFFC0CBD6.toInt(),
         majorTick = 0xFFA4BCC9.toInt(),
+        tealGradientStart = 0xFF06D6A0.toInt(),
+        tealGradientEnd = 0xFF00B4D8.toInt(),
+        amberGradientStart = 0xFFFFBE0B.toInt(),
+        amberGradientEnd = 0xFFFF9F1C.toInt(),
+        redGradientStart = 0xFFFF006E.toInt(),
+        redGradientEnd = 0xFFEF476F.toInt(),
     )
 
     private val Dark = WhiteDnsPalette(
         isDark = true,
-        background = 0xFF0B1117.toInt(),
-        surface = 0xFF121A22.toInt(),
-        surfaceVariant = 0xFF182330.toInt(),
-        textPrimary = 0xFFF4F8FA.toInt(),
-        textSecondary = 0xFF98A6B3.toInt(),
-        neutral = 0xFF98A6B3.toInt(),
-        outline = 0xFF2A3746.toInt(),
-        teal = 0xFF00B867.toInt(),
-        amber = 0xFFFFB84D.toInt(),
-        red = 0xFFFF6B61.toInt(),
+        background = 0xFF000000.toInt(),           // Pure black for OLED
+        surface = 0xFF0F1419.toInt(),              // Very dark blue-gray for cards
+        surfaceElevated1 = 0xFF171D25.toInt(),     // Slightly elevated cards
+        surfaceElevated2 = 0xFF1E252D.toInt(),     // More elevated cards
+        surfaceVariant = 0xFF1A2128.toInt(),       // Dark variant
+        textPrimary = 0xFFF1F5F9.toInt(),          // Bright white
+        textSecondary = 0xFF94A3B8.toInt(),        // Consistent slate
+        textTertiary = 0xFF64748B.toInt(),         // Darker tertiary
+        neutral = 0xFF94A3B8.toInt(),              // Lighter neutral
+        outline = 0xFF334155.toInt(),              // Visible in dark mode
+        teal = 0xFF34D399.toInt(),                 // Lighter teal for dark bg (emerald)
+        amber = 0xFFFBBF24.toInt(),                // Lighter amber
+        red = 0xFFF87171.toInt(),                  // Lighter red
         onAccent = 0xFFFFFFFF.toInt(),
-        onProminent = 0xFF0B1117.toInt(),
+        onProminent = 0xFF000000.toInt(),          // Update to match pure black background
         brandPillBackground = 0xFF123625.toInt(),
         brandPillOutline = 0xFF1E6847.toInt(),
         amberTrack = 0xFF4A351E.toInt(),
         redTrack = 0xFF4B2529.toInt(),
         idleRing = 0xFF2A3746.toInt(),
         majorTick = 0xFF3A4A5C.toInt(),
+        tealGradientStart = 0xFF34D399.toInt(),
+        tealGradientEnd = 0xFF10B981.toInt(),
+        amberGradientStart = 0xFFFCD34D.toInt(),
+        amberGradientEnd = 0xFFFBBF24.toInt(),
+        redGradientStart = 0xFFFCA5A5.toInt(),
+        redGradientEnd = 0xFFF87171.toInt(),
     )
 
     fun palette(isNight: Boolean): WhiteDnsPalette = if (isNight) Dark else Light
@@ -285,7 +312,7 @@ class SignalArcView(context: Context) : View(context) {
             -> "IDLE"
         }
         centerTextPaint.color = accent
-        centerTextPaint.textSize = sp(if (label == "SCAN") 11f else 13f)
+        centerTextPaint.textSize = sp(if (label == "SCAN") 12f else 14f)
         val metrics = centerTextPaint.fontMetrics
         canvas.drawText(label, cx, cy - ((metrics.ascent + metrics.descent) / 2f), centerTextPaint)
     }
@@ -334,7 +361,7 @@ class SignalArcView(context: Context) : View(context) {
 class DashboardDataRowView(context: Context) : LinearLayout(context) {
     private val palette = WhiteDnsDesignTokens.forContext(context)
     private val labelText = TextView(context).apply {
-        textSize = 12f
+        textSize = 13f
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         setTextColor(palette.textSecondary)
         letterSpacing = 0.04f
@@ -343,7 +370,7 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         ellipsize = TextUtils.TruncateAt.END
     }
     private val valueText = TextView(context).apply {
-        textSize = 15f
+        textSize = 16f
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         setTextColor(palette.textPrimary)
         includeFontPadding = false
@@ -352,8 +379,8 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         gravity = Gravity.END
     }
     private val subText = TextView(context).apply {
-        textSize = 11f
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        textSize = 12f
+        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
         setTextColor(palette.textSecondary)
         includeFontPadding = false
         isSingleLine = true
@@ -364,7 +391,7 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         orientation = HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         minimumHeight = dp(68)
-        setPadding(dp(16), dp(16), dp(16), dp(16))
+        setPadding(dp(20), dp(20), dp(20), dp(20))
         background = borderDrawable()
 
         addView(
@@ -431,7 +458,7 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
     private fun borderDrawable(): GradientDrawable {
         return GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(10).toFloat()
+            cornerRadius = dp(16).toFloat()
             setColor(palette.surfaceVariant)
             setStroke(dp(1), palette.outline)
         }
