@@ -51,6 +51,20 @@ class StartupScanPolicyTest {
     }
 
     @Test
+    fun frontingCandidatesUseExplicitPortsAndSubscriptionFallback() {
+        val candidates = StartupScanPolicy.frontingCandidates(
+            frontingIps = listOf("162.159.192.1:2053", "162.159.192.2"),
+            subscriptionPorts = listOf(8443, 443),
+            checkedAt = 2,
+        )
+
+        assertEquals(
+            listOf("162.159.192.1:2053", "162.159.192.2:443"),
+            candidates.map { "${it.ip}:${it.port}" },
+        )
+    }
+
+    @Test
     fun exhaustiveEncryptedCandidatesCoverEveryIpPortPair() {
         val candidates = StartupScanPolicy.exhaustiveEncryptedCandidates(
             candidateIps = listOf("104.16.0.1", "", "104.16.0.2"),

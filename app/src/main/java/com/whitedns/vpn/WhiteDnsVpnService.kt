@@ -43,6 +43,8 @@ class WhiteDnsVpnService : VpnService() {
     private lateinit var encryptedIpListRepository: EncryptedIpListRepository
     private lateinit var frontingIpPreferenceStore: FrontingIpPreferenceStore
     private lateinit var dpiBypassPreferenceStore: DpiBypassPreferenceStore
+    private lateinit var dnsPrivacyPreferenceStore: DnsPrivacyPreferenceStore
+    private lateinit var tlsIntegrityPreferenceStore: TlsIntegrityPreferenceStore
 
     private var startupJob: Job? = null
     private var stopJob: Job? = null
@@ -102,6 +104,8 @@ class WhiteDnsVpnService : VpnService() {
         encryptedIpListRepository = EncryptedIpListRepository(this)
         frontingIpPreferenceStore = FrontingIpPreferenceStore(this)
         dpiBypassPreferenceStore = DpiBypassPreferenceStore(this)
+        dnsPrivacyPreferenceStore = DnsPrivacyPreferenceStore(this)
+        tlsIntegrityPreferenceStore = TlsIntegrityPreferenceStore(this)
         networkMonitor.setDefaultNetworkChangeListener { candidate ->
             handleDefaultNetworkChanged(candidate)
         }
@@ -267,7 +271,7 @@ class WhiteDnsVpnService : VpnService() {
             ).also { result ->
                 startupNotice = result.second
             }.first
-        } else if (bypassConnectionCache) {
+        } else if (bypassConnectionCache || tlsIntegrityPreferenceStore.isEnabled()) {
             connectWithTopIpCandidates(
                 eventPrefix = eventPrefix,
                 snapshot = snapshot,
@@ -457,16 +461,25 @@ class WhiteDnsVpnService : VpnService() {
         if (candidates.isEmpty()) {
             throw IOException("No $phase top-IP candidates are available")
         }
+        val quarantineScope = ProfileFingerprint.sha256(snapshot.rawConfig)
+        val availableCandidates = if (tlsIntegrityPreferenceStore.isEnabled()) {
+            candidates.filterNot { scanStateStore.isTlsEndpointQuarantined(quarantineScope, it) }
+        } else {
+            candidates
+        }
+        if (availableCandidates.isEmpty()) {
+            throw IOException("All $phase top-IP candidates are quarantined by the TLS integrity check")
+        }
 
         var lastFailure: Throwable? = null
-        for ((index, endpoint) in candidates.withIndex()) {
+        for ((index, endpoint) in availableCandidates.withIndex()) {
             ensureStartupActive(eventPrefix)
             val attempt = index + 1
             try {
                 DiagnosticLogger.info(
                     this,
                     "startup.topIp.try",
-                    "phase=$phase attempt=$attempt/${candidates.size} endpoint=${endpoint.ip}:${endpoint.port} latencyMs=${endpoint.latencyMs} lossRate=${endpoint.lossRate}",
+                    "phase=$phase attempt=$attempt/${availableCandidates.size} endpoint=${endpoint.ip}:${endpoint.port} latencyMs=${endpoint.latencyMs} lossRate=${endpoint.lossRate}",
                 )
                 if (index > 0) {
                     stopCoreService()
@@ -480,16 +493,25 @@ class WhiteDnsVpnService : VpnService() {
                     DiagnosticLogger.info(
                         this,
                         "startup.topIp.connected",
-                        "phase=$phase attempt=$attempt/${candidates.size} endpoint=${startedRuntime.endpoint.ip}:${startedRuntime.endpoint.port}",
+                        "phase=$phase attempt=$attempt/${availableCandidates.size} endpoint=${startedRuntime.endpoint.ip}:${startedRuntime.endpoint.port}",
                     )
                 }
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
                 lastFailure = error
+                if (error is TlsIntegrityException) {
+                    scanStateStore.quarantineTlsEndpoint(quarantineScope, endpoint)
+                    DiagnosticLogger.warn(
+                        this,
+                        "tlsIntegrity.quarantined",
+                        "phase=$phase endpoint=${endpoint.ip}:${endpoint.port}",
+                        error,
+                    )
+                }
                 DiagnosticLogger.warn(
                     this,
                     "startup.topIp.rejected",
-                    "phase=$phase attempt=$attempt/${candidates.size} endpoint=${endpoint.ip}:${endpoint.port}",
+                    "phase=$phase attempt=$attempt/${availableCandidates.size} endpoint=${endpoint.ip}:${endpoint.port}",
                     error,
                 )
                 stopCoreService()
@@ -505,12 +527,58 @@ class WhiteDnsVpnService : VpnService() {
         topEndpoint: CleanIpResult?,
         validateConnectivity: Boolean = true,
     ): StartedMihomoRuntime {
+        val dpiBypassEnabled = dpiBypassPreferenceStore.isEnabled()
+        return try {
+            startMihomoRuntimeAttemptOnce(
+                snapshot = snapshot,
+                splitTunnelPlan = splitTunnelPlan,
+                selectedCountryCode = selectedCountryCode,
+                topEndpoint = topEndpoint,
+                validateConnectivity = validateConnectivity,
+                dpiBypassEnabled = dpiBypassEnabled,
+            )
+        } catch (error: Throwable) {
+            if (!dpiBypassEnabled || error is CancellationException) throw error
+            DiagnosticLogger.warn(
+                this,
+                "dpiBypass.fallback.direct",
+                "endpoint=${topEndpoint?.let { "${it.ip}:${it.port}" } ?: "original"}",
+                error,
+            )
+            stopActiveCoreForReplacement()
+            startMihomoRuntimeAttemptOnce(
+                snapshot = snapshot,
+                splitTunnelPlan = splitTunnelPlan,
+                selectedCountryCode = selectedCountryCode,
+                topEndpoint = topEndpoint,
+                validateConnectivity = validateConnectivity,
+                dpiBypassEnabled = false,
+            )
+        }
+    }
+
+    private suspend fun startMihomoRuntimeAttemptOnce(
+        snapshot: MihomoSubscriptionSnapshot,
+        splitTunnelPlan: SplitTunnelRuntimePlan,
+        selectedCountryCode: String?,
+        topEndpoint: CleanIpResult?,
+        validateConnectivity: Boolean,
+        dpiBypassEnabled: Boolean,
+    ): StartedMihomoRuntime {
         val serverOverrideIp = topEndpoint?.ip
+        val serverOverridePort = topEndpoint?.let { endpoint ->
+            FrontingIpPolicy.explicitPortFor(
+                frontingIpPreferenceStore.readFrontingIps(),
+                endpoint.ip,
+                endpoint.port,
+            )
+        }
         val frontedYaml = MihomoFrontingPatcher.patchProxyServers(
             rawYaml = snapshot.rawConfig,
             serverOverrideIp = serverOverrideIp,
+            serverOverridePort = serverOverridePort,
         )
-        val dpiBypassEnabled = dpiBypassPreferenceStore.isEnabled()
+        val dnsPrivacyMode = dnsPrivacyPreferenceStore.readMode()
         if (state == VpnState.Starting && activeRuntimePaths != null) {
             stopActiveCoreForReplacement()
         }
@@ -523,16 +591,19 @@ class WhiteDnsVpnService : VpnService() {
         val paths = MihomoRuntimeConfigBuilder(this).write(
             rawYaml = runtimeYaml,
             splitTunnelPlan = splitTunnelPlan,
+            dnsPrivacyMode = dnsPrivacyMode,
+            dohUrl = dnsPrivacyPreferenceStore.readDohUrl(),
+            dotEndpoint = dnsPrivacyPreferenceStore.readDotEndpoint(),
         )
         DiagnosticLogger.info(
             this,
             "mihomo.runtime.files",
-            "config=${paths.runtimeConfigYaml.absolutePath} service=${paths.serviceJson.absolutePath} patch=${paths.patchFinalJson.absolutePath} controller=${MihomoRuntimeDefaults.CONTROLLER_HOST}:${paths.controlPort} serverOverride=${serverOverrideIp.orEmpty()}",
+            "config=${paths.runtimeConfigYaml.absolutePath} service=${paths.serviceJson.absolutePath} patch=${paths.patchFinalJson.absolutePath} controller=${MihomoRuntimeDefaults.CONTROLLER_HOST}:${paths.controlPort} serverOverride=${serverOverrideIp.orEmpty()} portOverride=${serverOverridePort ?: 0}",
         )
         DiagnosticLogger.info(
             this,
             "mihomo.startup.flow",
-            "frontingScanner=${serverOverrideIp != null} dpiBypass=$dpiBypassEnabled dpiBypassPort=${dpiBypassPort ?: 0} randomController=true encryptedSubscription=true profiles=${snapshot.summary.proxies.size} groups=${snapshot.summary.groups.size}",
+            "frontingScanner=${serverOverrideIp != null} dpiBypass=$dpiBypassEnabled dpiBypassPort=${dpiBypassPort ?: 0} dnsPrivacy=${dnsPrivacyMode.wireName} tlsIntegrity=${tlsIntegrityPreferenceStore.isEnabled()} randomController=true encryptedSubscription=true profiles=${snapshot.summary.proxies.size} groups=${snapshot.summary.groups.size}",
         )
 
         startCoreServiceAndWait(paths, splitTunnelPlan, dpiBypassPort)
@@ -601,6 +672,7 @@ class WhiteDnsVpnService : VpnService() {
         } else {
             DiagnosticLogger.info(this, "mihomo.delay.deferred", "name=$delayProbeName")
         }
+        verifyTlsIntegrity()
         DiagnosticLogger.info(
             this,
             "startup.topIp.validated",
@@ -645,7 +717,11 @@ class WhiteDnsVpnService : VpnService() {
             ?.flag
             ?: startedRuntime.profile.let(ConnectionLocationPolicy::countryForProfile)?.flag.orEmpty()
         val configuredFrontingIps = frontingIpPreferenceStore.readFrontingIps()
-        activeFrontingIp = startedRuntime.endpoint.ip.takeIf { it in configuredFrontingIps }.orEmpty()
+        activeFrontingIp = FrontingIpPolicy.matchingValue(
+            configuredFrontingIps,
+            startedRuntime.endpoint.ip,
+            startedRuntime.endpoint.port,
+        ).orEmpty()
         scanStateStore.saveLastSelectedProfile(
             SelectedConnectionProfile(
                 profile = startedRuntime.profile,
@@ -653,7 +729,14 @@ class WhiteDnsVpnService : VpnService() {
                 selectedAt = System.currentTimeMillis(),
             ),
         )
-        if (startedRuntime.cacheEndpoint && startedRuntime.endpoint.ip !in configuredFrontingIps) {
+        if (
+            startedRuntime.cacheEndpoint &&
+            FrontingIpPolicy.matchingValue(
+                configuredFrontingIps,
+                startedRuntime.endpoint.ip,
+                startedRuntime.endpoint.port,
+            ) == null
+        ) {
             cleanIpCache.saveResult(startedRuntime.endpoint)
             scanStateStore.saveLastEndpoint(startedRuntime.endpoint)
         }
@@ -694,7 +777,14 @@ class WhiteDnsVpnService : VpnService() {
             scanStateStore.saveLastSelectedProfile(
                 SelectedConnectionProfile(startedRuntime.profile, delayMs.toInt(), System.currentTimeMillis()),
             )
-            if (startedRuntime.cacheEndpoint && endpoint.ip !in frontingIpPreferenceStore.readFrontingIps()) {
+            if (
+                startedRuntime.cacheEndpoint &&
+                FrontingIpPolicy.matchingValue(
+                    frontingIpPreferenceStore.readFrontingIps(),
+                    endpoint.ip,
+                    endpoint.port,
+                ) == null
+            ) {
                 cleanIpCache.saveResult(endpoint)
                 scanStateStore.saveLastEndpoint(endpoint)
             }
@@ -1104,10 +1194,25 @@ class WhiteDnsVpnService : VpnService() {
             throw IOException("ByeByeDPI proxy did not start on ${DpiBypassDefaults.PROXY_HOST}:$port")
         }
 
+        val healthStatus = withContext(Dispatchers.IO) {
+            runCatching {
+                MihomoRuntimeHealth.httpStatusThroughSocksProxy(
+                    port = port,
+                    timeoutMs = DPI_BYPASS_HEALTH_TIMEOUT_MS,
+                )
+            }.getOrElse { error ->
+                DiagnosticLogger.warn(this@WhiteDnsVpnService, "dpiBypass.proxy.health.failed", "port=$port", error)
+                -1
+            }
+        }
+        if (healthStatus != 204 && healthStatus !in 200..399) {
+            throw IOException("ByeByeDPI proxy did not pass forwarding health check on ${DpiBypassDefaults.PROXY_HOST}:$port")
+        }
+
         DiagnosticLogger.info(
             this,
             "dpiBypass.proxy.started",
-            "endpoint=${DpiBypassDefaults.PROXY_HOST}:$port",
+            "endpoint=${DpiBypassDefaults.PROXY_HOST}:$port health=$healthStatus",
         )
         return port
     }
@@ -1360,6 +1465,60 @@ class WhiteDnsVpnService : VpnService() {
         }
             ?: throw IOException("Local Mihomo proxy did not pass health check at 127.0.0.1:2080")
         DiagnosticLogger.info(this, "mihomo.proxy.health.ok", "code=$proxyCode")
+    }
+
+    private suspend fun verifyTlsIntegrity() {
+        if (!tlsIntegrityPreferenceStore.isEnabled()) return
+        val completed = withTimeoutOrNull(TlsIntegrityPolicy.TOTAL_TIMEOUT_MS) {
+            var lastFailure: Throwable? = null
+            for (url in TlsIntegrityPolicy.TEST_URLS) {
+                try {
+                    val code = withContext(Dispatchers.IO) {
+                        MihomoRuntimeHealth.httpStatusThroughMixedProxy(
+                            url = url,
+                            timeoutMs = TlsIntegrityPolicy.PROBE_TIMEOUT_MS,
+                        )
+                    }
+                    DiagnosticLogger.info(
+                        this@WhiteDnsVpnService,
+                        "tlsIntegrity.ok",
+                        "url=$url code=$code",
+                    )
+                    return@withTimeoutOrNull
+                } catch (error: Throwable) {
+                    if (error is CancellationException) throw error
+                    if (TlsIntegrityPolicy.isCertificateFailure(error)) {
+                        DiagnosticLogger.warn(
+                            this@WhiteDnsVpnService,
+                            "tlsIntegrity.failed",
+                            "url=$url",
+                            error,
+                        )
+                        throw TlsIntegrityException(error)
+                    }
+                    lastFailure = error
+                    DiagnosticLogger.warn(
+                        this@WhiteDnsVpnService,
+                        "tlsIntegrity.probe.unreachable",
+                        "url=$url",
+                        error,
+                    )
+                }
+            }
+            DiagnosticLogger.warn(
+                this@WhiteDnsVpnService,
+                "tlsIntegrity.inconclusive",
+                "all probes unreachable; allowing connection",
+                lastFailure,
+            )
+        }
+        if (completed == null) {
+            DiagnosticLogger.warn(
+                this,
+                "tlsIntegrity.inconclusive",
+                "probe deadline reached; allowing connection",
+            )
+        }
     }
 
     private suspend fun waitForHealthyStatus(
@@ -1709,6 +1868,7 @@ class WhiteDnsVpnService : VpnService() {
         const val CORE_SETUP_TIMEOUT_MS = 15_000L
         const val CORE_ACTION_TIMEOUT_MS = 3_000L
         const val DPI_BYPASS_START_TIMEOUT_MS = 3_000L
+        const val DPI_BYPASS_HEALTH_TIMEOUT_MS = 5_000
         const val DPI_BYPASS_STOP_TIMEOUT_MS = 2_000L
         const val DPI_BYPASS_PORT_POLL_INTERVAL_MS = 50L
         const val CONTROLLER_READY_TIMEOUT_MS = 12_000L

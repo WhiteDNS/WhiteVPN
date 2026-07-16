@@ -11,7 +11,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
-import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.TrafficStats
@@ -42,9 +41,14 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
+import com.google.android.material.materialswitch.MaterialSwitch
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -63,6 +67,8 @@ class MainActivity : Activity() {
     private lateinit var splitTunnelPreferenceStore: SplitTunnelPreferenceStore
     private lateinit var frontingIpPreferenceStore: FrontingIpPreferenceStore
     private lateinit var dpiBypassPreferenceStore: DpiBypassPreferenceStore
+    private lateinit var dnsPrivacyPreferenceStore: DnsPrivacyPreferenceStore
+    private lateinit var tlsIntegrityPreferenceStore: TlsIntegrityPreferenceStore
     private lateinit var installedAppRepository: InstalledAppRepository
     private var privacyPolicyDialog: AlertDialog? = null
     private var sessionStartedAtElapsedMs: Long = 0L
@@ -77,9 +83,17 @@ class MainActivity : Activity() {
     private lateinit var splitTunnelRow: DashboardDataRowView
     private lateinit var advancedBody: LinearLayout
     private lateinit var advancedToggleText: TextView
-    private lateinit var dpiBypassCheckbox: CheckBox
+    private lateinit var dpiBypassCheckbox: MaterialSwitch
+    private lateinit var tlsIntegrityCheckbox: MaterialSwitch
+    private lateinit var dnsPrivacyRow: LinearLayout
+    private lateinit var dnsPrivacyValueText: TextView
+    private lateinit var dnsPrivacyDetailText: TextView
+    private lateinit var dnsPrivacyEndpointInput: EditText
+    private lateinit var dnsPrivacyEndpointLayout: TextInputLayout
+    private lateinit var dnsPrivacyErrorText: TextView
     private lateinit var frontingIpChipGroup: ChipGroup
     private lateinit var frontingIpInput: EditText
+    private lateinit var frontingIpInputLayout: TextInputLayout
     private lateinit var frontingIpErrorText: TextView
     private lateinit var connectActionButton: MaterialButton
     private lateinit var refreshActionButton: MaterialButton
@@ -88,6 +102,7 @@ class MainActivity : Activity() {
     private var advancedExpanded: Boolean = false
     private var frontingIps: List<String> = emptyList()
     private var frontingIpInputUpdating: Boolean = false
+    private var dnsPrivacyInputUpdating: Boolean = false
     private var lastTransferRxBytes: Long = TrafficStats.UNSUPPORTED.toLong()
     private var lastTransferTxBytes: Long = TrafficStats.UNSUPPORTED.toLong()
     private var lastTransferSampleElapsedMs: Long = 0L
@@ -151,6 +166,8 @@ class MainActivity : Activity() {
         splitTunnelPreferenceStore = SplitTunnelPreferenceStore(this)
         frontingIpPreferenceStore = FrontingIpPreferenceStore(this)
         dpiBypassPreferenceStore = DpiBypassPreferenceStore(this)
+        dnsPrivacyPreferenceStore = DnsPrivacyPreferenceStore(this)
+        tlsIntegrityPreferenceStore = TlsIntegrityPreferenceStore(this)
         installedAppRepository = InstalledAppRepository(this)
         DiagnosticLogger.info(this, "activity.onCreate")
         configureSystemBars()
@@ -244,6 +261,18 @@ class MainActivity : Activity() {
             isFillViewport = true
             setBackgroundColor(BACKGROUND)
             clipToPadding = false
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(scrollView) { view, insets ->
+            val bottomInset = insets.getInsets(
+                WindowInsetsCompat.Type.ime() or WindowInsetsCompat.Type.navigationBars(),
+            ).bottom
+            view.setPadding(view.paddingLeft, view.paddingTop, view.paddingRight, bottomInset)
+            view.post {
+                view.findFocus()?.let { focusedView ->
+                    scrollFieldIntoView(scrollView, focusedView, delayMs = 0L)
+                }
+            }
+            insets
         }
         val viewport = FrameLayout(this).apply {
             setPadding(0, 0, 0, dp(28))
@@ -416,7 +445,7 @@ class MainActivity : Activity() {
                 },
             )
         }
-        val advancedSection = buildAdvancedSection()
+        val advancedSection = buildAdvancedSection(scrollView)
 
         connectActionButton = MaterialButton(this).apply {
             textSize = 16f
@@ -541,12 +570,12 @@ class MainActivity : Activity() {
         return scrollView
     }
 
-    private fun buildAdvancedSection(): View {
+    private fun buildAdvancedSection(scrollView: ScrollView): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(10).toFloat()
+                cornerRadius = dp(18).toFloat()
                 setColor(SURFACE_VARIANT)
                 setStroke(dp(1), OUTLINE)
             }
@@ -555,7 +584,7 @@ class MainActivity : Activity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(16))
+            setPadding(dp(20), dp(18), dp(20), dp(18))
             isClickable = true
             isFocusable = true
             setOnClickListener {
@@ -563,23 +592,43 @@ class MainActivity : Activity() {
                 renderAdvancedSection()
             }
         }
+        val headerText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = "Advanced"
+                    textSize = 15f
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(TEXT_PRIMARY)
+                    includeFontPadding = false
+                },
+            )
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = "Connection and privacy controls"
+                    textSize = 11f
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+                    setTextColor(TEXT_SECONDARY)
+                    includeFontPadding = false
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    topMargin = dp(4)
+                },
+            )
+        }
         header.addView(
-            TextView(this).apply {
-                text = "ADVANCED"
-                textSize = 12f
-                letterSpacing = 0.04f
-                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(TEXT_SECONDARY)
-                includeFontPadding = false
-            },
+            headerText,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
         advancedToggleText = TextView(this).apply {
-            textSize = 11f
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextColor(TEXT_SECONDARY)
-            includeFontPadding = false
-            gravity = Gravity.END
+                textSize = 11f
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextColor(TEAL)
+                includeFontPadding = false
+                gravity = Gravity.END
         }
         header.addView(
             advancedToggleText,
@@ -591,36 +640,64 @@ class MainActivity : Activity() {
 
         advancedBody = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), 0, dp(16), dp(16))
+            setPadding(dp(16), dp(2), dp(16), dp(20))
         }
-        dpiBypassCheckbox = CheckBox(this).apply {
-            text = "ByeByeDPI"
-            textSize = 13f
-            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextColor(TEXT_PRIMARY)
-            buttonTintList = ColorStateList.valueOf(TEAL)
+        advancedBody.addView(advancedSectionLabel("Connection safety"))
+        val safetyPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = advancedPanelBackground()
+        }
+        dpiBypassCheckbox = MaterialSwitch(this).apply {
             isChecked = dpiBypassPreferenceStore.isEnabled()
+            contentDescription = "ByeByeDPI"
             setOnClickListener { saveDpiBypassEnabled(isChecked) }
         }
-        advancedBody.addView(
-            dpiBypassCheckbox,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+        safetyPanel.addView(
+            advancedToggleRow(
+                title = "ByeByeDPI",
+                detail = "Reshape traffic to bypass deep packet inspection",
+                toggle = dpiBypassCheckbox,
+            ),
+        )
+        safetyPanel.addView(advancedDivider())
+        tlsIntegrityCheckbox = MaterialSwitch(this).apply {
+            isChecked = tlsIntegrityPreferenceStore.isEnabled()
+            contentDescription = "TLS integrity check"
+            setOnClickListener { saveTlsIntegrityEnabled(isChecked) }
+        }
+        safetyPanel.addView(
+            advancedToggleRow(
+                title = "TLS integrity",
+                detail = "Test secure sites and quarantine unsafe routes",
+                toggle = tlsIntegrityCheckbox,
             ),
         )
         advancedBody.addView(
-            TextView(this).apply {
-                text = "Fronting IP"
-                textSize = 13f
-                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(TEXT_PRIMARY)
-                includeFontPadding = false
-            },
+            safetyPanel,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
+            ).apply {
+                topMargin = dp(10)
+            },
+        )
+        advancedBody.addView(
+            advancedSectionLabel("Fronting"),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dp(22)
+            },
+        )
+        advancedBody.addView(
+            advancedSectionDetail("Override the proxy destination with IP[:port] entries."),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dp(5)
+            },
         )
         frontingIps = frontingIpPreferenceStore.readFrontingIps()
         frontingIpChipGroup = ChipGroup(this).apply {
@@ -638,11 +715,10 @@ class MainActivity : Activity() {
             },
         )
         renderFrontingIpChips()
-        frontingIpInput = EditText(this).apply {
-            hint = frontingIpInputHint()
+        frontingIpInput = TextInputEditText(this).apply {
             setSingleLine(true)
             textSize = 14f
-            inputType = InputType.TYPE_CLASS_PHONE
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             imeOptions = EditorInfo.IME_ACTION_DONE
             setTextColor(TEXT_PRIMARY)
             setHintTextColor(TEXT_SECONDARY)
@@ -654,10 +730,7 @@ class MainActivity : Activity() {
             }
             setOnFocusChangeListener { _, hasFocus ->
                 if (hasFocus) {
-                    postDelayed(
-                        { requestRectangleOnScreen(Rect(0, 0, width, height + dp(96)), false) },
-                        KEYBOARD_SCROLL_DELAY_MS,
-                    )
+                    scrollFieldIntoView(scrollView, frontingIpInputLayout)
                 } else {
                     commitFrontingIpInput(reconnectIfChanged = true)
                 }
@@ -680,13 +753,27 @@ class MainActivity : Activity() {
                 }
             })
         }
+        frontingIpInputLayout = TextInputLayout(this).apply {
+            hint = "Fronting endpoints"
+            placeholderText = "104.16.0.1:443"
+            helperText = frontingIpInputHint()
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            boxBackgroundColor = SURFACE
+            boxStrokeColor = TEAL
+            boxStrokeWidth = dp(1)
+            boxStrokeWidthFocused = dp(2)
+            defaultHintTextColor = ColorStateList.valueOf(TEXT_SECONDARY)
+            setHelperTextColor(ColorStateList.valueOf(TEXT_SECONDARY))
+            setBoxCornerRadii(dp(14).toFloat(), dp(14).toFloat(), dp(14).toFloat(), dp(14).toFloat())
+            addView(frontingIpInput)
+        }
         advancedBody.addView(
-            frontingIpInput,
+            frontingIpInputLayout,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply {
-                topMargin = dp(8)
+                topMargin = dp(10)
             },
         )
         frontingIpErrorText = TextView(this).apply {
@@ -697,6 +784,143 @@ class MainActivity : Activity() {
         }
         advancedBody.addView(
             frontingIpErrorText,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        advancedBody.addView(
+            advancedSectionLabel("DNS privacy"),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dp(22)
+            },
+        )
+        dnsPrivacyDetailText = TextView(this).apply {
+            textSize = 11f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+        }
+        val dnsText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = "Encrypted DNS"
+                    textSize = 14f
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(TEXT_PRIMARY)
+                    includeFontPadding = false
+                },
+            )
+            addView(
+                dnsPrivacyDetailText,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    topMargin = dp(5)
+                },
+            )
+        }
+        dnsPrivacyValueText = TextView(this).apply {
+            textSize = 13f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextColor(TEAL)
+            includeFontPadding = false
+            gravity = Gravity.END
+        }
+        dnsPrivacyRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            background = advancedPanelBackground()
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showDnsPrivacySelector() }
+            addView(
+                dnsText,
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            addView(
+                dnsPrivacyValueText,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        advancedBody.addView(
+            dnsPrivacyRow,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dp(10)
+            },
+        )
+        dnsPrivacyEndpointInput = TextInputEditText(this).apply {
+            setSingleLine(true)
+            textSize = 14f
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            setTextColor(TEXT_PRIMARY)
+            setHintTextColor(TEXT_SECONDARY)
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId != EditorInfo.IME_ACTION_DONE) return@setOnEditorActionListener false
+                if (commitDnsPrivacyEndpoint(reconnectIfChanged = true, focusOnError = true)) {
+                    clearFocus()
+                }
+                true
+            }
+            setOnFocusChangeListener { _, hasFocus ->
+                if (hasFocus) {
+                    scrollFieldIntoView(scrollView, dnsPrivacyEndpointLayout)
+                } else {
+                    commitDnsPrivacyEndpoint(reconnectIfChanged = true)
+                }
+            }
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(s: Editable?) {
+                    if (!dnsPrivacyInputUpdating && ::dnsPrivacyErrorText.isInitialized) {
+                        dnsPrivacyErrorText.visibility = View.GONE
+                    }
+                }
+            })
+        }
+        dnsPrivacyEndpointLayout = TextInputLayout(this).apply {
+            hint = "Resolver endpoint"
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            boxBackgroundColor = SURFACE
+            boxStrokeColor = TEAL
+            boxStrokeWidth = dp(1)
+            boxStrokeWidthFocused = dp(2)
+            defaultHintTextColor = ColorStateList.valueOf(TEXT_SECONDARY)
+            setHelperTextColor(ColorStateList.valueOf(TEXT_SECONDARY))
+            setBoxCornerRadii(dp(14).toFloat(), dp(14).toFloat(), dp(14).toFloat(), dp(14).toFloat())
+            addView(dnsPrivacyEndpointInput)
+        }
+        advancedBody.addView(
+            dnsPrivacyEndpointLayout,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dp(10)
+            },
+        )
+        dnsPrivacyErrorText = TextView(this).apply {
+            textSize = 12f
+            setTextColor(ERROR)
+            includeFontPadding = true
+            visibility = View.GONE
+        }
+        advancedBody.addView(
+            dnsPrivacyErrorText,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -720,6 +944,131 @@ class MainActivity : Activity() {
         renderAdvancedSection()
         return root
     }
+
+    private fun scrollFieldIntoView(
+        scrollView: ScrollView,
+        field: View,
+        delayMs: Long = KEYBOARD_SCROLL_DELAY_MS,
+    ) {
+        scrollView.postDelayed(
+            {
+                val scrollLocation = IntArray(2)
+                val fieldLocation = IntArray(2)
+                scrollView.getLocationInWindow(scrollLocation)
+                field.getLocationInWindow(fieldLocation)
+                val visibleBottom = scrollLocation[1] + scrollView.height - scrollView.paddingBottom - dp(16)
+                val overlap = fieldLocation[1] + field.height - visibleBottom
+                if (overlap > 0) scrollView.smoothScrollBy(0, overlap)
+            },
+            delayMs,
+        )
+    }
+
+    private fun advancedSectionLabel(value: String): TextView {
+        return TextView(this).apply {
+            text = value.uppercase()
+            textSize = 11f
+            letterSpacing = 0.08f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+        }
+    }
+
+    private fun advancedSectionDetail(value: String): TextView {
+        return TextView(this).apply {
+            text = value
+            textSize = 11f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+            setLineSpacing(dp(2).toFloat(), 1f)
+        }
+    }
+
+    private fun advancedPanelBackground(): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(14).toFloat()
+            setColor(SURFACE)
+            setStroke(dp(1), OUTLINE)
+        }
+    }
+
+    private fun advancedDivider(): View {
+        return View(this).apply {
+            setBackgroundColor(OUTLINE)
+            alpha = 0.65f
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(1),
+            ).apply {
+                marginStart = dp(16)
+                marginEnd = dp(16)
+            }
+        }
+    }
+
+    private fun advancedToggleRow(
+        title: String,
+        detail: String,
+        toggle: MaterialSwitch,
+    ): View {
+        val textColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = title
+                    textSize = 14f
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(TEXT_PRIMARY)
+                    includeFontPadding = false
+                },
+            )
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = detail
+                    textSize = 11f
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+                    setTextColor(TEXT_SECONDARY)
+                    includeFontPadding = false
+                    maxLines = 2
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    topMargin = dp(5)
+                },
+            )
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(66)
+            setPadding(dp(16), dp(13), dp(12), dp(13))
+            isClickable = true
+            isFocusable = true
+            contentDescription = "$title. $detail"
+            setOnClickListener {
+                if (toggle.isEnabled) toggle.performClick()
+            }
+            addView(
+                textColumn,
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(12)
+                },
+            )
+            addView(
+                toggle,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+    }
+
 
     private fun showPrivacyPolicyIfNeeded(onAccepted: (() -> Unit)? = null): Boolean {
         if (privacyPolicyStore.isAccepted()) return false
@@ -869,6 +1218,7 @@ class MainActivity : Activity() {
         when (nextAction) {
             Actions.CONNECT -> {
                 if (!commitFrontingIpInput(reconnectIfChanged = false, focusOnError = true)) return
+                if (!commitDnsPrivacyEndpoint(reconnectIfChanged = false, focusOnError = true)) return
                 if (showPrivacyPolicyIfNeeded { beginConnectFlow() }) return
                 beginConnectFlow()
             }
@@ -884,6 +1234,7 @@ class MainActivity : Activity() {
     private fun handleRefreshClick() {
         if (buttonModel.state != VpnState.Started) return
         if (!commitFrontingIpInput(reconnectIfChanged = false, focusOnError = true)) return
+        if (!commitDnsPrivacyEndpoint(reconnectIfChanged = false, focusOnError = true)) return
         DiagnosticLogger.info(this, "button.refresh", "currentState=${buttonModel.state.wireName}")
         connectFlowPending = false
         buttonModel.onStateChanged(VpnState.Starting)
@@ -995,6 +1346,134 @@ class MainActivity : Activity() {
         locationSelectorRow.setValue(option.label, option.countryCode ?: "AUTO")
         locationSelectorRow.setSubColor(if (option.countryCode == null) TEXT_SECONDARY else TEAL)
         locationSelectorRow.contentDescription = "Exit node: ${option.label}"
+    }
+
+    private fun showDnsPrivacySelector() {
+        if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
+        val modes = DnsPrivacyMode.values()
+        val selectedMode = dnsPrivacyPreferenceStore.readMode()
+        AlertDialog.Builder(this)
+            .setTitle("Encrypted DNS")
+            .setSingleChoiceItems(
+                modes.map { it.label }.toTypedArray(),
+                modes.indexOf(selectedMode),
+            ) { dialog, which ->
+                handleDnsPrivacySelected(modes[which])
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun handleDnsPrivacySelected(mode: DnsPrivacyMode) {
+        val previousMode = dnsPrivacyPreferenceStore.readMode()
+        if (previousMode == mode) return
+        dnsPrivacyPreferenceStore.saveMode(mode)
+        DiagnosticLogger.info(this, "activity.dnsPrivacy.saved", "mode=${mode.wireName}")
+        renderDnsPrivacySelection()
+        if (buttonModel.state == VpnState.Started) {
+            buttonModel.onStateChanged(VpnState.Starting)
+            renderState(VpnState.Starting)
+            startVpnService(Actions.RECONNECT)
+        }
+    }
+
+    private fun commitDnsPrivacyEndpoint(
+        reconnectIfChanged: Boolean,
+        focusOnError: Boolean = false,
+    ): Boolean {
+        if (!::dnsPrivacyEndpointInput.isInitialized) return true
+        val mode = dnsPrivacyPreferenceStore.readMode()
+        if (mode == DnsPrivacyMode.Automatic) return true
+        val previousValue = when (mode) {
+            DnsPrivacyMode.DoH -> dnsPrivacyPreferenceStore.readDohUrl()
+            DnsPrivacyMode.DoT -> dnsPrivacyPreferenceStore.readDotEndpoint()
+            DnsPrivacyMode.Automatic -> return true
+        }
+        val nextValue = runCatching {
+            when (mode) {
+                DnsPrivacyMode.DoH -> DnsPrivacyPolicy.normalizeDohUrl(dnsPrivacyEndpointInput.text.toString())
+                DnsPrivacyMode.DoT -> DnsPrivacyPolicy.normalizeDotEndpoint(dnsPrivacyEndpointInput.text.toString())
+                DnsPrivacyMode.Automatic -> return true
+            }
+        }.getOrElse { error ->
+            showDnsPrivacyError(error.message ?: "Invalid encrypted DNS endpoint", focusOnError)
+            return false
+        }
+        when (mode) {
+            DnsPrivacyMode.DoH -> dnsPrivacyPreferenceStore.saveDohUrl(nextValue)
+            DnsPrivacyMode.DoT -> dnsPrivacyPreferenceStore.saveDotEndpoint(nextValue)
+            DnsPrivacyMode.Automatic -> Unit
+        }
+        setDnsPrivacyEndpointInputText(displayDnsPrivacyEndpoint(mode, nextValue))
+        dnsPrivacyErrorText.visibility = View.GONE
+        if (previousValue != nextValue && reconnectIfChanged && buttonModel.state == VpnState.Started) {
+            buttonModel.onStateChanged(VpnState.Starting)
+            renderState(VpnState.Starting)
+            startVpnService(Actions.RECONNECT)
+        }
+        return true
+    }
+
+    private fun renderDnsPrivacySelection() {
+        if (!::dnsPrivacyRow.isInitialized) return
+        val mode = dnsPrivacyPreferenceStore.readMode()
+        dnsPrivacyValueText.text = "${mode.label}  ›"
+        dnsPrivacyDetailText.text = when (mode) {
+            DnsPrivacyMode.Automatic -> "Built-in DoH + DoT fallback"
+            DnsPrivacyMode.DoH -> "HTTPS resolver with encrypted fallback"
+            DnsPrivacyMode.DoT -> "TLS resolver with encrypted fallback"
+        }
+        dnsPrivacyRow.contentDescription = "Encrypted DNS: ${mode.label}"
+        if (
+            !::dnsPrivacyEndpointInput.isInitialized ||
+            !::dnsPrivacyEndpointLayout.isInitialized ||
+            !::dnsPrivacyErrorText.isInitialized
+        ) return
+        val endpointVisible = mode != DnsPrivacyMode.Automatic
+        dnsPrivacyEndpointLayout.visibility = if (endpointVisible) View.VISIBLE else View.GONE
+        dnsPrivacyErrorText.visibility = View.GONE
+        if (!endpointVisible) return
+        dnsPrivacyEndpointLayout.hint = when (mode) {
+            DnsPrivacyMode.DoH -> "DoH endpoint"
+            DnsPrivacyMode.DoT -> "DoT endpoint"
+            DnsPrivacyMode.Automatic -> ""
+        }
+        dnsPrivacyEndpointLayout.helperText = when (mode) {
+            DnsPrivacyMode.DoH -> "HTTPS URL"
+            DnsPrivacyMode.DoT -> "Hostname with optional port"
+            DnsPrivacyMode.Automatic -> ""
+        }
+        if (!dnsPrivacyEndpointInput.hasFocus()) {
+            val value = when (mode) {
+                DnsPrivacyMode.DoH -> dnsPrivacyPreferenceStore.readDohUrl()
+                DnsPrivacyMode.DoT -> dnsPrivacyPreferenceStore.readDotEndpoint()
+                DnsPrivacyMode.Automatic -> ""
+            }
+            setDnsPrivacyEndpointInputText(displayDnsPrivacyEndpoint(mode, value))
+        }
+    }
+
+    private fun displayDnsPrivacyEndpoint(mode: DnsPrivacyMode, value: String): String {
+        return if (mode == DnsPrivacyMode.DoT) value.removePrefix("tls://") else value
+    }
+
+    private fun setDnsPrivacyEndpointInputText(value: String) {
+        if (dnsPrivacyEndpointInput.text.toString() == value) return
+        dnsPrivacyInputUpdating = true
+        try {
+            dnsPrivacyEndpointInput.setText(value)
+            dnsPrivacyEndpointInput.setSelection(dnsPrivacyEndpointInput.text.length)
+        } finally {
+            dnsPrivacyInputUpdating = false
+        }
+    }
+
+    private fun showDnsPrivacyError(message: String, focusOnError: Boolean) {
+        advancedExpanded = true
+        renderAdvancedSection()
+        dnsPrivacyErrorText.text = message
+        dnsPrivacyErrorText.visibility = View.VISIBLE
+        if (focusOnError) dnsPrivacyEndpointInput.requestFocus()
     }
 
     private fun showSplitTunnelSelector() {
@@ -1310,6 +1789,19 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun saveTlsIntegrityEnabled(enabled: Boolean) {
+        val previousValue = tlsIntegrityPreferenceStore.isEnabled()
+        if (previousValue == enabled) return
+        tlsIntegrityPreferenceStore.saveEnabled(enabled)
+        if (!enabled) WhiteDnsScanStateStore(this).clearTlsQuarantine()
+        DiagnosticLogger.info(this, "activity.tlsIntegrity.saved", "enabled=$enabled")
+        if (buttonModel.state == VpnState.Started) {
+            buttonModel.onStateChanged(VpnState.Starting)
+            renderState(VpnState.Starting)
+            startVpnService(Actions.RECONNECT)
+        }
+    }
+
     private fun saveFrontingIps(reconnectIfChanged: Boolean, previousValue: String?): Boolean {
         val nextValue = FrontingIpPolicy.normalize(frontingIps.joinToString(","))
         frontingIpPreferenceStore.saveFrontingIp(nextValue)
@@ -1372,8 +1864,8 @@ class MainActivity : Activity() {
                 },
             )
         }
-        if (::frontingIpInput.isInitialized) {
-            frontingIpInput.hint = frontingIpInputHint()
+        if (::frontingIpInputLayout.isInitialized) {
+            frontingIpInputLayout.helperText = frontingIpInputHint()
         }
     }
 
@@ -1388,7 +1880,7 @@ class MainActivity : Activity() {
     }
 
     private fun frontingIpInputHint(): String {
-        return if (frontingIps.size >= 5) "Limit reached" else "Optional IPv4, comma separated"
+        return if (frontingIps.size >= 5) "Five-endpoint limit reached" else "Up to 5 • comma-separated • port optional"
     }
 
     private fun showFrontingIpError(message: String, focusOnError: Boolean) {
@@ -1404,10 +1896,14 @@ class MainActivity : Activity() {
     private fun renderAdvancedSection() {
         if (!::advancedBody.isInitialized || !::advancedToggleText.isInitialized) return
         advancedBody.visibility = if (advancedExpanded) View.VISIBLE else View.GONE
-        advancedToggleText.text = if (advancedExpanded) "HIDE" else "SHOW"
+        advancedToggleText.text = if (advancedExpanded) "Hide  ↑" else "Show  ↓"
         if (::dpiBypassCheckbox.isInitialized) {
             dpiBypassCheckbox.isChecked = dpiBypassPreferenceStore.isEnabled()
         }
+        if (::tlsIntegrityCheckbox.isInitialized) {
+            tlsIntegrityCheckbox.isChecked = tlsIntegrityPreferenceStore.isEnabled()
+        }
+        renderDnsPrivacySelection()
     }
 
     private fun beginConnectFlow() {
@@ -1500,6 +1996,25 @@ class MainActivity : Activity() {
         val settingsEnabled = state != VpnState.Starting && state != VpnState.Stopping
         locationSelectorRow.isEnabled = settingsEnabled
         splitTunnelRow.isEnabled = settingsEnabled
+        if (::dpiBypassCheckbox.isInitialized) {
+            dpiBypassCheckbox.isEnabled = settingsEnabled
+        }
+        if (::tlsIntegrityCheckbox.isInitialized) {
+            tlsIntegrityCheckbox.isEnabled = settingsEnabled
+        }
+        if (::dnsPrivacyRow.isInitialized) {
+            dnsPrivacyRow.isEnabled = settingsEnabled
+            dnsPrivacyRow.alpha = if (settingsEnabled) 1f else 0.45f
+        }
+        if (::dnsPrivacyEndpointLayout.isInitialized) {
+            dnsPrivacyEndpointLayout.isEnabled = settingsEnabled
+        }
+        if (::dnsPrivacyEndpointInput.isInitialized) {
+            dnsPrivacyEndpointInput.isEnabled = settingsEnabled
+        }
+        if (::frontingIpInputLayout.isInitialized) {
+            frontingIpInputLayout.isEnabled = settingsEnabled
+        }
         if (::frontingIpInput.isInitialized) {
             frontingIpInput.isEnabled = settingsEnabled
         }

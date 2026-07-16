@@ -68,12 +68,47 @@ class WhiteDnsScanStateStore(context: Context) {
         return true
     }
 
+    fun quarantineTlsEndpoint(
+        scope: String,
+        endpoint: CleanIpResult,
+        nowMs: Long = System.currentTimeMillis(),
+    ) {
+        prefs.edit()
+            .putLong(tlsQuarantineKey(scope, endpoint), TlsIntegrityPolicy.quarantineUntil(nowMs))
+            .apply()
+    }
+
+    fun isTlsEndpointQuarantined(
+        scope: String,
+        endpoint: CleanIpResult,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Boolean {
+        val key = tlsQuarantineKey(scope, endpoint)
+        val untilMs = prefs.getLong(key, 0L)
+        if (TlsIntegrityPolicy.isQuarantined(untilMs, nowMs)) return true
+        if (prefs.contains(key)) prefs.edit().remove(key).apply()
+        return false
+    }
+
+    fun clearTlsQuarantine() {
+        val keys = prefs.all.keys.filter { it.startsWith(KEY_TLS_QUARANTINE_PREFIX) }
+        if (keys.isEmpty()) return
+        val editor = prefs.edit()
+        keys.forEach(editor::remove)
+        editor.apply()
+    }
+
     fun clear() {
         prefs.edit().clear().apply()
+    }
+
+    private fun tlsQuarantineKey(scope: String, endpoint: CleanIpResult): String {
+        return "$KEY_TLS_QUARANTINE_PREFIX$scope:${TlsIntegrityPolicy.endpointKey(endpoint)}"
     }
 
     private companion object {
         const val KEY_LAST_ENDPOINT = "last_endpoint"
         const val KEY_LAST_PROFILE = "last_profile"
+        const val KEY_TLS_QUARANTINE_PREFIX = "tls_quarantine:"
     }
 }

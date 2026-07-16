@@ -19,6 +19,32 @@ class FrontingIpPolicyTest {
     }
 
     @Test
+    fun ipv4WithPortIsAcceptedAndPreserved() {
+        assertEquals("104.16.0.10:8443", FrontingIpPolicy.normalize(" 104.16.0.10:8443 "))
+        assertEquals(8443, FrontingIpPolicy.parseEndpoint("104.16.0.10:8443").port)
+    }
+
+    @Test
+    fun explicitPortMatchTakesPriorityOverIpOnlyFallback() {
+        val values = listOf("104.16.0.10", "104.16.0.10:8443")
+
+        assertEquals("104.16.0.10:8443", FrontingIpPolicy.matchingValue(values, "104.16.0.10", 8443))
+        assertEquals(8443, FrontingIpPolicy.explicitPortFor(values, "104.16.0.10", 8443))
+    }
+
+    @Test
+    fun bracketedIpv6WithPortIsAcceptedAndPreserved() {
+        assertEquals("[2606:4700:4700::1111]:443", FrontingIpPolicy.normalize("[2606:4700:4700::1111]:443"))
+    }
+
+    @Test
+    fun invalidPortIsRejected() {
+        listOf("104.16.0.10:", "104.16.0.10:0", "104.16.0.10:65536").forEach { value ->
+            assertThrows(IllegalArgumentException::class.java) { FrontingIpPolicy.normalize(value) }
+        }
+    }
+
+    @Test
     fun commaSeparatedIpsAreAcceptedAndNormalized() {
         assertEquals(
             "104.16.0.10,104.16.0.11",

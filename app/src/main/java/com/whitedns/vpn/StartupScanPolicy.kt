@@ -35,13 +35,15 @@ object StartupScanPolicy {
         checkedAt: Long,
         excludedEndpoint: CleanIpResult? = null,
     ): List<CleanIpResult> {
-        val port = orderedConnectionPorts(subscriptionPorts).firstOrNull() ?: return emptyList()
-        val excludedIp = excludedEndpoint?.ip
+        val defaultPort = orderedConnectionPorts(subscriptionPorts).firstOrNull() ?: return emptyList()
         return frontingIps
-            .map { it.trim() }
-            .filter { it.isNotBlank() && it != excludedIp }
-            .distinct()
-            .map { ip -> CleanIpResult(ip, port, 1L, 0.0, checkedAt) }
+            .map(FrontingIpPolicy::parseEndpoint)
+            .map { endpoint -> endpoint to (endpoint.port ?: defaultPort) }
+            .filterNot { (endpoint, port) ->
+                excludedEndpoint?.let { it.ip == endpoint.ip && it.port == port } == true
+            }
+            .distinctBy { (endpoint, port) -> "${endpoint.ip}:$port" }
+            .map { (endpoint, port) -> CleanIpResult(endpoint.ip, port, 1L, 0.0, checkedAt) }
     }
 
     fun exhaustiveEncryptedCandidates(

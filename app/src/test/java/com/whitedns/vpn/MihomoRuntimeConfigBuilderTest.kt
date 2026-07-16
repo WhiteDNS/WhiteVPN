@@ -2,11 +2,49 @@ package com.whitedns.vpn
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.json.JSONObject
+import java.net.SocketTimeoutException
+import java.security.cert.CertPathValidatorException
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 class MihomoRuntimeConfigBuilderTest {
+    @Test
+    fun tlsIntegrityPolicyUsesPublicFallbacksAndExpiresQuarantine() {
+        val endpoint = CleanIpResult("104.16.0.1", 443, 1, 0.0, 1)
+        val nowMs = 1_000L
+        val untilMs = TlsIntegrityPolicy.quarantineUntil(nowMs)
+
+        assertEquals(
+            listOf(
+                "https://valid-isrgrootx1.letsencrypt.org/",
+                "https://connectivitycheck.gstatic.com/generate_204",
+                "https://cloudflare.com/cdn-cgi/trace",
+            ),
+            TlsIntegrityPolicy.TEST_URLS,
+        )
+        assertEquals(2_000, TlsIntegrityPolicy.PROBE_TIMEOUT_MS)
+        assertEquals(7_000L, TlsIntegrityPolicy.TOTAL_TIMEOUT_MS)
+        assertEquals("104.16.0.1:443", TlsIntegrityPolicy.endpointKey(endpoint))
+        assertTrue(TlsIntegrityPolicy.isQuarantined(untilMs, nowMs))
+        assertFalse(TlsIntegrityPolicy.isQuarantined(untilMs, untilMs))
+    }
+
+    @Test
+    fun tlsIntegrityOnlyRejectsCertificateFailures() {
+        val chainFailure = SSLHandshakeException("certificate rejected").apply {
+            initCause(CertPathValidatorException("invalid chain"))
+        }
+
+        assertTrue(TlsIntegrityPolicy.isCertificateFailure(chainFailure))
+        assertTrue(TlsIntegrityPolicy.isCertificateFailure(SSLPeerUnverifiedException("wrong host")))
+        assertFalse(TlsIntegrityPolicy.isCertificateFailure(SocketTimeoutException("blocked")))
+        assertFalse(TlsIntegrityPolicy.isCertificateFailure(SSLHandshakeException("connection reset")))
+    }
+
     @Test
     fun dpiBypassProxyArgsUseIranByedpiDefaults() {
         val args = DpiBypassDefaults.proxyArgs(31_234).toList()
@@ -151,9 +189,98 @@ class MihomoRuntimeConfigBuilderTest {
         )
 
         assertTrue(runtimeYaml.contains("respect-rules: true"))
-        assertTrue(runtimeYaml.contains("- 'tcp://1.1.1.1#🚀 WhiteDNS Proxy'"))
-        assertTrue(runtimeYaml.contains("- 'tcp://8.8.8.8#🚀 WhiteDNS Proxy'"))
+        assertTrue(runtimeYaml.contains("- 'https://1.1.1.1/dns-query#🚀 WhiteDNS Proxy'"))
+        assertTrue(runtimeYaml.contains("- 'https://8.8.8.8/dns-query#🚀 WhiteDNS Proxy'"))
+        assertTrue(runtimeYaml.contains("- 'tls://1.1.1.1:853#🚀 WhiteDNS Proxy'"))
+        assertTrue(runtimeYaml.contains("- 'tls://8.8.8.8:853#🚀 WhiteDNS Proxy'"))
+        assertFalse(runtimeYaml.contains("tcp://"))
         assertTrue(runtimeYaml.contains("proxy-server-nameserver:\n    - 1.1.1.1\n    - 8.8.8.8"))
+    }
+
+    @Test
+    fun flClashRuntimeYamlHonorsExplicitEncryptedDnsModes() {
+        val yaml = """
+            proxies:
+              - name: Node
+                type: http
+                server: example.com
+                port: 443
+        """.trimIndent()
+
+        val dohYaml = MihomoRuntimeConfigBuilder.flClashRuntimeYaml(
+            rawYaml = yaml,
+            secret = "secret-123",
+            dnsPrivacyMode = DnsPrivacyMode.DoH,
+        )
+        val dotYaml = MihomoRuntimeConfigBuilder.flClashRuntimeYaml(
+            rawYaml = yaml,
+            secret = "secret-123",
+            dnsPrivacyMode = DnsPrivacyMode.DoT,
+        )
+
+        assertTrue(dohYaml.contains("- 'https://1.1.1.1/dns-query'"))
+        assertFalse(dohYaml.contains("tls://"))
+        assertTrue(dotYaml.contains("- 'tls://1.1.1.1:853'"))
+        assertFalse(dotYaml.contains("https://1.1.1.1/dns-query"))
+        assertEquals(DnsPrivacyMode.Automatic, DnsPrivacyMode.fromWireName("unsupported"))
+    }
+
+    @Test
+    fun dnsPrivacyPolicyValidatesAndNormalizesCustomEndpoints() {
+        assertEquals(
+            "https://dns.example/dns-query",
+            DnsPrivacyPolicy.normalizeDohUrl(" https://dns.example/dns-query "),
+        )
+        assertEquals("tls://dns.example:853", DnsPrivacyPolicy.normalizeDotEndpoint("dns.example"))
+        assertEquals("tls://dns.example:8853", DnsPrivacyPolicy.normalizeDotEndpoint("dns.example:8853"))
+        assertEquals(
+            "tls://[2606:4700:4700::1111]:853",
+            DnsPrivacyPolicy.normalizeDotEndpoint("[2606:4700:4700::1111]"),
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            DnsPrivacyPolicy.normalizeDohUrl("http://dns.example/dns-query")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DnsPrivacyPolicy.normalizeDohUrl("https://user@dns.example/dns-query")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DnsPrivacyPolicy.normalizeDotEndpoint("udp://dns.example:53")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            DnsPrivacyPolicy.normalizeDotEndpoint("dns.example/path")
+        }
+    }
+
+    @Test
+    fun explicitDnsModesPutCustomResolverBeforeEncryptedFallbacks() {
+        val yaml = """
+            proxies:
+              - name: Node
+                type: http
+                server: example.com
+                port: 443
+        """.trimIndent()
+
+        val dohYaml = MihomoRuntimeConfigBuilder.flClashRuntimeYaml(
+            rawYaml = yaml,
+            secret = "secret-123",
+            dnsPrivacyMode = DnsPrivacyMode.DoH,
+            dohUrl = "https://dns.example/dns-query",
+        )
+        val dotYaml = MihomoRuntimeConfigBuilder.flClashRuntimeYaml(
+            rawYaml = yaml,
+            secret = "secret-123",
+            dnsPrivacyMode = DnsPrivacyMode.DoT,
+            dotEndpoint = "dns.example:8853",
+        )
+
+        assertTrue(dohYaml.indexOf("https://dns.example/dns-query") < dohYaml.indexOf("https://1.1.1.1/dns-query"))
+        assertTrue(dohYaml.contains("https://8.8.8.8/dns-query"))
+        assertFalse(dohYaml.contains("tls://"))
+        assertTrue(dotYaml.indexOf("tls://dns.example:8853") < dotYaml.indexOf("tls://1.1.1.1:853"))
+        assertTrue(dotYaml.contains("tls://8.8.8.8:853"))
+        assertFalse(dotYaml.contains("https://"))
     }
 
     @Test
@@ -203,6 +330,18 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
+    fun frontingPatcherOverridesPortsOnlyWhenExplicitlyRequested() {
+        val yaml = """
+            proxies:
+              - { name: One, type: vless, server: one.example.com, port: 443 }
+        """.trimIndent()
+
+        val patched = MihomoFrontingPatcher.patchProxyServers(yaml, "162.159.192.1", 2053)
+
+        assertTrue(patched.contains("server: 162.159.192.1, port: 2053"))
+    }
+
+    @Test
     fun dpiBypassPatcherAddsLocalProxyAndDialerProxyOnlyWhenEnabled() {
         val yaml = """
             proxies:
@@ -229,6 +368,7 @@ class MihomoRuntimeConfigBuilderTest {
         assertTrue(patched.contains("name: 'WhiteDNS ByeByeDPI'"))
         assertTrue(patched.contains("type: socks5"))
         assertTrue(patched.contains("server: 127.0.0.1"))
+        assertTrue(patched.contains("udp: true"))
         assertTrue(patched.contains("port: 31234"))
         assertTrue(patched.contains("dialer-proxy: 'WhiteDNS ByeByeDPI'"))
         assertTrue(patched.contains("dialer-proxy: 'WhiteDNS ByeByeDPI' }"))

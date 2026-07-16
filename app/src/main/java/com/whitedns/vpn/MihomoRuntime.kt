@@ -9,9 +9,13 @@ import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ServerSocket
+import java.net.URI
 import java.net.URL
+import java.security.cert.CertPathValidatorException
+import java.security.cert.CertificateException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLPeerUnverifiedException
 
 object MihomoRuntimeDefaults {
     const val MIXED_PORT = 2080
@@ -19,6 +23,144 @@ object MihomoRuntimeDefaults {
     const val CONTROLLER_HOST = "127.0.0.1"
     const val HEALTH_URL = "https://www.gstatic.com/generate_204"
     const val EGRESS_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+}
+
+object TlsIntegrityPolicy {
+    val TEST_URLS = listOf(
+        "https://valid-isrgrootx1.letsencrypt.org/",
+        "https://connectivitycheck.gstatic.com/generate_204",
+        "https://cloudflare.com/cdn-cgi/trace",
+    )
+    const val PROBE_TIMEOUT_MS = 2_000
+    const val TOTAL_TIMEOUT_MS = 7_000L
+    const val QUARANTINE_DURATION_MS = 24L * 60L * 60L * 1_000L
+
+    fun endpointKey(endpoint: CleanIpResult): String = "${endpoint.ip}:${endpoint.port}"
+
+    fun quarantineUntil(nowMs: Long): Long = nowMs + QUARANTINE_DURATION_MS
+
+    fun isQuarantined(untilMs: Long, nowMs: Long): Boolean = untilMs > nowMs
+
+    fun isCertificateFailure(error: Throwable): Boolean {
+        return generateSequence(error) { it.cause }.any { cause ->
+            cause is CertificateException ||
+                cause is CertPathValidatorException ||
+                cause is SSLPeerUnverifiedException
+        }
+    }
+}
+
+class TlsIntegrityPreferenceStore(context: Context) {
+    private val prefs = context.getSharedPreferences("white_dns_tls_integrity", Context.MODE_PRIVATE)
+
+    fun isEnabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
+
+    fun saveEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ENABLED, enabled).apply()
+    }
+
+    private companion object {
+        const val KEY_ENABLED = "enabled"
+    }
+}
+
+class TlsIntegrityException(cause: Throwable) : IOException("TLS certificate validation failed", cause)
+
+enum class DnsPrivacyMode(val wireName: String, val label: String) {
+    Automatic("automatic", "Automatic"),
+    DoH("doh", "DoH"),
+    DoT("dot", "DoT");
+
+    companion object {
+        fun fromWireName(value: String?): DnsPrivacyMode {
+            return values().firstOrNull { it.wireName == value } ?: Automatic
+        }
+    }
+}
+
+object DnsPrivacyPolicy {
+    const val DEFAULT_DOH_URL = "https://1.1.1.1/dns-query"
+    const val DEFAULT_DOT_ENDPOINT = "tls://1.1.1.1:853"
+
+    fun normalizeDohUrl(value: String): String {
+        val input = value.trim()
+        val uri = runCatching { URI(input) }
+            .getOrElse { throw IllegalArgumentException("DoH must be a valid HTTPS URL") }
+        require(uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()) {
+            "DoH must be a valid HTTPS URL"
+        }
+        require(uri.rawUserInfo == null && uri.rawFragment == null) {
+            "DoH URL cannot contain credentials or a fragment"
+        }
+        require(uri.rawAuthority?.endsWith(':') == false) { "DoH port must be from 1 to 65535" }
+        require(uri.port == -1 || uri.port in 1..65535) { "DoH port must be from 1 to 65535" }
+        return uri.toASCIIString()
+    }
+
+    fun normalizeDotEndpoint(value: String): String {
+        val input = value.trim()
+        val uri = runCatching {
+            URI(if (input.startsWith("tls://", ignoreCase = true)) input else "tls://$input")
+        }.getOrElse { throw IllegalArgumentException("DoT must be a valid host[:port]") }
+        require(uri.scheme.equals("tls", ignoreCase = true) && !uri.host.isNullOrBlank()) {
+            "DoT must be a valid host[:port]"
+        }
+        require(
+            uri.rawUserInfo == null &&
+                uri.rawQuery == null &&
+                uri.rawFragment == null &&
+                (uri.rawPath.isNullOrEmpty() || uri.rawPath == "/"),
+        ) {
+            "DoT must contain only a host and optional port"
+        }
+        require(uri.rawAuthority?.endsWith(':') == false) { "DoT port must be from 1 to 65535" }
+        require(uri.port == -1 || uri.port in 1..65535) { "DoT port must be from 1 to 65535" }
+        val port = uri.port.takeIf { it != -1 } ?: 853
+        val host = when {
+            uri.host.startsWith('[') -> uri.host
+            uri.host.contains(':') -> "[${uri.host}]"
+            else -> uri.host
+        }
+        return "tls://$host:$port"
+    }
+}
+
+class DnsPrivacyPreferenceStore(context: Context) {
+    private val prefs = context.getSharedPreferences("white_dns_privacy", Context.MODE_PRIVATE)
+
+    fun readMode(): DnsPrivacyMode = DnsPrivacyMode.fromWireName(prefs.getString(KEY_MODE, null))
+
+    fun readDohUrl(): String {
+        return runCatching {
+            DnsPrivacyPolicy.normalizeDohUrl(prefs.getString(KEY_DOH_URL, null) ?: DnsPrivacyPolicy.DEFAULT_DOH_URL)
+        }.getOrDefault(DnsPrivacyPolicy.DEFAULT_DOH_URL)
+    }
+
+    fun readDotEndpoint(): String {
+        return runCatching {
+            DnsPrivacyPolicy.normalizeDotEndpoint(
+                prefs.getString(KEY_DOT_ENDPOINT, null) ?: DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
+            )
+        }.getOrDefault(DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT)
+    }
+
+    fun saveMode(mode: DnsPrivacyMode) {
+        prefs.edit().putString(KEY_MODE, mode.wireName).apply()
+    }
+
+    fun saveDohUrl(value: String) {
+        prefs.edit().putString(KEY_DOH_URL, DnsPrivacyPolicy.normalizeDohUrl(value)).apply()
+    }
+
+    fun saveDotEndpoint(value: String) {
+        prefs.edit().putString(KEY_DOT_ENDPOINT, DnsPrivacyPolicy.normalizeDotEndpoint(value)).apply()
+    }
+
+    private companion object {
+        const val KEY_MODE = "mode"
+        const val KEY_DOH_URL = "doh_url"
+        const val KEY_DOT_ENDPOINT = "dot_endpoint"
+    }
 }
 
 object MihomoDelayPolicy {
@@ -85,6 +227,9 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
     fun write(
         rawYaml: String,
         splitTunnelPlan: SplitTunnelRuntimePlan,
+        dnsPrivacyMode: DnsPrivacyMode = DnsPrivacyMode.Automatic,
+        dohUrl: String = DnsPrivacyPolicy.DEFAULT_DOH_URL,
+        dotEndpoint: String = DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
         secret: String = MihomoControllerSecret.generate(),
     ): MihomoRuntimePaths {
         val baseDir = File(context.filesDir, "mihomo").apply { mkdirs() }
@@ -104,7 +249,16 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
         )
 
         profileYaml.writeText(rawYaml)
-        runtimeConfigYaml.writeText(flClashRuntimeYaml(rawYaml, secret, controlPort))
+        runtimeConfigYaml.writeText(
+            flClashRuntimeYaml(
+                rawYaml = rawYaml,
+                secret = secret,
+                controlPort = controlPort,
+                dnsPrivacyMode = dnsPrivacyMode,
+                dohUrl = dohUrl,
+                dotEndpoint = dotEndpoint,
+            ),
+        )
         patchFinal.writeText(corePatchJson(splitTunnelPlan, secret, controlPort).toString(2))
         setupParams.writeText(setupParamsJson().toString(2))
         serviceJson.writeText(
@@ -232,9 +386,20 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             rawYaml: String,
             secret: String,
             controlPort: Int = MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT,
+            dnsPrivacyMode: DnsPrivacyMode = DnsPrivacyMode.Automatic,
+            dohUrl: String = DnsPrivacyPolicy.DEFAULT_DOH_URL,
+            dotEndpoint: String = DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
         ): String {
             val subscriptionYaml = stripTopLevelKeys(rawYaml, FLCLASH_OVERRIDE_KEYS)
             val dnsProxyGroup = dnsProxyGroup(rawYaml)
+            val proxySuffix = dnsProxyGroup?.let { "#$it" }.orEmpty()
+            val dnsServers = when (dnsPrivacyMode) {
+                DnsPrivacyMode.Automatic -> DOH_SERVERS + DOT_SERVERS
+                DnsPrivacyMode.DoH ->
+                    (listOf(DnsPrivacyPolicy.normalizeDohUrl(dohUrl)) + DOH_SERVERS).distinct()
+                DnsPrivacyMode.DoT ->
+                    (listOf(DnsPrivacyPolicy.normalizeDotEndpoint(dotEndpoint)) + DOT_SERVERS).distinct()
+            }
             return buildString {
                 if (subscriptionYaml.isNotBlank()) {
                     append(subscriptionYaml.trimEnd())
@@ -261,18 +426,12 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                 append("    - 1.1.1.1\n")
                 append("    - 8.8.8.8\n")
                 append("  nameserver:\n")
-                if (dnsProxyGroup != null) {
-                    append("    - ${yamlSingleQuoted("tcp://1.1.1.1#$dnsProxyGroup")}\n")
-                    append("    - ${yamlSingleQuoted("tcp://8.8.8.8#$dnsProxyGroup")}\n")
-                    append("  proxy-server-nameserver:\n")
-                    append("    - 1.1.1.1\n")
-                    append("    - 8.8.8.8\n")
-                } else {
-                    append("    - 1.1.1.1\n")
-                    append("    - 8.8.8.8\n")
-                    append("    - tls://1.1.1.1:853\n")
-                    append("    - tls://8.8.8.8:853\n")
+                dnsServers.forEach { server ->
+                    append("    - ${yamlSingleQuoted("$server$proxySuffix")}\n")
                 }
+                append("  proxy-server-nameserver:\n")
+                append("    - 1.1.1.1\n")
+                append("    - 8.8.8.8\n")
                 append("tun:\n")
                 append("  enable: false\n")
             }
@@ -330,11 +489,24 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             "dns",
             "tun",
         )
+
+        private val DOH_SERVERS = listOf(
+            "https://1.1.1.1/dns-query",
+            "https://8.8.8.8/dns-query",
+        )
+        private val DOT_SERVERS = listOf(
+            "tls://1.1.1.1:853",
+            "tls://8.8.8.8:853",
+        )
     }
 }
 
 object MihomoFrontingPatcher {
-    fun patchProxyServers(rawYaml: String, serverOverrideIp: String?): String {
+    fun patchProxyServers(
+        rawYaml: String,
+        serverOverrideIp: String?,
+        serverOverridePort: Int? = null,
+    ): String {
         val override = serverOverrideIp?.trim()?.takeIf { it.isNotBlank() } ?: return rawYaml
         val normalized = rawYaml.replace("\r\n", "\n").replace('\r', '\n')
         val output = mutableListOf<String>()
@@ -343,7 +515,7 @@ object MihomoFrontingPatcher {
 
         fun flushProxy() {
             if (currentProxy.isEmpty()) return
-            output += patchProxyBlock(currentProxy, override)
+            output += patchProxyBlock(currentProxy, override, serverOverridePort)
             currentProxy = mutableListOf()
         }
 
@@ -380,27 +552,29 @@ object MihomoFrontingPatcher {
         return output.joinToString("\n")
     }
 
-    private fun patchProxyBlock(lines: List<String>, override: String): List<String> {
+    private fun patchProxyBlock(lines: List<String>, override: String, portOverride: Int?): List<String> {
         return lines.map { line ->
             when {
-                isServerField(line) -> replaceYamlValue(line, override)
-                isInlineProxyMap(line) -> replaceInlineServer(line, override)
+                isProxyField(line, "server") -> replaceYamlValue(line, "server", override)
+                portOverride != null && isProxyField(line, "port") ->
+                    replaceYamlValue(line, "port", portOverride.toString())
+                isInlineProxyMap(line) -> replaceInlineServerAndPort(line, override, portOverride)
                 else -> line
             }
         }
     }
 
-    private fun isServerField(line: String): Boolean {
+    private fun isProxyField(line: String, key: String): Boolean {
         val indent = indentation(line)
         if (indent != 4) return false
         val content = line.trimStart()
-        return content.startsWith("server:")
+        return content.startsWith("$key:")
     }
 
-    private fun replaceYamlValue(line: String, value: String): String {
+    private fun replaceYamlValue(line: String, key: String, value: String): String {
         val indent = line.takeWhile(Char::isWhitespace)
         val comment = inlineComment(line.substringAfter(":", ""))
-        return "$indent" + "server: $value$comment"
+        return "$indent$key: $value$comment"
     }
 
     private fun inlineComment(value: String): String {
@@ -413,8 +587,11 @@ object MihomoFrontingPatcher {
         return content.startsWith("- {") && content.contains("server:")
     }
 
-    private fun replaceInlineServer(line: String, value: String): String {
-        return line.replace(Regex("""server:\s*([^,}]+)"""), "server: $value")
+    private fun replaceInlineServerAndPort(line: String, value: String, portOverride: Int?): String {
+        val patched = line.replace(Regex("""server:\s*([^,}]+)"""), "server: $value")
+        return if (portOverride == null) patched else {
+            patched.replace(Regex("""port:\s*([^,}]+)"""), "port: $portOverride")
+        }
     }
 
     private fun topLevelKey(line: String): String? {
@@ -529,7 +706,7 @@ object MihomoDpiBypassPatcher {
             "    type: socks5",
             "    server: ${DpiBypassDefaults.PROXY_HOST}",
             "    port: $proxyPort",
-            "    udp: false",
+            "    udp: true",
         )
     }
 
@@ -709,6 +886,18 @@ object MihomoRuntimeHealth {
         val proxy = Proxy(
             Proxy.Type.HTTP,
             InetSocketAddress(MihomoRuntimeDefaults.CONTROLLER_HOST, MihomoRuntimeDefaults.MIXED_PORT),
+        )
+        return httpStatus(url, proxy, timeoutMs)
+    }
+
+    fun httpStatusThroughSocksProxy(
+        port: Int,
+        url: String = MihomoRuntimeDefaults.HEALTH_URL,
+        timeoutMs: Int = 3_000,
+    ): Int {
+        val proxy = Proxy(
+            Proxy.Type.SOCKS,
+            InetSocketAddress(DpiBypassDefaults.PROXY_HOST, port),
         )
         return httpStatus(url, proxy, timeoutMs)
     }
