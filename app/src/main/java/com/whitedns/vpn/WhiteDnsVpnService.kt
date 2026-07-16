@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.follow.clash.core.Core
+import com.follow.clash.core.TunInterface
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -41,11 +42,13 @@ class WhiteDnsVpnService : VpnService() {
     private lateinit var cleanIpCache: CleanIpCache
     private lateinit var encryptedIpListRepository: EncryptedIpListRepository
     private lateinit var frontingIpPreferenceStore: FrontingIpPreferenceStore
+    private lateinit var dpiBypassPreferenceStore: DpiBypassPreferenceStore
 
     private var startupJob: Job? = null
     private var stopJob: Job? = null
     private var subscriptionRefreshJob: Job? = null
     private var encryptedIpScanJob: Job? = null
+    private var dpiBypassJob: Job? = null
     private val uidPackageNameCache = mutableMapOf<Int, String>()
 
     private data class StartedMihomoRuntime(
@@ -84,6 +87,8 @@ class WhiteDnsVpnService : VpnService() {
     private var lastDefaultNetworkKey: String? = null
     @Volatile
     private var lastDefaultDns: String = ""
+    @Volatile
+    private var activeDpiBypassPort: Int? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -96,6 +101,7 @@ class WhiteDnsVpnService : VpnService() {
         cleanIpCache = CleanIpCache(this)
         encryptedIpListRepository = EncryptedIpListRepository(this)
         frontingIpPreferenceStore = FrontingIpPreferenceStore(this)
+        dpiBypassPreferenceStore = DpiBypassPreferenceStore(this)
         networkMonitor.setDefaultNetworkChangeListener { candidate ->
             handleDefaultNetworkChanged(candidate)
         }
@@ -504,8 +510,18 @@ class WhiteDnsVpnService : VpnService() {
             rawYaml = snapshot.rawConfig,
             serverOverrideIp = serverOverrideIp,
         )
-        val paths = MihomoRuntimeConfigBuilder(this).write(
+        val dpiBypassEnabled = dpiBypassPreferenceStore.isEnabled()
+        if (state == VpnState.Starting && activeRuntimePaths != null) {
+            stopActiveCoreForReplacement()
+        }
+        val dpiBypassPort = if (dpiBypassEnabled) DpiBypassPort.allocate() else null
+        val runtimeYaml = MihomoDpiBypassPatcher.patch(
             rawYaml = frontedYaml,
+            enabled = dpiBypassEnabled,
+            proxyPort = dpiBypassPort ?: DpiBypassDefaults.FALLBACK_PROXY_PORT,
+        )
+        val paths = MihomoRuntimeConfigBuilder(this).write(
+            rawYaml = runtimeYaml,
             splitTunnelPlan = splitTunnelPlan,
         )
         DiagnosticLogger.info(
@@ -516,13 +532,10 @@ class WhiteDnsVpnService : VpnService() {
         DiagnosticLogger.info(
             this,
             "mihomo.startup.flow",
-            "frontingScanner=${serverOverrideIp != null} randomController=true encryptedSubscription=true profiles=${snapshot.summary.proxies.size} groups=${snapshot.summary.groups.size}",
+            "frontingScanner=${serverOverrideIp != null} dpiBypass=$dpiBypassEnabled dpiBypassPort=${dpiBypassPort ?: 0} randomController=true encryptedSubscription=true profiles=${snapshot.summary.proxies.size} groups=${snapshot.summary.groups.size}",
         )
 
-        if (state == VpnState.Starting && activeRuntimePaths != null) {
-            stopActiveCoreForReplacement()
-        }
-        startCoreServiceAndWait(paths, splitTunnelPlan)
+        startCoreServiceAndWait(paths, splitTunnelPlan, dpiBypassPort)
         activeRuntimePaths = paths
         val controller = MihomoControllerClient(paths.secret, port = paths.controlPort)
         waitForController(controller, paths)
@@ -1048,9 +1061,93 @@ class WhiteDnsVpnService : VpnService() {
         }
     }
 
+    private suspend fun startDpiBypassProxy(port: Int): Int {
+        stopDpiBypassProxy()
+
+        val protectCallback = object : TunInterface {
+            override fun protect(fd: Int) {
+                this@WhiteDnsVpnService.protect(fd)
+            }
+
+            override fun resolverProcess(protocol: Int, source: String, target: String, uid: Int): String = ""
+        }
+        val job = scope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                ByeDpiProxy.start(port, protectCallback)
+            }
+            result
+                .onSuccess { exitCode ->
+                    if (exitCode != 0 && activeDpiBypassPort == port) {
+                        DiagnosticLogger.warn(
+                            this@WhiteDnsVpnService,
+                            "dpiBypass.proxy.exited",
+                            "port=$port code=$exitCode",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (activeDpiBypassPort == port) {
+                        DiagnosticLogger.warn(
+                            this@WhiteDnsVpnService,
+                            "dpiBypass.proxy.failed",
+                            "port=$port",
+                            error,
+                        )
+                    }
+                }
+        }
+        dpiBypassJob = job
+        activeDpiBypassPort = port
+
+        if (!waitForDpiBypassPort(port, job)) {
+            stopDpiBypassProxy()
+            throw IOException("ByeByeDPI proxy did not start on ${DpiBypassDefaults.PROXY_HOST}:$port")
+        }
+
+        DiagnosticLogger.info(
+            this,
+            "dpiBypass.proxy.started",
+            "endpoint=${DpiBypassDefaults.PROXY_HOST}:$port",
+        )
+        return port
+    }
+
+    private suspend fun waitForDpiBypassPort(port: Int, job: Job): Boolean {
+        return withTimeoutOrNull(DPI_BYPASS_START_TIMEOUT_MS) {
+            while (job.isActive) {
+                if (!DpiBypassPort.canBind(port)) return@withTimeoutOrNull true
+                delay(DPI_BYPASS_PORT_POLL_INTERVAL_MS)
+            }
+            false
+        } == true
+    }
+
+    private suspend fun stopDpiBypassProxy() {
+        val job = dpiBypassJob ?: return
+        val port = activeDpiBypassPort
+        dpiBypassJob = null
+        activeDpiBypassPort = null
+
+        withContext(Dispatchers.IO) {
+            runCatching { ByeDpiProxy.stop() }
+                .onFailure { DiagnosticLogger.warn(this@WhiteDnsVpnService, "dpiBypass.proxy.stop.failed", error = it) }
+        }
+        val stopped = withTimeoutOrNull(DPI_BYPASS_STOP_TIMEOUT_MS) {
+            job.join()
+            true
+        } == true
+        if (!stopped) {
+            job.cancel(CancellationException("ByeByeDPI proxy stop timed out"))
+            DiagnosticLogger.warn(this, "dpiBypass.proxy.stop.timeout", "port=${port ?: 0}")
+            return
+        }
+        DiagnosticLogger.info(this, "dpiBypass.proxy.stopped", "port=${port ?: 0}")
+    }
+
     private suspend fun startCoreServiceAndWait(
         paths: MihomoRuntimePaths,
         splitTunnelPlan: SplitTunnelRuntimePlan,
+        dpiBypassPort: Int? = null,
     ) {
         val initParams = MihomoRuntimeConfigBuilder.initParamsJson(
             baseDir = paths.baseDir.absolutePath,
@@ -1062,6 +1159,9 @@ class WhiteDnsVpnService : VpnService() {
         val setupMessage = quickSetupCore(initParams, setupParams)
         if (setupMessage.isNotBlank() && !setupMessage.endsWith("is empty")) {
             throw IOException(setupMessage)
+        }
+        if (dpiBypassPort != null) {
+            startDpiBypassProxy(dpiBypassPort)
         }
 
         val tunFd = withContext(Dispatchers.Main) {
@@ -1371,6 +1471,7 @@ class WhiteDnsVpnService : VpnService() {
             runCatching { invokeCoreAction("shutdown") }
                 .onFailure { DiagnosticLogger.warn(this@WhiteDnsVpnService, "mihomo.shutdown.failed", error = it) }
         }
+        stopDpiBypassProxy()
     }
 
     private suspend fun invokeCoreAction(method: String): String? {
@@ -1392,6 +1493,10 @@ class WhiteDnsVpnService : VpnService() {
         runCatching { Core.stopTun() }
         runCatching { fireAndForgetCoreAction("stopListener") }
         runCatching { fireAndForgetCoreAction("shutdown") }
+        runCatching { ByeDpiProxy.stop() }
+        dpiBypassJob?.cancel(CancellationException("Service destroyed"))
+        dpiBypassJob = null
+        activeDpiBypassPort = null
     }
 
     private fun fireAndForgetCoreAction(method: String) {
@@ -1603,6 +1708,9 @@ class WhiteDnsVpnService : VpnService() {
         const val NOTIFICATION_ID = 1001
         const val CORE_SETUP_TIMEOUT_MS = 15_000L
         const val CORE_ACTION_TIMEOUT_MS = 3_000L
+        const val DPI_BYPASS_START_TIMEOUT_MS = 3_000L
+        const val DPI_BYPASS_STOP_TIMEOUT_MS = 2_000L
+        const val DPI_BYPASS_PORT_POLL_INTERVAL_MS = 50L
         const val CONTROLLER_READY_TIMEOUT_MS = 12_000L
         const val CONTROLLER_POLL_INTERVAL_MS = 300L
         const val CONTROLLER_LOG_TAIL_CHARS = 4_000

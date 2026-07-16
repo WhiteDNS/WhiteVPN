@@ -29,19 +29,39 @@ object MihomoDelayPolicy {
 
 object MihomoControllerPort {
     fun allocate(): Int {
+        return LocalTcpPort.allocate(MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT)
+    }
+
+    fun canBind(port: Int): Boolean {
+        return LocalTcpPort.canBind(MihomoRuntimeDefaults.CONTROLLER_HOST, port)
+    }
+}
+
+object DpiBypassPort {
+    fun allocate(): Int {
+        return LocalTcpPort.allocate(DpiBypassDefaults.FALLBACK_PROXY_PORT)
+    }
+
+    fun canBind(port: Int): Boolean {
+        return LocalTcpPort.canBind(DpiBypassDefaults.PROXY_HOST, port)
+    }
+}
+
+private object LocalTcpPort {
+    fun allocate(fallbackPort: Int): Int {
         return runCatching {
             ServerSocket(0).use { socket ->
                 socket.reuseAddress = true
                 socket.localPort
             }
-        }.getOrDefault(MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT)
+        }.getOrDefault(fallbackPort)
     }
 
-    fun canBind(port: Int): Boolean {
+    fun canBind(host: String, port: Int): Boolean {
         return runCatching {
             ServerSocket().use { socket ->
                 socket.reuseAddress = true
-                socket.bind(InetSocketAddress(MihomoRuntimeDefaults.CONTROLLER_HOST, port))
+                socket.bind(InetSocketAddress(host, port))
             }
         }.isSuccess
     }
@@ -395,6 +415,178 @@ object MihomoFrontingPatcher {
 
     private fun replaceInlineServer(line: String, value: String): String {
         return line.replace(Regex("""server:\s*([^,}]+)"""), "server: $value")
+    }
+
+    private fun topLevelKey(line: String): String? {
+        if (line.isBlank() || line.first().isWhitespace() || line.trimStart().startsWith("#")) return null
+        val index = line.indexOf(':')
+        if (index <= 0) return null
+        return line.substring(0, index).trim().takeIf { it.isNotBlank() }
+    }
+
+    private fun indentation(line: String): Int {
+        return line.indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 } ?: line.length
+    }
+}
+
+object MihomoDpiBypassPatcher {
+    fun patch(
+        rawYaml: String,
+        enabled: Boolean,
+        proxyPort: Int = DpiBypassDefaults.FALLBACK_PROXY_PORT,
+    ): String {
+        if (!enabled) return rawYaml
+        val normalized = rawYaml.replace("\r\n", "\n").replace('\r', '\n')
+        val output = mutableListOf<String>()
+        var inProxies = false
+        var sawProxies = false
+        var sawDpiProxy = false
+        var currentProxy = mutableListOf<String>()
+
+        fun flushProxy() {
+            if (currentProxy.isEmpty()) return
+            if (proxyName(currentProxy) == DpiBypassDefaults.PROXY_NAME) {
+                sawDpiProxy = true
+                output += dpiProxyBlock(proxyPort)
+            } else {
+                output += withDialerProxy(currentProxy)
+            }
+            currentProxy = mutableListOf()
+        }
+
+        fun appendDpiProxy() {
+            if (sawDpiProxy) return
+            output += dpiProxyBlock(proxyPort)
+            sawDpiProxy = true
+        }
+
+        normalized.split('\n').forEach { line ->
+            val topLevelKey = topLevelKey(line)
+            if (topLevelKey != null) {
+                if (inProxies) {
+                    flushProxy()
+                    appendDpiProxy()
+                }
+                inProxies = topLevelKey == "proxies"
+                sawProxies = sawProxies || inProxies
+                output += line
+                return@forEach
+            }
+
+            if (!inProxies) {
+                output += line
+                return@forEach
+            }
+
+            val content = line.trimStart()
+            if (indentation(line) == 2 && content.startsWith("- ")) {
+                flushProxy()
+                currentProxy += line
+                return@forEach
+            }
+
+            if (currentProxy.isNotEmpty()) {
+                currentProxy += line
+            } else {
+                output += line
+            }
+        }
+        if (inProxies) {
+            flushProxy()
+            appendDpiProxy()
+        }
+        if (!sawProxies) {
+            if (output.isNotEmpty() && output.last().isNotBlank()) output += ""
+            output += "proxies:"
+            output += dpiProxyBlock(proxyPort)
+        }
+
+        return output.joinToString("\n")
+    }
+
+    private fun withDialerProxy(lines: List<String>): List<String> {
+        if (lines.size == 1 && isInlineProxyMap(lines.single())) {
+            return listOf(withInlineDialerProxy(lines.single()))
+        }
+        var replaced = false
+        val patched = lines.map { line ->
+            if (isDialerProxyField(line)) {
+                replaced = true
+                replaceYamlValue(line, DpiBypassDefaults.PROXY_NAME)
+            } else {
+                line
+            }
+        }.toMutableList()
+        if (!replaced) {
+            patched += "    dialer-proxy: ${yamlSingleQuoted(DpiBypassDefaults.PROXY_NAME)}"
+        }
+        return patched
+    }
+
+    private fun dpiProxyBlock(proxyPort: Int): List<String> {
+        return listOf(
+            "  - name: ${yamlSingleQuoted(DpiBypassDefaults.PROXY_NAME)}",
+            "    type: socks5",
+            "    server: ${DpiBypassDefaults.PROXY_HOST}",
+            "    port: $proxyPort",
+            "    udp: false",
+        )
+    }
+
+    private fun proxyName(lines: List<String>): String? {
+        lines.forEach { line ->
+            val content = line.trimStart()
+            val value = when {
+                content.startsWith("- {") -> Regex("""name:\s*([^,}]+)""").find(content)?.groupValues?.get(1)
+                content.startsWith("- name:") -> content.substringAfter("- name:")
+                indentation(line) == 4 && content.startsWith("name:") -> content.substringAfter("name:")
+                else -> null
+            }
+            value?.let { return decodeYamlScalar(it) }
+        }
+        return null
+    }
+
+    private fun isDialerProxyField(line: String): Boolean {
+        return indentation(line) == 4 && line.trimStart().startsWith("dialer-proxy:")
+    }
+
+    private fun replaceYamlValue(line: String, value: String): String {
+        val indent = line.takeWhile(Char::isWhitespace)
+        val comment = inlineComment(line.substringAfter(":", ""))
+        return "$indent" + "dialer-proxy: ${yamlSingleQuoted(value)}$comment"
+    }
+
+    private fun withInlineDialerProxy(line: String): String {
+        val quoted = yamlSingleQuoted(DpiBypassDefaults.PROXY_NAME)
+        if ("dialer-proxy:" in line) {
+            return line.replace(Regex("""dialer-proxy:\s*([^,}]+)"""), "dialer-proxy: $quoted")
+        }
+        return line.replaceFirst(Regex("""\}\s*$"""), ", dialer-proxy: $quoted }")
+    }
+
+    private fun isInlineProxyMap(line: String): Boolean {
+        return line.trimStart().startsWith("- {")
+    }
+
+    private fun inlineComment(value: String): String {
+        val index = value.indexOf(" #")
+        return if (index >= 0) value.substring(index) else ""
+    }
+
+    private fun decodeYamlScalar(value: String): String {
+        val trimmed = value.trim().substringBefore(" #").trim()
+        if (trimmed.length >= 2 && trimmed.first() == '\'' && trimmed.last() == '\'') {
+            return trimmed.substring(1, trimmed.lastIndex).replace("''", "'")
+        }
+        if (trimmed.length >= 2 && trimmed.first() == '"' && trimmed.last() == '"') {
+            return trimmed.substring(1, trimmed.lastIndex)
+        }
+        return trimmed
+    }
+
+    private fun yamlSingleQuoted(value: String): String {
+        return "'${value.replace("'", "''")}'"
     }
 
     private fun topLevelKey(line: String): String? {

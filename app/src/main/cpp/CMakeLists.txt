@@ -21,11 +21,20 @@ if (NOT EXISTS ${LIB_CLASH_HEADER_PATH} OR NOT EXISTS ${BRIDE_HEADER_PATH})
     message(FATAL_ERROR "Missing libclash headers for ${ANDROID_ABI}. Run scripts/build-flclash-core.sh first.")
 endif ()
 
+file(GLOB BYE_DPI_SRC CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/byedpi/*.c")
+set_source_files_properties(${BYE_DPI_SRC} PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden")
+
 add_library(${CMAKE_PROJECT_NAME} SHARED
     jni_helper.cpp
     core.cpp
+    byedpi_bridge.cpp
+    ${BYE_DPI_SRC}
 )
 
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${LIB_CLASH_INCLUDE_DIR})
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${LIB_CLASH_INCLUDE_DIR} "${CMAKE_SOURCE_DIR}/byedpi")
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}")
-target_link_libraries(${CMAKE_PROJECT_NAME} clash)
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:-std=c99 -O2 -Wall -Wno-unused -Wextra -Wno-unused-parameter -pedantic>
+)
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ANDROID_APP)
+target_link_libraries(${CMAKE_PROJECT_NAME} clash android log)

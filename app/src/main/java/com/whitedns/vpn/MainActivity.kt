@@ -62,6 +62,7 @@ class MainActivity : Activity() {
     private lateinit var locationPreferenceStore: ConnectionLocationPreferenceStore
     private lateinit var splitTunnelPreferenceStore: SplitTunnelPreferenceStore
     private lateinit var frontingIpPreferenceStore: FrontingIpPreferenceStore
+    private lateinit var dpiBypassPreferenceStore: DpiBypassPreferenceStore
     private lateinit var installedAppRepository: InstalledAppRepository
     private var privacyPolicyDialog: AlertDialog? = null
     private var sessionStartedAtElapsedMs: Long = 0L
@@ -76,6 +77,7 @@ class MainActivity : Activity() {
     private lateinit var splitTunnelRow: DashboardDataRowView
     private lateinit var advancedBody: LinearLayout
     private lateinit var advancedToggleText: TextView
+    private lateinit var dpiBypassCheckbox: CheckBox
     private lateinit var frontingIpChipGroup: ChipGroup
     private lateinit var frontingIpInput: EditText
     private lateinit var frontingIpErrorText: TextView
@@ -148,6 +150,7 @@ class MainActivity : Activity() {
         locationPreferenceStore = ConnectionLocationPreferenceStore(this)
         splitTunnelPreferenceStore = SplitTunnelPreferenceStore(this)
         frontingIpPreferenceStore = FrontingIpPreferenceStore(this)
+        dpiBypassPreferenceStore = DpiBypassPreferenceStore(this)
         installedAppRepository = InstalledAppRepository(this)
         DiagnosticLogger.info(this, "activity.onCreate")
         configureSystemBars()
@@ -590,6 +593,22 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), 0, dp(16), dp(16))
         }
+        dpiBypassCheckbox = CheckBox(this).apply {
+            text = "ByeByeDPI"
+            textSize = 13f
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            setTextColor(TEXT_PRIMARY)
+            buttonTintList = ColorStateList.valueOf(TEAL)
+            isChecked = dpiBypassPreferenceStore.isEnabled()
+            setOnClickListener { saveDpiBypassEnabled(isChecked) }
+        }
+        advancedBody.addView(
+            dpiBypassCheckbox,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
         advancedBody.addView(
             TextView(this).apply {
                 text = "Fronting IP"
@@ -1279,6 +1298,18 @@ class MainActivity : Activity() {
         return saveFrontingIps(reconnectIfChanged, previousValue)
     }
 
+    private fun saveDpiBypassEnabled(enabled: Boolean) {
+        val previousValue = dpiBypassPreferenceStore.isEnabled()
+        if (previousValue == enabled) return
+        dpiBypassPreferenceStore.saveEnabled(enabled)
+        DiagnosticLogger.info(this, "activity.dpiBypass.saved", "enabled=$enabled")
+        if (buttonModel.state == VpnState.Started) {
+            buttonModel.onStateChanged(VpnState.Starting)
+            renderState(VpnState.Starting)
+            startVpnService(Actions.RECONNECT)
+        }
+    }
+
     private fun saveFrontingIps(reconnectIfChanged: Boolean, previousValue: String?): Boolean {
         val nextValue = FrontingIpPolicy.normalize(frontingIps.joinToString(","))
         frontingIpPreferenceStore.saveFrontingIp(nextValue)
@@ -1374,6 +1405,9 @@ class MainActivity : Activity() {
         if (!::advancedBody.isInitialized || !::advancedToggleText.isInitialized) return
         advancedBody.visibility = if (advancedExpanded) View.VISIBLE else View.GONE
         advancedToggleText.text = if (advancedExpanded) "HIDE" else "SHOW"
+        if (::dpiBypassCheckbox.isInitialized) {
+            dpiBypassCheckbox.isChecked = dpiBypassPreferenceStore.isEnabled()
+        }
     }
 
     private fun beginConnectFlow() {

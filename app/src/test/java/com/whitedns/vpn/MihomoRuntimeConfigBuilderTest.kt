@@ -8,6 +8,16 @@ import org.json.JSONObject
 
 class MihomoRuntimeConfigBuilderTest {
     @Test
+    fun dpiBypassProxyArgsUseIranByedpiDefaults() {
+        val args = DpiBypassDefaults.proxyArgs(31_234).toList()
+
+        assertTrue(args.containsAll(listOf("-Kt,h", "-d1", "-f-1")))
+        assertTrue(args.contains("-p31234"))
+        assertFalse(args.contains("-o1"))
+        assertFalse(args.contains("-r-5+se"))
+    }
+
+    @Test
     fun corePatchUsesMihomoPortsAndDisablesConfigTun() {
         val patch = MihomoRuntimeConfigBuilder.corePatchJson(
             appName = "WhiteDNS VPN",
@@ -190,6 +200,41 @@ class MihomoRuntimeConfigBuilderTest {
         assertTrue(patched.contains("sni: inline-sni.example.com"))
         assertFalse(patched.contains("server: original.example.com"))
         assertFalse(patched.contains("server: inline.example.com"))
+    }
+
+    @Test
+    fun dpiBypassPatcherAddsLocalProxyAndDialerProxyOnlyWhenEnabled() {
+        val yaml = """
+            proxies:
+              - name: One
+                type: vless
+                server: one.example.com
+                port: 443
+                ws-opts:
+                  headers:
+                    Host: host.example.com
+              - { name: Two, type: trojan, server: two.example.com, port: 8443 }
+            proxy-groups:
+              - name: Auto
+                type: url-test
+                proxies:
+                  - One
+        """.trimIndent()
+
+        val disabled = MihomoDpiBypassPatcher.patch(yaml, enabled = false)
+        val patched = MihomoDpiBypassPatcher.patch(yaml, enabled = true, proxyPort = 31_234)
+        val repatched = MihomoDpiBypassPatcher.patch(patched, enabled = true, proxyPort = 31_235)
+
+        assertEquals(yaml, disabled)
+        assertTrue(patched.contains("name: 'WhiteDNS ByeByeDPI'"))
+        assertTrue(patched.contains("type: socks5"))
+        assertTrue(patched.contains("server: 127.0.0.1"))
+        assertTrue(patched.contains("port: 31234"))
+        assertTrue(patched.contains("dialer-proxy: 'WhiteDNS ByeByeDPI'"))
+        assertTrue(patched.contains("dialer-proxy: 'WhiteDNS ByeByeDPI' }"))
+        assertTrue(patched.contains("Host: host.example.com"))
+        assertTrue(repatched.contains("port: 31235"))
+        assertEquals(1, Regex("name: 'WhiteDNS ByeByeDPI'").findAll(repatched).count())
     }
 
     @Test
