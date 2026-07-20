@@ -21,16 +21,17 @@ object MihomoRuntimeDefaults {
     const val MIXED_PORT = 2080
     const val FALLBACK_CONTROL_PORT = 9090
     const val CONTROLLER_HOST = "127.0.0.1"
-    const val HEALTH_URL = "https://www.gstatic.com/generate_204"
-    const val EGRESS_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
-}
-
-object TlsIntegrityPolicy {
-    val TEST_URLS = listOf(
+    val HEALTH_URLS = listOf(
         "https://valid-isrgrootx1.letsencrypt.org/",
         "https://connectivitycheck.gstatic.com/generate_204",
         "https://cloudflare.com/cdn-cgi/trace",
     )
+    val HEALTH_URL = HEALTH_URLS.first()
+    const val EGRESS_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+}
+
+object TlsIntegrityPolicy {
+    val TEST_URLS = MihomoRuntimeDefaults.HEALTH_URLS
     const val PROBE_TIMEOUT_MS = 2_000
     const val TOTAL_TIMEOUT_MS = 7_000L
     const val QUARANTINE_DURATION_MS = 24L * 60L * 60L * 1_000L
@@ -67,7 +68,7 @@ class TlsIntegrityPreferenceStore(context: Context) {
 class TlsIntegrityException(cause: Throwable) : IOException("TLS certificate validation failed", cause)
 
 enum class DnsPrivacyMode(val wireName: String, val label: String) {
-    Automatic("automatic", "Automatic"),
+    Automatic("automatic", "خودکار"),
     DoH("doh", "DoH"),
     DoT("dot", "DoT");
 
@@ -85,15 +86,15 @@ object DnsPrivacyPolicy {
     fun normalizeDohUrl(value: String): String {
         val input = value.trim()
         val uri = runCatching { URI(input) }
-            .getOrElse { throw IllegalArgumentException("DoH must be a valid HTTPS URL") }
+            .getOrElse { throw IllegalArgumentException("DoH باید یک URL معتبر HTTPS باشد") }
         require(uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()) {
-            "DoH must be a valid HTTPS URL"
+            "DoH باید یک URL معتبر HTTPS باشد"
         }
         require(uri.rawUserInfo == null && uri.rawFragment == null) {
-            "DoH URL cannot contain credentials or a fragment"
+            "URL مربوط به DoH نباید اطلاعات ورود یا fragment داشته باشد"
         }
-        require(uri.rawAuthority?.endsWith(':') == false) { "DoH port must be from 1 to 65535" }
-        require(uri.port == -1 || uri.port in 1..65535) { "DoH port must be from 1 to 65535" }
+        require(uri.rawAuthority?.endsWith(':') == false) { "پورت DoH باید عددی بین 1 تا 65535 باشد" }
+        require(uri.port == -1 || uri.port in 1..65535) { "پورت DoH باید عددی بین 1 تا 65535 باشد" }
         return uri.toASCIIString()
     }
 
@@ -101,9 +102,9 @@ object DnsPrivacyPolicy {
         val input = value.trim()
         val uri = runCatching {
             URI(if (input.startsWith("tls://", ignoreCase = true)) input else "tls://$input")
-        }.getOrElse { throw IllegalArgumentException("DoT must be a valid host[:port]") }
+        }.getOrElse { throw IllegalArgumentException("DoT باید یک host[:port] معتبر باشد") }
         require(uri.scheme.equals("tls", ignoreCase = true) && !uri.host.isNullOrBlank()) {
-            "DoT must be a valid host[:port]"
+            "DoT باید یک host[:port] معتبر باشد"
         }
         require(
             uri.rawUserInfo == null &&
@@ -111,10 +112,10 @@ object DnsPrivacyPolicy {
                 uri.rawFragment == null &&
                 (uri.rawPath.isNullOrEmpty() || uri.rawPath == "/"),
         ) {
-            "DoT must contain only a host and optional port"
+            "DoT فقط می‌تواند نام میزبان و پورت اختیاری داشته باشد"
         }
-        require(uri.rawAuthority?.endsWith(':') == false) { "DoT port must be from 1 to 65535" }
-        require(uri.port == -1 || uri.port in 1..65535) { "DoT port must be from 1 to 65535" }
+        require(uri.rawAuthority?.endsWith(':') == false) { "پورت DoT باید عددی بین 1 تا 65535 باشد" }
+        require(uri.port == -1 || uri.port in 1..65535) { "پورت DoT باید عددی بین 1 تا 65535 باشد" }
         val port = uri.port.takeIf { it != -1 } ?: 853
         val host = when {
             uri.host.startsWith('[') -> uri.host

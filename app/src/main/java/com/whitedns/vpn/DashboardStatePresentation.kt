@@ -16,32 +16,32 @@ data class DashboardStatePresentation(
 object DashboardStatePresenter {
     fun forState(state: VpnState): DashboardStatePresentation = when (state) {
         VpnState.Stopped -> DashboardStatePresentation(
-            title = "No signal",
+            title = "آماده",
             tone = DashboardTone.Neutral,
             showProgress = false,
         )
         VpnState.Starting -> DashboardStatePresentation(
-            title = "Searching...",
+            title = "در حال اتصال…",
             tone = DashboardTone.Progress,
             showProgress = true,
         )
         VpnState.Started -> DashboardStatePresentation(
-            title = "Connected",
+            title = "متصل",
             tone = DashboardTone.Connected,
             showProgress = false,
         )
         VpnState.Stopping -> DashboardStatePresentation(
-            title = "Disconnecting",
+            title = "در حال قطع اتصال",
             tone = DashboardTone.Progress,
             showProgress = true,
         )
         VpnState.DailyLimitReached -> DashboardStatePresentation(
-            title = "No signal",
+            title = "سقف مصرف روزانه",
             tone = DashboardTone.Neutral,
             showProgress = false,
         )
         is VpnState.Error -> DashboardStatePresentation(
-            title = "Connection error",
+            title = "خطای اتصال",
             tone = DashboardTone.Error,
             showProgress = false,
         )

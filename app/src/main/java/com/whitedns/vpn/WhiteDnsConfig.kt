@@ -19,11 +19,31 @@ object WhiteDnsConfig {
 
 class ConfigRepository(private val context: Context) {
     private val subscriptionStore = SubscriptionStore(context)
+    private val userSubscriptionManager = UserSubscriptionManager(context, subscriptionStore)
     private val scanStateStore = WhiteDnsScanStateStore(context)
 
     suspend fun fetchOrCachedCatalog(): SubscriptionCatalog = fetchOrCachedMihomoConfig().catalog
 
+    suspend fun refreshDefaultMihomoConfig(): MihomoSubscriptionSnapshot = withContext(Dispatchers.IO) {
+        fetchAndCacheDefaultMihomoConfig(System.currentTimeMillis()).also { snapshot ->
+            pruneProfileCaches(snapshot.catalog)
+            DiagnosticLogger.info(
+                context,
+                "subscription.fetch.manual.success",
+                "profiles=${snapshot.catalog.profiles.size} groups=${snapshot.summary.groups.size}",
+            )
+        }
+    }
+
     suspend fun readCachedMihomoConfigOrNull(): MihomoSubscriptionSnapshot? = withContext(Dispatchers.IO) {
+        val selectedId = subscriptionStore.readSelectedSubscriptionId()
+        if (selectedId != SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
+            return@withContext runCatching { userSubscriptionManager.cachedSnapshot(selectedId) }
+                .onFailure { error ->
+                    DiagnosticLogger.warn(context, "subscription.user.cache.failed", error = error)
+                }
+                .getOrNull()
+        }
         val cachedYaml = readCachedYaml()
         if (cachedYaml.isBlank()) return@withContext null
         val cachedCatalog = subscriptionStore.readCatalog()
@@ -48,6 +68,10 @@ class ConfigRepository(private val context: Context) {
     }
 
     suspend fun fetchOrCachedMihomoConfig(): MihomoSubscriptionSnapshot = withContext(Dispatchers.IO) {
+        val selectedId = subscriptionStore.readSelectedSubscriptionId()
+        if (selectedId != SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
+            return@withContext fetchOrCachedUserSubscription(selectedId)
+        }
         val nowMs = System.currentTimeMillis()
         val cachedCatalog = subscriptionStore.readCatalog()
         val cachedYaml = readCachedYaml()
@@ -66,17 +90,7 @@ class ConfigRepository(private val context: Context) {
             return@withContext snapshot
         }
 
-        DiagnosticLogger.info(context, "subscription.fetch.start", "url=${WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL}")
-        val fetched = runCatching {
-            val yaml = fetchEncryptedYaml()
-            val snapshot = MihomoConfigParser.parse(yaml, nowMs)
-            if (snapshot.catalog.profiles.isEmpty()) {
-                throw IOException("Mihomo subscription did not contain proxies")
-            }
-            writeCachedYaml(yaml)
-            subscriptionStore.saveCatalog(snapshot.catalog)
-            snapshot
-        }
+        val fetched = runCatching { fetchAndCacheDefaultMihomoConfig(nowMs) }
         if (fetched.isSuccess) {
             val snapshot = fetched.getOrThrow()
             pruneProfileCaches(snapshot.catalog)
@@ -106,6 +120,47 @@ class ConfigRepository(private val context: Context) {
             "Unable to fetch Mihomo subscription and no cached YAML is available",
             fetched.exceptionOrNull(),
         )
+    }
+
+    private fun fetchAndCacheDefaultMihomoConfig(nowMs: Long): MihomoSubscriptionSnapshot {
+        DiagnosticLogger.info(context, "subscription.fetch.start", "url=${WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL}")
+        val yaml = fetchEncryptedYaml()
+        val snapshot = MihomoConfigParser.parse(yaml, nowMs)
+        if (snapshot.catalog.profiles.isEmpty()) {
+            throw IOException("Mihomo subscription did not contain proxies")
+        }
+        writeCachedYaml(yaml)
+        subscriptionStore.saveCatalog(snapshot.catalog)
+        return snapshot
+    }
+
+    private fun fetchOrCachedUserSubscription(id: String): MihomoSubscriptionSnapshot {
+        val cached = userSubscriptionManager.cachedSnapshot(id)
+        val source = subscriptionStore.readUserSubscription(id)
+            ?: throw IOException("Selected subscription no longer exists")
+        val nowMs = System.currentTimeMillis()
+        if (
+            cached != null &&
+            nowMs - source.updatedAt in 0 until WhiteDnsConfig.SUBSCRIPTION_REFRESH_INTERVAL_MS
+        ) {
+            pruneProfileCaches(cached.catalog)
+            return cached
+        }
+
+        val refreshed = runCatching {
+            userSubscriptionManager.refresh(id)
+            userSubscriptionManager.cachedSnapshot(id)
+                ?: throw IOException("Refreshed subscription did not contain proxies")
+        }
+        if (refreshed.isSuccess) {
+            return refreshed.getOrThrow().also { pruneProfileCaches(it.catalog) }
+        }
+        if (cached != null) {
+            DiagnosticLogger.warn(context, "subscription.user.refresh.failed", error = refreshed.exceptionOrNull())
+            pruneProfileCaches(cached.catalog)
+            return cached
+        }
+        throw IOException("Unable to refresh selected subscription", refreshed.exceptionOrNull())
     }
 
     private fun fetchEncryptedYaml(): String {

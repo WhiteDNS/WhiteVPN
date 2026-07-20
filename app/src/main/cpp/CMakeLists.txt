@@ -37,4 +37,8 @@ target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
     $<$<COMPILE_LANGUAGE:C>:-std=c99 -O2 -Wall -Wno-unused -Wextra -Wno-unused-parameter -pedantic>
 )
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ANDROID_APP)
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+)
 target_link_libraries(${CMAKE_PROJECT_NAME} clash android log)

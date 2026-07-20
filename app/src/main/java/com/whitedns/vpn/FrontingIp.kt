@@ -26,42 +26,42 @@ object FrontingIpPolicy {
             .map(::parseEndpoint)
             .map(FrontingEndpoint::encoded)
             .distinct()
-        require(ips.size <= MAX_FRONTING_IPS) { "Fronting IP accepts up to $MAX_FRONTING_IPS endpoints" }
+        require(ips.size <= MAX_FRONTING_IPS) { "IP Fronting حداکثر $MAX_FRONTING_IPS آدرس می‌پذیرد" }
         return ips
     }
 
     fun parseEndpoint(value: String): FrontingEndpoint {
         val endpoint = value.trim()
         require(endpoint.isNotBlank() && endpoint.none(Char::isWhitespace)) {
-            "Fronting IPs must be comma-separated IP[:port] endpoints"
+            "آدرس‌های IP Fronting باید به‌شکل IP[:port] و با ویرگول جدا شوند"
         }
 
         val (ip, portText) = when {
             endpoint.startsWith('[') -> {
                 val closingBracket = endpoint.indexOf(']')
-                require(closingBracket > 1) { "Invalid fronting IPv6 endpoint" }
+                require(closingBracket > 1) { "آدرس IPv6 برای IP Fronting نامعتبر است" }
                 val suffix = endpoint.substring(closingBracket + 1)
-                require(suffix.isEmpty() || suffix.startsWith(':')) { "Invalid fronting IPv6 endpoint" }
-                require(suffix != ":") { "Fronting port must be a number from 1 to 65535" }
+                require(suffix.isEmpty() || suffix.startsWith(':')) { "آدرس IPv6 برای IP Fronting نامعتبر است" }
+                require(suffix != ":") { "پورت IP Fronting باید عددی بین 1 تا 65535 باشد" }
                 endpoint.substring(1, closingBracket) to suffix.removePrefix(":").takeIf(String::isNotEmpty)
             }
             endpoint.count { it == ':' } == 1 -> {
                 val port = endpoint.substringAfter(':')
-                require(port.isNotEmpty()) { "Fronting port must be a number from 1 to 65535" }
+                require(port.isNotEmpty()) { "پورت IP Fronting باید عددی بین 1 تا 65535 باشد" }
                 endpoint.substringBefore(':') to port
             }
             else -> endpoint to null
         }
 
-        require(isValidIpv4(ip) || isValidIpv6(ip)) { "Fronting IP must be a valid IPv4 or IPv6 address" }
+        require(isValidIpv4(ip) || isValidIpv6(ip)) { "IP Fronting باید یک آدرس معتبر IPv4 یا IPv6 باشد" }
         val port = portText?.let {
-            require(it.all(Char::isDigit)) { "Fronting port must be a number from 1 to 65535" }
+            require(it.all(Char::isDigit)) { "پورت IP Fronting باید عددی بین 1 تا 65535 باشد" }
             it.toIntOrNull()?.also { parsed ->
-                require(parsed in 1..65535) { "Fronting port must be a number from 1 to 65535" }
-            } ?: throw IllegalArgumentException("Fronting port must be a number from 1 to 65535")
+                require(parsed in 1..65535) { "پورت IP Fronting باید عددی بین 1 تا 65535 باشد" }
+            } ?: throw IllegalArgumentException("پورت IP Fronting باید عددی بین 1 تا 65535 باشد")
         }
         require(!ip.contains(':') || endpoint.startsWith('[') || port == null) {
-            "IPv6 endpoints with a port must use [IPv6]:port"
+            "آدرس IPv6 دارای پورت باید به‌شکل [IPv6]:port باشد"
         }
         return FrontingEndpoint(ip, port)
     }

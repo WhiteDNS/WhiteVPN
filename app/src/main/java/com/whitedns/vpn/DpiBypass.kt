@@ -42,15 +42,12 @@ object ByeDpiProxy {
 }
 
 class DpiBypassPreferenceStore(context: Context) {
-    private val prefs = context.getSharedPreferences("white_dns_dpi_bypass", Context.MODE_PRIVATE)
-
-    fun isEnabled(): Boolean = prefs.getBoolean(KEY_ENABLED, false)
-
-    fun saveEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_ENABLED, enabled).apply()
+    init {
+        context.getSharedPreferences("white_dns_dpi_bypass", Context.MODE_PRIVATE)
+            .edit()
+            .remove("enabled")
+            .apply()
     }
 
-    private companion object {
-        const val KEY_ENABLED = "enabled"
-    }
+    fun isEnabled(): Boolean = false
 }

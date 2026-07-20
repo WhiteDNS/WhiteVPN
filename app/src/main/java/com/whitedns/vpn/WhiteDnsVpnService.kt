@@ -18,6 +18,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -52,6 +53,15 @@ class WhiteDnsVpnService : VpnService() {
     private var encryptedIpScanJob: Job? = null
     private var dpiBypassJob: Job? = null
     private val uidPackageNameCache = mutableMapOf<Int, String>()
+
+    private class DpiBypassStartupException(cause: Throwable) :
+        IOException("ByeByeDPI failed to start", cause)
+
+    private class MihomoCoreBusyException(cause: Throwable? = null) :
+        IOException("Mihomo core is still finishing startup. Please try again.", cause)
+
+    private class MihomoCoreSetupTimeoutException :
+        IOException("Mihomo core setup did not finish within 60 seconds")
 
     private data class StartedMihomoRuntime(
         val profile: ConnectionProfile,
@@ -271,7 +281,7 @@ class WhiteDnsVpnService : VpnService() {
             ).also { result ->
                 startupNotice = result.second
             }.first
-        } else if (bypassConnectionCache || tlsIntegrityPreferenceStore.isEnabled()) {
+        } else if (bypassConnectionCache) {
             connectWithTopIpCandidates(
                 eventPrefix = eventPrefix,
                 snapshot = snapshot,
@@ -321,9 +331,14 @@ class WhiteDnsVpnService : VpnService() {
                 useCachedFirst = false,
             ) to null
         } catch (error: Throwable) {
-            if (error is CancellationException) throw error
+            if (
+                error is CancellationException ||
+                error is MihomoCoreBusyException ||
+                error is MihomoCoreSetupTimeoutException
+            ) {
+                throw error
+            }
             DiagnosticLogger.warn(this, "frontingIp.fallback.original", "ips=${frontingIps.size}", error)
-            stopCoreService()
             startMihomoRuntimeAttempt(
                 snapshot = snapshot,
                 splitTunnelPlan = splitTunnelPlan,
@@ -356,9 +371,14 @@ class WhiteDnsVpnService : VpnService() {
                         selectedCountryCode = selectedCountryCode,
                     )
                 } catch (error: Throwable) {
-                    if (error is CancellationException) throw error
+                    if (
+                        error is CancellationException ||
+                        error is MihomoCoreBusyException ||
+                        error is MihomoCoreSetupTimeoutException
+                    ) {
+                        throw error
+                    }
                     DiagnosticLogger.warn(this, "startup.cachedTopIp.failed", "source=$eventPrefix", error)
-                    stopCoreService()
                 }
             }
         }
@@ -407,47 +427,14 @@ class WhiteDnsVpnService : VpnService() {
         splitTunnelPlan: SplitTunnelRuntimePlan,
         selectedCountryCode: String?,
     ): StartedMihomoRuntime {
-        val primaryCandidates = primaryRuntimeCandidates(candidatePlan)
-        if (primaryCandidates.isNotEmpty()) {
-            try {
-                return connectStartupTopIpCandidates(
-                    eventPrefix = eventPrefix,
-                    phase = candidatePlan.primaryPhase,
-                    candidates = primaryCandidates,
-                    snapshot = snapshot,
-                    splitTunnelPlan = splitTunnelPlan,
-                    selectedCountryCode = selectedCountryCode,
-                )
-            } catch (error: Throwable) {
-                if (error is CancellationException || candidatePlan.exhaustiveCandidates.isEmpty()) throw error
-                DiagnosticLogger.info(
-                    this,
-                    "startup.topIp.exhaustive.fallback",
-                    "source=$eventPrefix reason=${candidatePlan.primaryPhase}Failed candidates=${candidatePlan.exhaustiveCandidates.size}",
-                )
-                stopCoreService()
-            }
-        } else if (candidatePlan.exhaustiveCandidates.isNotEmpty()) {
-            DiagnosticLogger.info(
-                this,
-                "startup.topIp.exhaustive.fallback",
-                "source=$eventPrefix reason=${candidatePlan.primaryPhase}CandidatesEmpty candidates=${candidatePlan.exhaustiveCandidates.size}",
-            )
-        }
-
         return connectStartupTopIpCandidates(
             eventPrefix = eventPrefix,
-            phase = "exhaustive",
-            candidates = candidatePlan.exhaustiveCandidates,
+            phase = candidatePlan.primaryPhase,
+            candidates = candidatePlan.primaryCandidates + candidatePlan.exhaustiveCandidates,
             snapshot = snapshot,
             splitTunnelPlan = splitTunnelPlan,
             selectedCountryCode = selectedCountryCode,
         )
-    }
-
-    private fun primaryRuntimeCandidates(candidatePlan: StartupTopIpCandidatePlan): List<CleanIpResult> {
-        if (candidatePlan.primaryPhase != "quick") return candidatePlan.primaryCandidates
-        return candidatePlan.primaryCandidates.take(CleanIpDefaults.STARTUP_RUNTIME_ATTEMPTS.coerceAtLeast(1))
     }
 
     private suspend fun connectStartupTopIpCandidates(
@@ -466,7 +453,7 @@ class WhiteDnsVpnService : VpnService() {
             candidates.filterNot { scanStateStore.isTlsEndpointQuarantined(quarantineScope, it) }
         } else {
             candidates
-        }
+        }.take(CleanIpDefaults.STARTUP_RUNTIME_ATTEMPTS.coerceAtLeast(1))
         if (availableCandidates.isEmpty()) {
             throw IOException("All $phase top-IP candidates are quarantined by the TLS integrity check")
         }
@@ -481,9 +468,6 @@ class WhiteDnsVpnService : VpnService() {
                     "startup.topIp.try",
                     "phase=$phase attempt=$attempt/${availableCandidates.size} endpoint=${endpoint.ip}:${endpoint.port} latencyMs=${endpoint.latencyMs} lossRate=${endpoint.lossRate}",
                 )
-                if (index > 0) {
-                    stopCoreService()
-                }
                 return startMihomoRuntimeAttempt(
                     snapshot = snapshot,
                     splitTunnelPlan = splitTunnelPlan,
@@ -514,7 +498,12 @@ class WhiteDnsVpnService : VpnService() {
                     "phase=$phase attempt=$attempt/${availableCandidates.size} endpoint=${endpoint.ip}:${endpoint.port}",
                     error,
                 )
-                stopCoreService()
+                if (!stopCoreService()) {
+                    throw MihomoCoreBusyException(error)
+                }
+                if (error is MihomoCoreSetupTimeoutException) {
+                    throw error
+                }
             }
         }
         throw IOException("No $phase top-IP candidate passed Mihomo delay and runtime health check", lastFailure)
@@ -537,8 +526,7 @@ class WhiteDnsVpnService : VpnService() {
                 validateConnectivity = validateConnectivity,
                 dpiBypassEnabled = dpiBypassEnabled,
             )
-        } catch (error: Throwable) {
-            if (!dpiBypassEnabled || error is CancellationException) throw error
+        } catch (error: DpiBypassStartupException) {
             DiagnosticLogger.warn(
                 this,
                 "dpiBypass.fallback.direct",
@@ -565,6 +553,9 @@ class WhiteDnsVpnService : VpnService() {
         validateConnectivity: Boolean,
         dpiBypassEnabled: Boolean,
     ): StartedMihomoRuntime {
+        if (activeRuntimePaths != null || !coreLifecycle.isIdle()) {
+            stopActiveCoreForReplacement()
+        }
         val serverOverrideIp = topEndpoint?.ip
         val serverOverridePort = topEndpoint?.let { endpoint ->
             FrontingIpPolicy.explicitPortFor(
@@ -579,9 +570,6 @@ class WhiteDnsVpnService : VpnService() {
             serverOverridePort = serverOverridePort,
         )
         val dnsPrivacyMode = dnsPrivacyPreferenceStore.readMode()
-        if (state == VpnState.Starting && activeRuntimePaths != null) {
-            stopActiveCoreForReplacement()
-        }
         val dpiBypassPort = if (dpiBypassEnabled) DpiBypassPort.allocate() else null
         val runtimeYaml = MihomoDpiBypassPatcher.patch(
             rawYaml = frontedYaml,
@@ -650,15 +638,20 @@ class WhiteDnsVpnService : VpnService() {
             throw IOException("No Mihomo proxy selected for delay test")
         }
         val delayMs = if (validateConnectivity) {
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    MihomoDelayPolicy.acceptedDelayMs(
-                        controller.delay(delayProbeName, timeoutMs = FOREGROUND_MIHOMO_DELAY_TIMEOUT_MS),
-                    )
-                }
-            }.getOrElse { error ->
-                throw IOException("Mihomo delay test failed for $delayProbeName", error)
-            } ?: throw IOException("Mihomo delay test returned no positive delay for $delayProbeName")
+            var lastDelayFailure: Throwable? = null
+            MihomoRuntimeDefaults.HEALTH_URLS.firstNotNullOfOrNull { url ->
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        MihomoDelayPolicy.acceptedDelayMs(
+                            controller.delay(
+                                delayProbeName,
+                                timeoutMs = FOREGROUND_MIHOMO_DELAY_TIMEOUT_MS,
+                                url = url,
+                            ),
+                        )
+                    }
+                }.onFailure { lastDelayFailure = it }.getOrNull()
+            } ?: throw IOException("Mihomo delay test failed for $delayProbeName", lastDelayFailure)
         } else {
             -1L
         }
@@ -1156,7 +1149,9 @@ class WhiteDnsVpnService : VpnService() {
 
         val protectCallback = object : TunInterface {
             override fun protect(fd: Int) {
-                this@WhiteDnsVpnService.protect(fd)
+                check(this@WhiteDnsVpnService.protect(fd)) {
+                    "Android refused to protect ByeByeDPI socket $fd"
+                }
             }
 
             override fun resolverProcess(protocol: Int, source: String, target: String, uid: Int): String = ""
@@ -1195,19 +1190,18 @@ class WhiteDnsVpnService : VpnService() {
         }
 
         val healthStatus = withContext(Dispatchers.IO) {
-            runCatching {
-                MihomoRuntimeHealth.httpStatusThroughSocksProxy(
-                    port = port,
-                    timeoutMs = DPI_BYPASS_HEALTH_TIMEOUT_MS,
-                )
-            }.getOrElse { error ->
-                DiagnosticLogger.warn(this@WhiteDnsVpnService, "dpiBypass.proxy.health.failed", "port=$port", error)
-                -1
+            MihomoRuntimeDefaults.HEALTH_URLS.firstNotNullOfOrNull { url ->
+                runCatching {
+                    MihomoRuntimeHealth.httpStatusThroughSocksProxy(
+                        port = port,
+                        url = url,
+                        timeoutMs = TlsIntegrityPolicy.PROBE_TIMEOUT_MS,
+                    )
+                }.getOrNull()?.takeIf { code -> code == 204 || code in 200..399 }
             }
-        }
-        if (healthStatus != 204 && healthStatus !in 200..399) {
-            throw IOException("ByeByeDPI proxy did not pass forwarding health check on ${DpiBypassDefaults.PROXY_HOST}:$port")
-        }
+        } ?: throw IOException(
+            "ByeByeDPI proxy could not reach any connectivity-check endpoint on ${DpiBypassDefaults.PROXY_HOST}:$port",
+        )
 
         DiagnosticLogger.info(
             this,
@@ -1266,7 +1260,13 @@ class WhiteDnsVpnService : VpnService() {
             throw IOException(setupMessage)
         }
         if (dpiBypassPort != null) {
-            startDpiBypassProxy(dpiBypassPort)
+            try {
+                startDpiBypassProxy(dpiBypassPort)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                throw DpiBypassStartupException(error)
+            }
         }
 
         val tunFd = withContext(Dispatchers.Main) {
@@ -1289,20 +1289,56 @@ class WhiteDnsVpnService : VpnService() {
         initParams: String,
         setupParams: String,
     ): String {
+        if (!coreLifecycle.beginSetup()) {
+            throw MihomoCoreBusyException()
+        }
         val deferred = CompletableDeferred<String?>()
-        withContext(Dispatchers.IO) {
-            Core.quickSetup(initParams, setupParams) { result ->
-                if (!deferred.isCompleted) {
-                    deferred.complete(result)
+        try {
+            withContext(NonCancellable + Dispatchers.IO) {
+                Core.quickSetup(initParams, setupParams) { result ->
+                    val completion = coreLifecycle.finishSetup()
+                    if (!deferred.isCompleted) {
+                        deferred.complete(result)
+                    }
+                    if (completion == MihomoCoreSetupCompletion.CleanupClaimed) {
+                        DiagnosticLogger.info(
+                            this@WhiteDnsVpnService,
+                            "mihomo.cleanup.deferred.start",
+                            "reason=setupCompletedAfterStopRequest",
+                        )
+                        coreCleanupScope.launch {
+                            cleanupClaimedCore("setupCompletedAfterStopRequest")
+                        }
+                    }
                 }
             }
+        } catch (error: Throwable) {
+            if (error !is CancellationException) {
+                DiagnosticLogger.warn(this, "mihomo.core.setup.dispatch.failed", error = error)
+            }
+            throw error
         }
-        val result = withTimeoutOrNull(CORE_SETUP_TIMEOUT_MS) {
+
+        val initialResult = withTimeoutOrNull(CORE_SETUP_SLOW_WARNING_MS) {
+            deferred.await()
+        }
+        if (initialResult != null || deferred.isCompleted) {
+            if (!coreLifecycle.isActive()) throw MihomoCoreBusyException()
+            return initialResult.orEmpty()
+        }
+
+        DiagnosticLogger.warn(
+            this,
+            "mihomo.core.setup.slow",
+            "elapsedMs=$CORE_SETUP_SLOW_WARNING_MS continuing=true",
+        )
+        val result = withTimeoutOrNull(CORE_SETUP_HARD_TIMEOUT_MS - CORE_SETUP_SLOW_WARNING_MS) {
             deferred.await()
         }
         if (result == null && !deferred.isCompleted) {
-            throw IOException("Mihomo core setup timed out")
+            throw MihomoCoreSetupTimeoutException()
         }
+        if (!coreLifecycle.isActive()) throw MihomoCoreBusyException()
         return result.orEmpty()
     }
 
@@ -1461,7 +1497,11 @@ class WhiteDnsVpnService : VpnService() {
 
     private suspend fun verifyRuntimeHealth() {
         val proxyCode = waitForHealthyStatus("mihomo.proxy.health") {
-            MihomoRuntimeHealth.httpStatusThroughMixedProxy()
+            MihomoRuntimeDefaults.HEALTH_URLS.firstNotNullOfOrNull { url ->
+                runCatching { MihomoRuntimeHealth.httpStatusThroughMixedProxy(url) }
+                    .getOrNull()
+                    ?.takeIf { code -> code == 204 || code in 200..399 }
+            } ?: -1
         }
             ?: throw IOException("Local Mihomo proxy did not pass health check at 127.0.0.1:2080")
         DiagnosticLogger.info(this, "mihomo.proxy.health.ok", "code=$proxyCode")
@@ -1617,52 +1657,119 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     private suspend fun stopActiveCoreForReplacement() {
-        stopCoreService()
+        if (!stopCoreService()) {
+            throw MihomoCoreBusyException()
+        }
         activeRuntimePaths = null
     }
 
-    private suspend fun stopCoreService() {
+    private suspend fun stopCoreService(): Boolean {
+        val coreStopped = when (coreLifecycle.requestCleanup()) {
+            MihomoCoreCleanupRequest.Claimed -> {
+                coreCleanupScope.launch {
+                    cleanupClaimedCore("serviceRequest")
+                }
+                awaitCoreIdle(CORE_SHUTDOWN_WAIT_TIMEOUT_MS)
+            }
+            MihomoCoreCleanupRequest.PendingSetup -> {
+                DiagnosticLogger.warn(this, "mihomo.cleanup.deferred", "reason=setupRace")
+                awaitCoreIdle(CORE_SETUP_CLEANUP_GRACE_MS)
+            }
+            MihomoCoreCleanupRequest.AlreadyStopping -> awaitCoreIdle(CORE_SHUTDOWN_WAIT_TIMEOUT_MS)
+            MihomoCoreCleanupRequest.AlreadyIdle -> true
+        }
+        stopDpiBypassProxy()
+        return coreStopped
+    }
+
+    private suspend fun awaitCoreIdle(timeoutMs: Long): Boolean {
+        return withTimeoutOrNull(timeoutMs) {
+            while (!coreLifecycle.isIdle()) {
+                delay(CORE_LIFECYCLE_POLL_INTERVAL_MS)
+            }
+            true
+        } == true
+    }
+
+    private suspend fun cleanupClaimedCore(reason: String): Boolean {
+        DiagnosticLogger.info(this, "mihomo.cleanup.start", "reason=$reason")
         withContext(Dispatchers.IO) {
             runCatching { Core.stopTun() }
                 .onFailure { DiagnosticLogger.warn(this@WhiteDnsVpnService, "mihomo.tun.stop.failed", error = it) }
-            runCatching { invokeCoreAction("stopListener") }
-                .onFailure { DiagnosticLogger.warn(this@WhiteDnsVpnService, "mihomo.listener.stop.failed", error = it) }
-            runCatching { invokeCoreAction("shutdown") }
-                .onFailure { DiagnosticLogger.warn(this@WhiteDnsVpnService, "mihomo.shutdown.failed", error = it) }
         }
-        stopDpiBypassProxy()
+        val completion = withContext(Dispatchers.IO) {
+            beginCoreShutdown(reason)
+        } ?: return false
+
+        val completedQuickly = withTimeoutOrNull(CORE_SHUTDOWN_SLOW_WARNING_MS) {
+            completion.await()
+            true
+        } == true
+        if (completedQuickly) return true
+
+        DiagnosticLogger.warn(
+            this,
+            "mihomo.shutdown.slow",
+            "reason=$reason elapsedMs=$CORE_SHUTDOWN_SLOW_WARNING_MS continuing=true",
+        )
+        val completed = withTimeoutOrNull(CORE_SHUTDOWN_HARD_TIMEOUT_MS - CORE_SHUTDOWN_SLOW_WARNING_MS) {
+            completion.await()
+            true
+        } == true
+        if (!completed) {
+            DiagnosticLogger.warn(
+                this,
+                "mihomo.shutdown.deferred",
+                "reason=$reason elapsedMs=$CORE_SHUTDOWN_HARD_TIMEOUT_MS state=${coreLifecycle.currentState()}",
+            )
+        }
+        return completed
     }
 
-    private suspend fun invokeCoreAction(method: String): String? {
-        val deferred = CompletableDeferred<String?>()
+    private fun beginCoreShutdown(reason: String): CompletableDeferred<Unit>? {
+        val completion = CompletableDeferred<Unit>()
         val action = JSONObject()
-            .put("id", "$method-${SystemClock.elapsedRealtimeNanos()}")
-            .put("method", method)
-        Core.invokeAction(action.toString()) { result ->
-            if (!deferred.isCompleted) {
-                deferred.complete(result)
+            .put("id", "shutdown-${SystemClock.elapsedRealtimeNanos()}")
+            .put("method", "shutdown")
+        return runCatching {
+            Core.invokeAction(action.toString()) {
+                val transitioned = coreLifecycle.finishCleanup()
+                completion.complete(Unit)
+                if (transitioned) {
+                    DiagnosticLogger.info(
+                        this@WhiteDnsVpnService,
+                        "mihomo.cleanup.completed",
+                        "reason=$reason",
+                    )
+                }
             }
-        }
-        return withTimeoutOrNull(CORE_ACTION_TIMEOUT_MS) {
-            deferred.await()
-        }
+            completion
+        }.onFailure { error ->
+            DiagnosticLogger.warn(this, "mihomo.shutdown.failed", "reason=$reason", error)
+        }.getOrNull()
     }
 
     private fun stopCoreImmediately() {
-        runCatching { Core.stopTun() }
-        runCatching { fireAndForgetCoreAction("stopListener") }
-        runCatching { fireAndForgetCoreAction("shutdown") }
+        when (coreLifecycle.requestCleanup()) {
+            MihomoCoreCleanupRequest.Claimed -> {
+                coreCleanupScope.launch {
+                    cleanupClaimedCore("serviceDestroyed")
+                }
+            }
+
+            MihomoCoreCleanupRequest.PendingSetup -> DiagnosticLogger.warn(
+                this,
+                "mihomo.cleanup.skipped",
+                "reason=setupInFlight serviceDestroyed=true deferred=true",
+            )
+
+            MihomoCoreCleanupRequest.AlreadyStopping,
+            MihomoCoreCleanupRequest.AlreadyIdle -> Unit
+        }
         runCatching { ByeDpiProxy.stop() }
         dpiBypassJob?.cancel(CancellationException("Service destroyed"))
         dpiBypassJob = null
         activeDpiBypassPort = null
-    }
-
-    private fun fireAndForgetCoreAction(method: String) {
-        val action = JSONObject()
-            .put("id", "$method-${SystemClock.elapsedRealtimeNanos()}")
-            .put("method", method)
-        Core.invokeAction(action.toString()) {}
     }
 
     private fun finishStoppedState(event: String) {
@@ -1690,6 +1797,14 @@ class WhiteDnsVpnService : VpnService() {
         lastDefaultDns = dns
         DiagnosticLogger.info(this, "network.default.changed", "network=$networkKey dns=${candidate?.dnsServers?.size ?: 0} state=${state.wireName}")
         if (dns.isBlank()) return
+        if (!coreLifecycle.isActive()) {
+            DiagnosticLogger.info(
+                this,
+                "network.dns.update.skipped",
+                "reason=coreNotActive coreState=${coreLifecycle.currentState()}",
+            )
+            return
+        }
         runCatching { Core.updateDNS(dns) }
             .onFailure { DiagnosticLogger.warn(this, "network.dns.update.failed", "dnsCount=${candidate?.dnsServers?.size ?: 0}", it) }
             .onSuccess {
@@ -1863,12 +1978,19 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     private companion object {
+        val coreLifecycle = MihomoCoreLifecycle()
+        val coreCleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
         const val CHANNEL_ID = "white_dns_vpn"
         const val NOTIFICATION_ID = 1001
-        const val CORE_SETUP_TIMEOUT_MS = 15_000L
-        const val CORE_ACTION_TIMEOUT_MS = 3_000L
+        const val CORE_SETUP_SLOW_WARNING_MS = 15_000L
+        const val CORE_SETUP_HARD_TIMEOUT_MS = 60_000L
+        const val CORE_SETUP_CLEANUP_GRACE_MS = 5_000L
+        const val CORE_LIFECYCLE_POLL_INTERVAL_MS = 50L
+        const val CORE_SHUTDOWN_SLOW_WARNING_MS = 3_000L
+        const val CORE_SHUTDOWN_HARD_TIMEOUT_MS = 30_000L
+        const val CORE_SHUTDOWN_WAIT_TIMEOUT_MS = 30_000L
         const val DPI_BYPASS_START_TIMEOUT_MS = 3_000L
-        const val DPI_BYPASS_HEALTH_TIMEOUT_MS = 5_000
         const val DPI_BYPASS_STOP_TIMEOUT_MS = 2_000L
         const val DPI_BYPASS_PORT_POLL_INTERVAL_MS = 50L
         const val CONTROLLER_READY_TIMEOUT_MS = 12_000L

@@ -16,7 +16,7 @@ data class LocationSelectorOption(
     val label: String,
 ) {
     companion object {
-        val AUTO = LocationSelectorOption(countryCode = null, label = "Auto")
+        val AUTO = LocationSelectorOption(countryCode = null, label = "خودکار")
     }
 }
 
@@ -104,7 +104,7 @@ object ConnectionLocationPolicy {
         val country = Locale.Builder()
             .setRegion(code)
             .build()
-            .getDisplayCountry(Locale.US)
+            .getDisplayCountry(Locale.forLanguageTag("fa"))
             .ifBlank { return null }
         return ConnectionCountry(
             code = code,

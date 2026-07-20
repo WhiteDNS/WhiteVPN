@@ -10,7 +10,7 @@ class ConnectButtonModelTest {
     fun stoppedStateConnects() {
         val model = ConnectButtonModel(VpnState.Stopped)
 
-        assertEquals("Connect", model.label())
+        assertEquals("اتصال", model.label())
         assertEquals(Actions.CONNECT, model.nextAction())
         assertTrue(model.isEnabled())
     }
@@ -19,7 +19,7 @@ class ConnectButtonModelTest {
     fun startedStateDisconnects() {
         val model = ConnectButtonModel(VpnState.Started)
 
-        assertEquals("Disconnect", model.label())
+        assertEquals("قطع اتصال", model.label())
         assertEquals(Actions.DISCONNECT, model.nextAction())
         assertTrue(model.isEnabled())
     }
@@ -28,7 +28,7 @@ class ConnectButtonModelTest {
     fun startingStateCanCancelConnect() {
         val model = ConnectButtonModel(VpnState.Starting)
 
-        assertEquals("Connecting...", model.label())
+        assertEquals("در حال اتصال…", model.label())
         assertEquals(Actions.DISCONNECT, model.nextAction())
         assertTrue(model.isEnabled())
     }
@@ -37,7 +37,7 @@ class ConnectButtonModelTest {
     fun stoppingStateIsDisabled() {
         val model = ConnectButtonModel(VpnState.Stopping)
 
-        assertEquals("Disconnecting...", model.label())
+        assertEquals("در حال قطع اتصال…", model.label())
         assertEquals(null, model.nextAction())
         assertFalse(model.isEnabled())
     }
@@ -48,7 +48,7 @@ class ConnectButtonModelTest {
 
         model.onStateChanged(VpnState.Error("failed"))
 
-        assertEquals("Connect", model.label())
+        assertEquals("تلاش دوباره", model.label())
         assertEquals(Actions.CONNECT, model.nextAction())
         assertTrue(model.isEnabled())
     }
@@ -57,7 +57,7 @@ class ConnectButtonModelTest {
     fun legacyDailyLimitStateRestoresConnectButton() {
         val model = ConnectButtonModel(VpnState.DailyLimitReached)
 
-        assertEquals("Connect", model.label())
+        assertEquals("تلاش دوباره", model.label())
         assertEquals(Actions.CONNECT, model.nextAction())
         assertTrue(model.isEnabled())
     }

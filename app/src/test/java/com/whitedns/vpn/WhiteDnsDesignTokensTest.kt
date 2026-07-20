@@ -13,10 +13,10 @@ class WhiteDnsDesignTokensTest {
 
         assertFalse(light.isDark)
         assertTrue(dark.isDark)
-        assertEquals(0xFFF8FAFB.toInt(), light.background)
-        assertEquals(0xFF000000.toInt(), dark.background)
-        assertEquals(0xFFF1F5F9.toInt(), dark.textPrimary)
-        assertEquals(0xFF34D399.toInt(), dark.teal)
+        assertEquals(0xFFF1F9F5.toInt(), light.background)
+        assertEquals(0xFF050E09.toInt(), dark.background)
+        assertEquals(0xFFE4EEE9.toInt(), dark.textPrimary)
+        assertEquals(0xFF3FBE90.toInt(), dark.teal)
     }
 
     @Test
@@ -24,8 +24,8 @@ class WhiteDnsDesignTokensTest {
         val light = WhiteDnsDesignTokens.palette(isNight = false)
         val dark = WhiteDnsDesignTokens.palette(isNight = true)
 
-        assertEquals(0xFFFFFFFF.toInt(), light.surface)
-        assertEquals(0xFFF0F4F8.toInt(), light.surfaceVariant)
+        assertEquals(0xFFF8FDFB.toInt(), light.surface)
+        assertEquals(0xFFD3E2DB.toInt(), light.surfaceVariant)
         assertTrue(light.background != light.surface)
         assertTrue(light.teal != light.amber)
         assertTrue(light.teal != light.red)

@@ -6,6 +6,102 @@ import org.json.JSONObject
 import java.io.File
 
 class SubscriptionStore(private val context: Context) {
+    fun readUserSubscriptions(): List<UserSubscription> {
+        val file = userSubscriptionsFile()
+        if (!file.exists() || file.length() == 0L) return emptyList()
+        return runCatching {
+            val items = JSONArray(file.readText())
+            buildList {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val id = item.optString("id").takeIf(String::isNotBlank) ?: continue
+                    val name = item.optString("name").takeIf(String::isNotBlank) ?: continue
+                    val input = item.optString("input").takeIf(String::isNotBlank) ?: continue
+                    add(
+                        UserSubscription(
+                            id = id,
+                            name = name,
+                            input = input,
+                            format = UserSubscriptionFormat.fromWireName(item.optString("format")),
+                            connectionCount = item.optInt("connectionCount", 0).coerceAtLeast(0),
+                            updatedAt = item.optLong("updatedAt", 0L),
+                            lastError = item.optString("lastError"),
+                        ),
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    @Synchronized
+    fun saveUserSubscription(subscription: UserSubscription, yaml: String? = null) {
+        val updated = readUserSubscriptions()
+            .filterNot { it.id == subscription.id }
+            .plus(subscription)
+        val items = JSONArray()
+        updated.forEach { item ->
+            items.put(
+                JSONObject()
+                    .put("id", item.id)
+                    .put("name", item.name)
+                    .put("input", item.input)
+                    .put("format", item.format.wireName)
+                    .put("connectionCount", item.connectionCount)
+                    .put("updatedAt", item.updatedAt)
+                    .put("lastError", item.lastError),
+            )
+        }
+        writeFile(userSubscriptionsFile(), items.toString())
+        yaml?.let { writeFile(userSubscriptionYamlFile(subscription.id), it) }
+    }
+
+    fun readUserSubscription(id: String): UserSubscription? =
+        readUserSubscriptions().firstOrNull { it.id == id }
+
+    fun readUserSubscriptionYaml(id: String): String {
+        val file = userSubscriptionYamlFile(id)
+        return if (file.isFile && file.length() > 0L) file.readText() else ""
+    }
+
+    @Synchronized
+    fun deleteUserSubscription(id: String) {
+        val remaining = readUserSubscriptions().filterNot { it.id == id }
+        val items = JSONArray()
+        remaining.forEach { item ->
+            items.put(
+                JSONObject()
+                    .put("id", item.id)
+                    .put("name", item.name)
+                    .put("input", item.input)
+                    .put("format", item.format.wireName)
+                    .put("connectionCount", item.connectionCount)
+                    .put("updatedAt", item.updatedAt)
+                    .put("lastError", item.lastError),
+            )
+        }
+        writeFile(userSubscriptionsFile(), items.toString())
+        userSubscriptionYamlFile(id).delete()
+        if (readSelectedSubscriptionId() == id) saveSelectedSubscriptionId(DEFAULT_SUBSCRIPTION_ID)
+    }
+
+    fun readSelectedSubscriptionId(): String = context
+        .getSharedPreferences(USER_SUBSCRIPTION_PREFS, Context.MODE_PRIVATE)
+        .getString(KEY_SELECTED_SUBSCRIPTION, DEFAULT_SUBSCRIPTION_ID)
+        .orEmpty()
+        .ifBlank { DEFAULT_SUBSCRIPTION_ID }
+
+    fun saveSelectedSubscriptionId(id: String) {
+        val validId = if (id == DEFAULT_SUBSCRIPTION_ID || readUserSubscription(id) != null) {
+            id
+        } else {
+            DEFAULT_SUBSCRIPTION_ID
+        }
+        context.getSharedPreferences(USER_SUBSCRIPTION_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_SELECTED_SUBSCRIPTION, validId)
+            .apply()
+    }
+
     fun readCatalog(): SubscriptionCatalog? {
         val file = catalogFile()
         if (!file.exists() || file.length() == 0L) return null
@@ -148,6 +244,11 @@ class SubscriptionStore(private val context: Context) {
 
     private fun delaysFile(): File = File(context.filesDir, DELAYS_FILE)
 
+    private fun userSubscriptionsFile(): File = File(context.filesDir, USER_SUBSCRIPTIONS_FILE)
+
+    private fun userSubscriptionYamlFile(id: String): File =
+        File(context.filesDir, "mihomo/subscriptions/$id.yaml")
+
     private fun writeFile(file: File, value: String) {
         file.parentFile?.mkdirs()
         file.writeText(value)
@@ -162,9 +263,13 @@ class SubscriptionStore(private val context: Context) {
         }
     }
 
-    private companion object {
-        const val CATALOG_FILE = "subscription-catalog.json"
-        const val DELAYS_FILE = "profile-delay-cache.json"
+    companion object {
+        const val DEFAULT_SUBSCRIPTION_ID = "whitedns"
+        private const val CATALOG_FILE = "subscription-catalog.json"
+        private const val DELAYS_FILE = "profile-delay-cache.json"
+        private const val USER_SUBSCRIPTIONS_FILE = "user-subscriptions.json"
+        private const val USER_SUBSCRIPTION_PREFS = "white_dns_user_subscriptions"
+        private const val KEY_SELECTED_SUBSCRIPTION = "selected_subscription"
     }
 }
 

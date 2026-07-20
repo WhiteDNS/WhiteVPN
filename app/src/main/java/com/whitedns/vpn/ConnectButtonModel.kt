@@ -9,13 +9,11 @@ class ConnectButtonModel(initialState: VpnState = VpnState.Stopped) {
     }
 
     fun label(): String = when (state) {
-        VpnState.Starting -> "Connecting..."
-        VpnState.Started -> "Disconnect"
-        VpnState.Stopping -> "Disconnecting..."
-        VpnState.DailyLimitReached,
-        is VpnState.Error,
-        VpnState.Stopped,
-        -> "Connect"
+        VpnState.Starting -> "در حال اتصال…"
+        VpnState.Started -> "قطع اتصال"
+        VpnState.Stopping -> "در حال قطع اتصال…"
+        VpnState.DailyLimitReached, is VpnState.Error -> "تلاش دوباره"
+        VpnState.Stopped -> "اتصال"
     }
 
     fun isEnabled(): Boolean = state != VpnState.Stopping

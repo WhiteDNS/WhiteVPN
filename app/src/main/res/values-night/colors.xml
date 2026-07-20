@@ -1,46 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Primary colors (vibrant for dark theme) -->
-    <color name="whitedns_primary">#34D399</color>
-    <color name="whitedns_on_primary">#000000</color>
-    <color name="whitedns_primary_container">#064E3B</color>
-    <color name="whitedns_on_primary_container">#A7F3D0</color>
+    <color name="whitedns_primary">#3FBE90</color>
+    <color name="whitedns_on_primary">#02130C</color>
+    <color name="whitedns_primary_container">#09251A</color>
+    <color name="whitedns_on_primary_container">#E4EEE9</color>
 
     <!-- Secondary colors -->
-    <color name="whitedns_secondary">#FBBF24</color>
+    <color name="whitedns_secondary">#E8AA4E</color>
 
     <!-- Background and surface (OLED-friendly pure black) -->
-    <color name="whitedns_background">#000000</color>
-    <color name="whitedns_surface">#0F1419</color>
-    <color name="whitedns_surface_variant">#1A1F25</color>
+    <color name="whitedns_background">#050E09</color>
+    <color name="whitedns_surface">#09140F</color>
+    <color name="whitedns_surface_variant">#1B2A23</color>
 
     <!-- Surface elevations (lighter as elevation increases) -->
-    <color name="surface_elevated_1">#1A1F25</color>
-    <color name="surface_elevated_2">#1E2329</color>
-    <color name="surface_elevated_3">#22272D</color>
+    <color name="surface_elevated_1">#0F1B16</color>
+    <color name="surface_elevated_2">#15231D</color>
+    <color name="surface_elevated_3">#1B2A23</color>
 
     <!-- On surface colors (high contrast) -->
-    <color name="whitedns_on_surface">#F9FAFB</color>
-    <color name="whitedns_on_surface_variant">#9CA3AF</color>
+    <color name="whitedns_on_surface">#E4EEE9</color>
+    <color name="whitedns_on_surface_variant">#9BA8A2</color>
 
     <!-- Text hierarchy -->
-    <color name="text_tertiary">#6B7280</color>
-    <color name="text_muted">#4B5563</color>
+    <color name="text_tertiary">#717E78</color>
+    <color name="text_muted">#3B5348</color>
 
     <!-- Outline -->
-    <color name="whitedns_outline">#2D3748</color>
+    <color name="whitedns_outline">#273730</color>
 
     <!-- Error (vibrant) -->
-    <color name="whitedns_error">#F87171</color>
+    <color name="whitedns_error">#F07F77</color>
 
     <!-- State container colors -->
-    <color name="teal_container">#064E3B</color>
-    <color name="amber_container">#78350F</color>
-    <color name="red_container">#7F1D1D</color>
+    <color name="teal_container">#09251A</color>
+    <color name="amber_container">#3F2903</color>
+    <color name="red_container">#442321</color>
 
     <!-- Gradient colors -->
-    <color name="background_gradient_start">#000000</color>
-    <color name="background_gradient_end">#0F1419</color>
-    <color name="accent_gradient_start">#34D399</color>
-    <color name="accent_gradient_end">#22D3EE</color>
+    <color name="background_gradient_start">#050E09</color>
+    <color name="background_gradient_end">#09140F</color>
+    <color name="accent_gradient_start">#3FBE90</color>
+    <color name="accent_gradient_end">#71CDA7</color>
 </resources>

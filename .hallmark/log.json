@@ -1,0 +1,14 @@
+[
+  {
+    "date": "2026-07-17",
+    "macrostructure": "Workbench",
+    "theme": "custom",
+    "theme_axes": "light and dark / display-condensed-bold / chromatic-green ~165",
+    "vibe": "technical, fluid, fresh, restrained",
+    "enrichment": "none",
+    "brief": "WhiteDNS Android app-wide redesign",
+    "scope": "app",
+    "nav": "N9 adapted bottom rail",
+    "footer": "Ft2 inline single line"
+  }
+]

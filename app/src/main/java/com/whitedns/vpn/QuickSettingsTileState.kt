@@ -16,32 +16,32 @@ object QuickSettingsTileStateMapper {
     fun presentationFor(state: VpnState): QuickSettingsTilePresentation = when (state) {
         VpnState.Started -> QuickSettingsTilePresentation(
             label = "WhiteDNS",
-            subtitle = "Connected",
+            subtitle = "متصل",
             visualState = QuickSettingsTileVisualState.Active,
         )
         VpnState.Starting -> QuickSettingsTilePresentation(
             label = "WhiteDNS",
-            subtitle = "Connecting",
+            subtitle = "در حال اتصال",
             visualState = QuickSettingsTileVisualState.Unavailable,
         )
         VpnState.Stopping -> QuickSettingsTilePresentation(
             label = "WhiteDNS",
-            subtitle = "Disconnecting",
+            subtitle = "در حال قطع اتصال",
             visualState = QuickSettingsTileVisualState.Unavailable,
         )
         is VpnState.Error -> QuickSettingsTilePresentation(
             label = "WhiteDNS",
-            subtitle = "Error",
+            subtitle = "خطا",
             visualState = QuickSettingsTileVisualState.Inactive,
         )
         VpnState.DailyLimitReached -> QuickSettingsTilePresentation(
             label = "WhiteDNS",
-            subtitle = "Disconnected",
+            subtitle = "قطع اتصال",
             visualState = QuickSettingsTileVisualState.Inactive,
         )
         VpnState.Stopped -> QuickSettingsTilePresentation(
             label = "WhiteDNS",
-            subtitle = "Disconnected",
+            subtitle = "قطع اتصال",
             visualState = QuickSettingsTileVisualState.Inactive,
         )
     }

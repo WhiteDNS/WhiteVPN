@@ -9,7 +9,7 @@ class QuickSettingsTileStateMapperTest {
         val presentation = QuickSettingsTileStateMapper.presentationFor(VpnState.Started)
 
         assertEquals(QuickSettingsTileVisualState.Active, presentation.visualState)
-        assertEquals("Connected", presentation.subtitle)
+        assertEquals("متصل", presentation.subtitle)
     }
 
     @Test
@@ -41,6 +41,6 @@ class QuickSettingsTileStateMapperTest {
         val presentation = QuickSettingsTileStateMapper.presentationFor(VpnState.DailyLimitReached)
 
         assertEquals(QuickSettingsTileVisualState.Inactive, presentation.visualState)
-        assertEquals("Disconnected", presentation.subtitle)
+        assertEquals("قطع اتصال", presentation.subtitle)
     }
 }

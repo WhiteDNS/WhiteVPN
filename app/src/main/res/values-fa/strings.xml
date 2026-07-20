@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WhiteDNS VPN</string>
+    <string name="notification_channel_vpn">اتصال VPN</string>
+    <string name="notification_title">WhiteDNS VPN</string>
+    <string name="notification_starting">در حال اتصال</string>
+    <string name="notification_connected">متصل</string>
+    <string name="notification_action_disconnect">قطع اتصال</string>
+    <string name="notification_action_reconnect">اتصال دوباره</string>
+    <string name="footer_copyright">کپی‌رایت WhiteDNS VPN — https://t.me/whitedns</string>
+    <string name="footer_url">https://t.me/whitedns</string>
+    <string name="privacy_policy_title">سیاست حریم خصوصی</string>
+    <string name="privacy_policy_message">WhiteDNS VPN یک سرویس VPN رایگان است که هنگام اتصال، ترافیک دستگاه شما را از سرورهای VPN عبور می‌دهد.\n\n• این برنامه اطلاعات حساب از شما درخواست نمی‌کند.\n• برنامه ممکن است اطلاعات فنی لازم برای برقراری VPN، مانند وضعیت اتصال، میزان مصرف، گزارش‌های عیب‌یابی و خطاهای سرویس را پردازش کند.\n• شمارنده‌های مصرف فقط روی دستگاه شما ذخیره می‌شوند.\n• ارائه‌دهندگان شبکه ممکن است فرادادهٔ لازم برای انتقال ترافیک اینترنت را پردازش کنند.\n• مسئولیت نحوهٔ استفاده از این سرویس با شماست و WhiteDNS مسئول فعالیت غیرقانونی انجام‌شده از طریق سرویس نیست.\n• از سرویس برای فعالیت غیرقانونی استفاده نکنید. دسترسی، سرعت و حفاظت‌های حریم خصوصی بدون ضمانت ارائه می‌شوند.</string>
+    <string name="privacy_policy_checkbox">خواندم و موافقم</string>
+    <string name="privacy_policy_accept">پذیرفتن</string>
+    <string name="privacy_policy_not_now">فعلاً نه</string>
+    <string name="location_selector_title">انتخاب موقعیت</string>
+    <string name="split_tunnel_button_off">تقسیم تونل: خاموش</string>
+    <string name="split_tunnel_button_bypass">خارج از VPN: %1$d برنامه</string>
+    <string name="split_tunnel_button_vpn_only">فقط داخل VPN: %1$d برنامه</string>
+    <string name="split_tunnel_title">تقسیم تونل</string>
+    <string name="split_tunnel_mode_off">خاموش</string>
+    <string name="split_tunnel_mode_bypass">برنامه‌های انتخاب‌شده خارج از VPN</string>
+    <string name="split_tunnel_mode_vpn_only">فقط برنامه‌های انتخاب‌شده داخل VPN</string>
+    <string name="split_tunnel_search_hint">جستجوی برنامه‌ها</string>
+    <string name="split_tunnel_empty_apps">برنامه‌ای برای انتخاب پیدا نشد.</string>
+    <string name="split_tunnel_empty_search">برنامه‌ای با این جستجو پیدا نشد.</string>
+    <string name="split_tunnel_selected_count">%1$d انتخاب‌شده</string>
+    <string name="split_tunnel_save">ذخیره</string>
+    <string name="split_tunnel_cancel">لغو</string>
+    <string name="split_tunnel_select_app_required">برای این حالت دست‌کم یک برنامه انتخاب کنید.</string>
+</resources>

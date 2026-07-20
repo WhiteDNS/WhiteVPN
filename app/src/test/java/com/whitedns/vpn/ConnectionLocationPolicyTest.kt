@@ -14,12 +14,12 @@ class ConnectionLocationPolicyTest {
         val canada = ConnectionLocationPolicy.countryForProfile(profile("\uD83C\uDDE8\uD83C\uDDE6 | @WhiteDNS | CA2|2.7MB/s|GPT+-C..."))
 
         assertEquals("FR", france?.code)
-        assertEquals("France", france?.country)
-        assertEquals("\uD83C\uDDEB\uD83C\uDDF7 France", france?.label)
+        assertEquals("فرانسه", france?.country)
+        assertEquals("\uD83C\uDDEB\uD83C\uDDF7 فرانسه", france?.label)
         assertEquals("NL", netherlands?.code)
-        assertEquals("Netherlands", netherlands?.country)
+        assertEquals("هلند", netherlands?.country)
         assertEquals("CA", canada?.code)
-        assertEquals("Canada", canada?.country)
+        assertEquals("کانادا", canada?.country)
     }
 
     @Test
@@ -27,8 +27,8 @@ class ConnectionLocationPolicyTest {
         val australia = ConnectionLocationPolicy.countryForProfile(profile("| @WhiteDNS | AU2|1.0MB/s|GPT+-A..."))
 
         assertEquals("AU", australia?.code)
-        assertEquals("Australia", australia?.country)
-        assertEquals("\uD83C\uDDE6\uD83C\uDDFA Australia", australia?.label)
+        assertEquals("استرالیا", australia?.country)
+        assertEquals("\uD83C\uDDE6\uD83C\uDDFA استرالیا", australia?.label)
     }
 
     @Test
@@ -44,10 +44,10 @@ class ConnectionLocationPolicyTest {
 
         assertEquals(
             listOf(
-                "Auto",
-                "\uD83C\uDDE8\uD83C\uDDE6 Canada",
-                "\uD83C\uDDEB\uD83C\uDDF7 France",
-                "\uD83C\uDDF3\uD83C\uDDF1 Netherlands",
+                "خودکار",
+                "\uD83C\uDDEB\uD83C\uDDF7 فرانسه",
+                "\uD83C\uDDF3\uD83C\uDDF1 هلند",
+                "\uD83C\uDDE8\uD83C\uDDE6 کانادا",
             ),
             options.map { it.label },
         )
@@ -75,7 +75,7 @@ class ConnectionLocationPolicyTest {
         assertFalse(auto.resetToAuto)
         assertEquals(listOf(france), selectedFrance.profiles)
         assertEquals("FR", selectedFrance.selectedCountryCode)
-        assertEquals("\uD83C\uDDEB\uD83C\uDDF7 France", selectedFrance.selectedLabel)
+        assertEquals("\uD83C\uDDEB\uD83C\uDDF7 فرانسه", selectedFrance.selectedLabel)
         assertEquals(profiles, missingAustralia.profiles)
         assertNull(missingAustralia.selectedCountryCode)
         assertTrue(missingAustralia.resetToAuto)

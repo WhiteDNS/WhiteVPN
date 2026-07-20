@@ -1,5 +1,6 @@
 package com.whitedns.vpn
 
+import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.content.Context
 import android.content.res.Configuration
@@ -8,19 +9,34 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.LinearInterpolator
+import android.view.animation.PathInterpolator
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.res.ResourcesCompat
 import java.util.Locale
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.sin
+
+internal lateinit var WhiteDnsDisplayTypeface: Typeface
+    private set
+internal lateinit var WhiteDnsBodyTypeface: Typeface
+    private set
+internal lateinit var WhiteDnsBodyBoldTypeface: Typeface
+    private set
+internal lateinit var WhiteDnsDataTypeface: Typeface
+    private set
+
+internal fun initializeWhiteDnsTypefaces(context: Context) {
+    val family = ResourcesCompat.getFont(context, R.font.vazirmatn) ?: return
+    WhiteDnsDisplayTypeface = Typeface.create(family, Typeface.BOLD)
+    WhiteDnsBodyTypeface = Typeface.create(family, Typeface.NORMAL)
+    WhiteDnsBodyBoldTypeface = Typeface.create(family, Typeface.BOLD)
+    WhiteDnsDataTypeface = Typeface.create(family, Typeface.BOLD)
+}
 
 internal fun formatTransferSpeed(bytesPerSecond: Long): String {
     val speed = bytesPerSecond.coerceAtLeast(0L)
@@ -48,6 +64,7 @@ data class WhiteDnsPalette(
     val red: Int,
     val onAccent: Int,
     val onProminent: Int,
+    val onStateFill: Int,
     val brandPillBackground: Int,
     val brandPillOutline: Int,
     val amberTrack: Int,
@@ -65,64 +82,66 @@ data class WhiteDnsPalette(
 object WhiteDnsDesignTokens {
     private val Light = WhiteDnsPalette(
         isDark = false,
-        background = 0xFFF8FAFB.toInt(),           // Softer off-white
-        surface = 0xFFFFFFFF.toInt(),              // Pure white for cards
-        surfaceElevated1 = 0xFFFFFFFF.toInt(),     // White cards
-        surfaceElevated2 = 0xFFF7F9FB.toInt(),     // Subtle tinted cards
-        surfaceVariant = 0xFFF0F4F8.toInt(),       // Stronger variant
-        textPrimary = 0xFF0B1117.toInt(),          // Darker, richer black
-        textSecondary = 0xFF64748B.toInt(),        // Modern slate gray
-        textTertiary = 0xFF94A3B8.toInt(),         // Lighter tertiary
-        neutral = 0xFF475569.toInt(),              // Richer neutral
-        outline = 0xFFE2E8F0.toInt(),              // Softer outline
-        teal = 0xFF06D6A0.toInt(),                 // Brighter, more modern teal
-        amber = 0xFFFF9F1C.toInt(),                // Warmer amber
-        red = 0xFFEF476F.toInt(),                  // Modern red
-        onAccent = 0xFFFFFFFF.toInt(),
-        onProminent = 0xFFFFFFFF.toInt(),
-        brandPillBackground = 0xFFE4F6EE.toInt(),
-        brandPillOutline = 0xFFA2DCBF.toInt(),
-        amberTrack = 0xFFFFEBCC.toInt(),
-        redTrack = 0xFFFFD6D3.toInt(),
-        idleRing = 0xFFC0CBD6.toInt(),
-        majorTick = 0xFFA4BCC9.toInt(),
-        tealGradientStart = 0xFF06D6A0.toInt(),
-        tealGradientEnd = 0xFF00B4D8.toInt(),
-        amberGradientStart = 0xFFFFBE0B.toInt(),
-        amberGradientEnd = 0xFFFF9F1C.toInt(),
-        redGradientStart = 0xFFFF006E.toInt(),
-        redGradientEnd = 0xFFEF476F.toInt(),
+        background = 0xFFF1F9F5.toInt(),
+        surface = 0xFFF8FDFB.toInt(),
+        surfaceElevated1 = 0xFFECF6F1.toInt(),
+        surfaceElevated2 = 0xFFE0EDE7.toInt(),
+        surfaceVariant = 0xFFD3E2DB.toInt(),
+        textPrimary = 0xFF0A1410.toInt(),
+        textSecondary = 0xFF495650.toInt(),
+        textTertiary = 0xFF717E78.toInt(),
+        neutral = 0xFF394640.toInt(),
+        outline = 0xFFB9C8C1.toInt(),
+        teal = 0xFF007E50.toInt(),
+        amber = 0xFFD08B00.toInt(),
+        red = 0xFFCF4040.toInt(),
+        onAccent = 0xFFF4FAF7.toInt(),
+        onProminent = 0xFFF4FAF7.toInt(),
+        onStateFill = 0xFFF4FAF7.toInt(),
+        brandPillBackground = 0xFFD6EFE3.toInt(),
+        brandPillOutline = 0xFF73B598.toInt(),
+        amberTrack = 0xFFFCE4C4.toInt(),
+        redTrack = 0xFFFFDEDB.toInt(),
+        idleRing = 0xFF97AAA1.toInt(),
+        majorTick = 0xFF738D81.toInt(),
+        tealGradientStart = 0xFF007E50.toInt(),
+        tealGradientEnd = 0xFF4BAE87.toInt(),
+        amberGradientStart = 0xFFE8AA4E.toInt(),
+        amberGradientEnd = 0xFFC37F00.toInt(),
+        redGradientStart = 0xFFE97871.toInt(),
+        redGradientEnd = 0xFFCF4040.toInt(),
     )
 
     private val Dark = WhiteDnsPalette(
         isDark = true,
-        background = 0xFF000000.toInt(),           // Pure black for OLED
-        surface = 0xFF0F1419.toInt(),              // Very dark blue-gray for cards
-        surfaceElevated1 = 0xFF171D25.toInt(),     // Slightly elevated cards
-        surfaceElevated2 = 0xFF1E252D.toInt(),     // More elevated cards
-        surfaceVariant = 0xFF1A2128.toInt(),       // Dark variant
-        textPrimary = 0xFFF1F5F9.toInt(),          // Bright white
-        textSecondary = 0xFF94A3B8.toInt(),        // Consistent slate
-        textTertiary = 0xFF64748B.toInt(),         // Darker tertiary
-        neutral = 0xFF94A3B8.toInt(),              // Lighter neutral
-        outline = 0xFF334155.toInt(),              // Visible in dark mode
-        teal = 0xFF34D399.toInt(),                 // Lighter teal for dark bg (emerald)
-        amber = 0xFFFBBF24.toInt(),                // Lighter amber
-        red = 0xFFF87171.toInt(),                  // Lighter red
-        onAccent = 0xFFFFFFFF.toInt(),
-        onProminent = 0xFF000000.toInt(),          // Update to match pure black background
-        brandPillBackground = 0xFF123625.toInt(),
-        brandPillOutline = 0xFF1E6847.toInt(),
-        amberTrack = 0xFF4A351E.toInt(),
-        redTrack = 0xFF4B2529.toInt(),
-        idleRing = 0xFF2A3746.toInt(),
-        majorTick = 0xFF3A4A5C.toInt(),
-        tealGradientStart = 0xFF34D399.toInt(),
-        tealGradientEnd = 0xFF10B981.toInt(),
-        amberGradientStart = 0xFFFCD34D.toInt(),
-        amberGradientEnd = 0xFFFBBF24.toInt(),
-        redGradientStart = 0xFFFCA5A5.toInt(),
-        redGradientEnd = 0xFFF87171.toInt(),
+        background = 0xFF050E09.toInt(),
+        surface = 0xFF09140F.toInt(),
+        surfaceElevated1 = 0xFF0F1B16.toInt(),
+        surfaceElevated2 = 0xFF15231D.toInt(),
+        surfaceVariant = 0xFF1B2A23.toInt(),
+        textPrimary = 0xFFE4EEE9.toInt(),
+        textSecondary = 0xFF9BA8A2.toInt(),
+        textTertiary = 0xFF717E78.toInt(),
+        neutral = 0xFF89968F.toInt(),
+        outline = 0xFF273730.toInt(),
+        teal = 0xFF3FBE90.toInt(),
+        amber = 0xFFE8AA4E.toInt(),
+        red = 0xFFF07F77.toInt(),
+        onAccent = 0xFF02130C.toInt(),
+        onProminent = 0xFF020705.toInt(),
+        onStateFill = 0xFFF4FAF7.toInt(),
+        brandPillBackground = 0xFF09251A.toInt(),
+        brandPillOutline = 0xFF1F634A.toInt(),
+        amberTrack = 0xFF3F2903.toInt(),
+        redTrack = 0xFF442321.toInt(),
+        idleRing = 0xFF273730.toInt(),
+        majorTick = 0xFF3B5348.toInt(),
+        tealGradientStart = 0xFF3FBE90.toInt(),
+        tealGradientEnd = 0xFF71CDA7.toInt(),
+        amberGradientStart = 0xFFF0B96B.toInt(),
+        amberGradientEnd = 0xFFD99A35.toInt(),
+        redGradientStart = 0xFFFF9E96.toInt(),
+        redGradientEnd = 0xFFF07F77.toInt(),
     )
 
     fun palette(isNight: Boolean): WhiteDnsPalette = if (isNight) Dark else Light
@@ -154,290 +173,331 @@ class MaxWidthLinearLayout(context: Context) : LinearLayout(context) {
 
 class SignalArcView(context: Context) : View(context) {
     private val palette = WhiteDnsDesignTokens.forContext(context)
-    private var state: VpnState = VpnState.Stopped
-    private var rotationDegrees = -90f
-    private var spinAnimator: ValueAnimator? = null
-    private var downloadSpeedLabel: String? = null
-    private var uploadSpeedLabel: String? = null
-
-    private val rulePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = palette.outline
-        style = Paint.Style.STROKE
-    }
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-    }
-    private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-    }
-    private val arcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-    }
-    private val centerTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textAlign = Paint.Align.CENTER
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-    }
-    private val markPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val evaluator = ArgbEvaluator()
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
-    private val arcBounds = RectF()
+    private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = WhiteDnsDisplayTypeface
+        textLocale = Locale.forLanguageTag("fa")
+    }
+    private val fieldPath = Path()
     private val markPath = Path()
+    private val iconBounds = RectF()
+    private var state: VpnState = VpnState.Stopped
+    private var fromAccent = stateAccent(state)
+    private var toAccent = fromAccent
+    private var transitionProgress = 1f
+    private var motionPhase = 0f
+    private var transitionAnimator: ValueAnimator? = null
+    private var motionAnimator: ValueAnimator? = null
 
     fun setVpnState(state: VpnState) {
         if (this.state == state) return
+        fromAccent = currentAccent()
         this.state = state
-        if (state != VpnState.Started) {
-            downloadSpeedLabel = null
-            uploadSpeedLabel = null
+        toAccent = stateAccent(state)
+        transitionAnimator?.cancel()
+        if (ValueAnimator.areAnimatorsEnabled()) {
+            transitionProgress = 0f
+            transitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 320L
+                interpolator = PathInterpolator(0.16f, 1f, 0.3f, 1f)
+                addUpdateListener {
+                    transitionProgress = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        } else {
+            transitionProgress = 1f
         }
-        syncSpin()
-        invalidate()
-    }
-
-    fun setTransferSpeeds(downloadLabel: String?, uploadLabel: String?) {
-        if (downloadSpeedLabel == downloadLabel && uploadSpeedLabel == uploadLabel) return
-        downloadSpeedLabel = downloadLabel
-        uploadSpeedLabel = uploadLabel
+        syncMotion(restart = true)
         invalidate()
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        syncSpin()
+        syncMotion(restart = true)
     }
 
     override fun onDetachedFromWindow() {
-        spinAnimator?.cancel()
-        spinAnimator = null
+        transitionAnimator?.cancel()
+        motionAnimator?.cancel()
+        transitionAnimator = null
+        motionAnimator = null
         super.onDetachedFromWindow()
     }
 
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        if (isVisible) syncMotion(restart = false) else motionAnimator?.cancel()
+    }
+
+    override fun drawableStateChanged() {
+        super.drawableStateChanged()
+        invalidate()
+    }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val desiredSize = dp(220f).toInt()
-        val width = resolveSize(desiredSize, widthMeasureSpec)
-        val height = resolveSize(desiredSize, heightMeasureSpec)
-        val size = min(width, height)
-        setMeasuredDimension(size, size)
+        setMeasuredDimension(
+            resolveSize(dp(328f).toInt(), widthMeasureSpec),
+            resolveSize(dp(220f).toInt(), heightMeasureSpec),
+        )
     }
 
     override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val size = min(width, height).toFloat()
-        val cx = width / 2f
-        val cy = height / 2f
-        val radius = size * 0.32f
-        val outerRadius = radius + dp(26f)
-        val accent = accentForState()
+        val alpha = if (isEnabled) 255 else 112
+        val scale = if (isPressed) 0.985f else 1f
+        val inset = if (isPressed) dp(2f) else dp(1f)
+        val right = width - inset
+        val bottom = height - inset
+        val accent = currentAccent()
 
-        val ringColor = if (state == VpnState.Stopped || state == VpnState.DailyLimitReached) {
-            palette.idleRing
+        canvas.save()
+        canvas.scale(scale, scale, width / 2f, height / 2f)
+        setFieldPath(inset, inset, right, bottom)
+        fillPaint.color = if (usesStateFill()) {
+            alphaColor(accent, if (palette.isDark) 163 * alpha / 255 else alpha)
         } else {
-            palette.outline
-        }
-
-        rulePaint.color = ringColor
-        rulePaint.strokeWidth = dp(1f)
-        canvas.drawCircle(cx, cy, outerRadius, rulePaint)
-
-        for (index in 0 until TICK_COUNT) {
-            val angle = (index / TICK_COUNT.toFloat()) * 360f
-            val radians = Math.toRadians((angle - 90f).toDouble())
-            val startRadius = radius + dp(14f)
-            val endRadius = if (index % 9 == 0) radius + dp(22f) else radius + dp(18f)
-            tickPaint.color = if (index % 9 == 0) palette.majorTick else ringColor
-            tickPaint.strokeWidth = if (index % 9 == 0) dp(2f) else dp(1f)
-            canvas.drawLine(
-                cx + startRadius * cos(radians).toFloat(),
-                cy + startRadius * sin(radians).toFloat(),
-                cx + endRadius * cos(radians).toFloat(),
-                cy + endRadius * sin(radians).toFloat(),
-                tickPaint,
+            alphaColor(
+                if (isHovered || isPressed) palette.surfaceElevated2 else palette.surfaceElevated1,
+                alpha,
             )
         }
+        canvas.drawPath(fieldPath, fillPaint)
+        strokePaint.strokeWidth = dp(if (isFocused) 2f else 1f)
+        strokePaint.color = alphaColor(
+            when {
+                usesStateFill() -> palette.onStateFill
+                isFocused || isHovered -> accent
+                else -> palette.outline
+            },
+            if (usesStateFill() && !isFocused) 112 * alpha / 255 else alpha,
+        )
+        canvas.drawPath(fieldPath, strokePaint)
 
-        fillPaint.color = accent
-        canvas.drawCircle(cx, cy, radius, fillPaint)
+        val centerX = width / 2f
+        drawActionNode(canvas, centerX, height / 2f - dp(32f), accent, alpha)
+        drawActionLabel(canvas, centerX, height / 2f + dp(48f), alpha)
+        canvas.restore()
+    }
 
-        rulePaint.color = ringColor
-        rulePaint.strokeWidth = dp(2f)
-        canvas.drawCircle(cx, cy, radius, rulePaint)
+    private fun setFieldPath(left: Float, top: Float, right: Float, bottom: Float) {
+        fieldPath.reset()
+        fieldPath.addRoundRect(
+            left,
+            top,
+            right,
+            bottom,
+            floatArrayOf(
+                dp(28f), dp(28f),
+                dp(10f), dp(10f),
+                dp(28f), dp(28f),
+                dp(10f), dp(10f),
+            ),
+            Path.Direction.CW,
+        )
+    }
 
-        arcPaint.color = palette.onAccent
-        arcPaint.strokeWidth = dp(3f)
-        arcBounds.set(cx - radius, cy - radius, cx + radius, cy + radius)
-        if (state == VpnState.Started) {
-            canvas.drawCircle(cx, cy, radius, arcPaint)
-            drawCheckmark(canvas, cx, cy, palette.onAccent)
-            drawTransferSpeeds(canvas, cx, cy, palette.onAccent)
+    private fun drawActionLabel(canvas: Canvas, centerX: Float, centerY: Float, alpha: Int) {
+        val label = actionLabel()
+        val preferredSize = sp(36f)
+        val maxWidth = width - dp(64f)
+        titlePaint.textSize = preferredSize
+        val measuredWidth = titlePaint.measureText(label)
+        if (measuredWidth > maxWidth) {
+            titlePaint.textSize = preferredSize * (maxWidth / measuredWidth)
+        }
+        titlePaint.textAlign = Paint.Align.CENTER
+        titlePaint.color = alphaColor(
+            if (usesStateFill()) palette.onStateFill else palette.textPrimary,
+            alpha,
+        )
+        val metrics = titlePaint.fontMetrics
+        val baseline = centerY - (metrics.ascent + metrics.descent) / 2f
+        canvas.drawTextRun(label, 0, label.length, 0, label.length, centerX, baseline, true, titlePaint)
+    }
+
+    private fun drawActionNode(canvas: Canvas, cx: Float, cy: Float, accent: Int, alpha: Int) {
+        val nodeColor = if (isEnabled) accent else palette.surfaceVariant
+        fillPaint.color = if (usesStateFill()) {
+            alphaColor(palette.onStateFill, 42 * alpha / 255)
         } else {
-            canvas.drawArc(arcBounds, rotationDegrees, 360f * 0.22f, false, arcPaint)
-            drawCenterLabel(canvas, cx, cy, palette.onAccent)
+            alphaColor(nodeColor, alpha)
+        }
+        canvas.drawCircle(cx, cy, dp(34f), fillPaint)
+        strokePaint.strokeWidth = dp(2.8f)
+        strokePaint.color = alphaColor(
+            if (usesStateFill()) palette.onStateFill else markColor(),
+            alpha,
+        )
+        when (state) {
+            VpnState.Started -> drawCheck(canvas, cx, cy)
+            VpnState.Starting, VpnState.Stopping -> drawLoader(canvas, cx, cy)
+            is VpnState.Error, VpnState.DailyLimitReached -> drawExclamation(canvas, cx, cy)
+            VpnState.Stopped -> drawPower(canvas, cx, cy)
         }
     }
 
-    private fun syncSpin() {
-        if (!isAttachedToWindow) return
-        if (state == VpnState.Started) {
-            spinAnimator?.cancel()
-            spinAnimator = null
-            rotationDegrees = -90f
+    private fun drawCheck(canvas: Canvas, cx: Float, cy: Float) {
+        markPath.reset()
+        markPath.moveTo(cx - dp(10f), cy)
+        markPath.lineTo(cx - dp(3f), cy + dp(7f))
+        markPath.lineTo(cx + dp(11f), cy - dp(8f))
+        canvas.drawPath(markPath, strokePaint)
+    }
+
+    private fun drawLoader(canvas: Canvas, cx: Float, cy: Float) {
+        iconBounds.set(cx - dp(11f), cy - dp(11f), cx + dp(11f), cy + dp(11f))
+        canvas.drawArc(iconBounds, -90f + motionPhase * 360f, 235f, false, strokePaint)
+    }
+
+    private fun drawExclamation(canvas: Canvas, cx: Float, cy: Float) {
+        canvas.drawLine(cx, cy - dp(8f), cx, cy + dp(3f), strokePaint)
+        fillPaint.color = strokePaint.color
+        canvas.drawCircle(cx, cy + dp(10f), dp(1.6f), fillPaint)
+    }
+
+    private fun drawPower(canvas: Canvas, cx: Float, cy: Float) {
+        iconBounds.set(cx - dp(11f), cy - dp(9f), cx + dp(11f), cy + dp(13f))
+        canvas.drawArc(iconBounds, -40f, 260f, false, strokePaint)
+        canvas.drawLine(cx, cy - dp(13f), cx, cy, strokePaint)
+    }
+
+    private fun syncMotion(restart: Boolean) {
+        if (!isAttachedToWindow || !isShown || !ValueAnimator.areAnimatorsEnabled()) return
+        if (!hasLoadingMotion()) {
+            motionAnimator?.cancel()
+            motionAnimator = null
+            motionPhase = 0f
             return
         }
-        if (spinAnimator?.isStarted == true) return
-        spinAnimator = ValueAnimator.ofFloat(-90f, 270f).apply {
-            duration = 2_200L
+        if (!restart && motionAnimator?.isRunning == true) return
+        motionAnimator?.cancel()
+        motionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 1_100L
             repeatCount = ValueAnimator.INFINITE
             interpolator = LinearInterpolator()
-            addUpdateListener { animator ->
-                rotationDegrees = animator.animatedValue as Float
+            addUpdateListener {
+                motionPhase = it.animatedValue as Float
                 invalidate()
             }
             start()
         }
     }
 
-    private fun drawCenterLabel(canvas: Canvas, cx: Float, cy: Float, accent: Int) {
-        val label = when (state) {
-            VpnState.Starting,
-            VpnState.Stopping,
-            -> "SCAN"
-            is VpnState.Error -> "ERR"
-            VpnState.Started -> ""
-            VpnState.DailyLimitReached,
-            VpnState.Stopped,
-            -> "IDLE"
-        }
-        centerTextPaint.color = accent
-        centerTextPaint.textSize = sp(if (label == "SCAN") 12f else 14f)
-        val metrics = centerTextPaint.fontMetrics
-        canvas.drawText(label, cx, cy - ((metrics.ascent + metrics.descent) / 2f), centerTextPaint)
-    }
+    private fun hasLoadingMotion(): Boolean =
+        state == VpnState.Starting || state == VpnState.Stopping
 
-    private fun drawCheckmark(canvas: Canvas, cx: Float, cy: Float, accent: Int) {
-        markPaint.color = accent
-        markPaint.strokeWidth = dp(5f)
-        markPath.reset()
-        markPath.moveTo(cx - dp(25f), cy + dp(2f))
-        markPath.lineTo(cx - dp(8f), cy + dp(19f))
-        markPath.lineTo(cx + dp(29f), cy - dp(23f))
-        canvas.drawPath(markPath, markPaint)
-    }
+    private fun usesStateFill(): Boolean =
+        state == VpnState.Started || state is VpnState.Error || state == VpnState.DailyLimitReached
 
-    private fun drawTransferSpeeds(canvas: Canvas, cx: Float, cy: Float, accent: Int) {
-        val down = downloadSpeedLabel ?: return
-        val up = uploadSpeedLabel ?: return
-        centerTextPaint.color = accent
-        centerTextPaint.textSize = sp(8f)
-        canvas.drawText("DL $down", cx, cy + dp(34f), centerTextPaint)
-        canvas.drawText("UL $up", cx, cy + dp(46f), centerTextPaint)
-    }
-
-    private fun accentForState(): Int = when (state) {
+    private fun stateAccent(state: VpnState): Int = when (state) {
         VpnState.Started -> palette.teal
-        VpnState.Starting,
-        VpnState.Stopping,
-        -> palette.amber
-        is VpnState.Error -> palette.red
-        VpnState.DailyLimitReached,
-        VpnState.Stopped,
-        -> palette.neutral
+        VpnState.Starting, VpnState.Stopping -> palette.amber
+        is VpnState.Error, VpnState.DailyLimitReached -> palette.red
+        VpnState.Stopped -> palette.textPrimary
     }
+
+    private fun actionLabel(): String = when (state) {
+        VpnState.Started -> "قطع اتصال"
+        VpnState.Starting -> "در حال اتصال"
+        VpnState.Stopping -> "در حال قطع اتصال"
+        is VpnState.Error -> "تلاش دوباره"
+        VpnState.DailyLimitReached -> "سقف مصرف"
+        VpnState.Stopped -> "اتصال"
+    }
+
+    private fun markColor(): Int = when (state) {
+        VpnState.Starting, VpnState.Stopping ->
+            if (palette.isDark) palette.onAccent else palette.textPrimary
+        VpnState.Stopped -> palette.onProminent
+        else -> palette.onAccent
+    }
+
+    private fun currentAccent(): Int =
+        evaluator.evaluate(transitionProgress.coerceIn(0f, 1f), fromAccent, toAccent) as Int
+
+    private fun alphaColor(color: Int, alpha: Int): Int =
+        (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
-    private fun sp(value: Float): Float {
-        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, value, resources.displayMetrics)
-    }
-
-    private companion object {
-        const val TICK_COUNT = 36
-    }
+    private fun sp(value: Float): Float =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, value, resources.displayMetrics)
 }
 
 class DashboardDataRowView(context: Context) : LinearLayout(context) {
     private val palette = WhiteDnsDesignTokens.forContext(context)
     private val labelText = TextView(context).apply {
-        textSize = 13f
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        textSize = 10f
+        typeface = WhiteDnsBodyBoldTypeface
         setTextColor(palette.textSecondary)
-        letterSpacing = 0.04f
+        letterSpacing = 0.08f
         includeFontPadding = false
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
+        gravity = Gravity.START
     }
     private val valueText = TextView(context).apply {
-        textSize = 16f
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        textSize = 14f
+        typeface = WhiteDnsBodyBoldTypeface
         setTextColor(palette.textPrimary)
         includeFontPadding = false
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
-        gravity = Gravity.END
+        gravity = Gravity.START
     }
-    private val subText = TextView(context).apply {
-        textSize = 12f
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
-        setTextColor(palette.textSecondary)
+    private val chevronText = TextView(context).apply {
+        text = "‹"
+        textSize = 22f
+        layoutDirection = View.LAYOUT_DIRECTION_LTR
+        textDirection = View.TEXT_DIRECTION_LTR
+        typeface = WhiteDnsBodyBoldTypeface
+        setTextColor(palette.teal)
         includeFontPadding = false
         isSingleLine = true
-        gravity = Gravity.END
+        gravity = Gravity.CENTER
     }
 
     init {
         orientation = HORIZONTAL
+        layoutDirection = View.LAYOUT_DIRECTION_LTR
         gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = dp(68)
-        setPadding(dp(20), dp(20), dp(20), dp(20))
-        background = borderDrawable()
-
-        addView(
-            labelText,
-            LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.8f),
-        )
-
-        val valueColumn = LinearLayout(context).apply {
-            orientation = VERTICAL
-            gravity = Gravity.END
-            addView(
-                valueText,
-                LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
-            addView(
-                subText,
-                LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ).apply {
-                    topMargin = dp(4)
-                },
-            )
+        minimumHeight = dp(72)
+        setPadding(dp(16), dp(12), dp(16), dp(12))
+        val selectableBackground = TypedValue()
+        if (context.theme.resolveAttribute(android.R.attr.selectableItemBackground, selectableBackground, true)) {
+            setBackgroundResource(selectableBackground.resourceId)
         }
         addView(
-            valueColumn,
-            LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f),
+            chevronText,
+            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                marginEnd = dp(12)
+            },
+        )
+        addView(
+            LinearLayout(context).apply {
+                orientation = VERTICAL
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                addView(labelText, LayoutParams(-1, -2))
+                addView(valueText, LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            },
+            LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
     }
 
-    fun setRow(label: String, value: CharSequence, sub: CharSequence?) {
+    fun setRow(label: String, value: CharSequence) {
         labelText.text = label.uppercase()
-        setValue(value, sub)
+        setValue(value)
     }
 
-    fun setValue(value: CharSequence, sub: CharSequence?) {
+    fun setValue(value: CharSequence) {
         valueText.text = value
-        subText.text = sub?.toString().orEmpty()
-        subText.visibility = if (sub.isNullOrBlank()) GONE else VISIBLE
-    }
-
-    fun setSubColor(color: Int) {
-        subText.setTextColor(color)
     }
 
     fun setOnRowClickListener(listener: OnClickListener?) {
@@ -452,16 +512,7 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         isClickable = enabled && hasOnClickListeners()
         labelText.isEnabled = enabled
         valueText.isEnabled = enabled
-        subText.isEnabled = enabled
-    }
-
-    private fun borderDrawable(): GradientDrawable {
-        return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(16).toFloat()
-            setColor(palette.surfaceVariant)
-            setStroke(dp(1), palette.outline)
-        }
+        chevronText.isEnabled = enabled
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()

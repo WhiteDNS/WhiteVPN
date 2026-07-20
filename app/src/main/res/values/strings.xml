@@ -6,7 +6,7 @@
     <string name="notification_connected">Connected</string>
     <string name="notification_action_disconnect">Disconnect</string>
     <string name="notification_action_reconnect">Reconnect</string>
-    <string name="footer_copyright">Copyright WhiteDNS VPN - https://t.me/whitedns</string>
+    <string name="footer_copyright">کپی‌رایت WhiteDNS VPN — https://t.me/whitedns</string>
     <string name="footer_url">https://t.me/whitedns</string>
     <string name="privacy_policy_title">Privacy policy</string>
     <string name="privacy_policy_message">WhiteDNS VPN is a free VPN service that routes your device traffic through VPN servers when connected.\n\n- We do not ask for account details in this app.\n- The app may process technical connection information needed to provide the VPN, such as connection status, traffic usage, diagnostics, and service errors.\n- The app stores usage counters locally on your device.\n- Third-party network providers may process connection metadata required to deliver internet traffic.\n- You are responsible for how you use this service. Any illegal activity performed through the service is not the responsibility of WhiteDNS.\n- Do not use the service for unlawful activity. Service availability, speed, and privacy protections are provided without warranty.</string>

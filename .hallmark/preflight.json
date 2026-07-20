@@ -1,0 +1,20 @@
+{
+  "scanned_at": "2026-07-17",
+  "framework": "Native Android/Kotlin Activity with Material 3",
+  "font_stack": "Android sans plus monospace; no bundled custom fonts",
+  "palette": "WhiteDnsDesignTokens plus values and values-night resources",
+  "motion": "Native ValueAnimator; no motion dependency",
+  "spacing": "Existing raw dp values; redesign standardises a 4 dp scale",
+  "surfaces": [
+    "VPN dashboard and Advanced disclosure",
+    "Subscriptions list",
+    "Native dialogs for location, split tunnel, DNS, privacy, and subscriptions"
+  ],
+  "preserved": [
+    "Material 3 DayNight support",
+    "WhiteDNS green identity",
+    "Programmatic view ownership",
+    "All VPN and subscription behaviour"
+  ]
+}
+

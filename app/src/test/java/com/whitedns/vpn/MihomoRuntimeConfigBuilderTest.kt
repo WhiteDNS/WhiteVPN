@@ -26,6 +26,8 @@ class MihomoRuntimeConfigBuilderTest {
             ),
             TlsIntegrityPolicy.TEST_URLS,
         )
+        assertEquals(TlsIntegrityPolicy.TEST_URLS, MihomoRuntimeDefaults.HEALTH_URLS)
+        assertEquals("https://valid-isrgrootx1.letsencrypt.org/", MihomoRuntimeDefaults.HEALTH_URL)
         assertEquals(2_000, TlsIntegrityPolicy.PROBE_TIMEOUT_MS)
         assertEquals(7_000L, TlsIntegrityPolicy.TOTAL_TIMEOUT_MS)
         assertEquals("104.16.0.1:443", TlsIntegrityPolicy.endpointKey(endpoint))
@@ -287,7 +289,7 @@ class MihomoRuntimeConfigBuilderTest {
     fun flClashSetupParamsUseHealthUrlAndEmptySelectionMap() {
         val setup = MihomoRuntimeConfigBuilder.setupParamsJson()
 
-        assertEquals("https://www.gstatic.com/generate_204", setup.getString("test-url"))
+        assertEquals(MihomoRuntimeDefaults.HEALTH_URL, setup.getString("test-url"))
         assertEquals(0, setup.getJSONObject("selected-map").length())
     }
 
