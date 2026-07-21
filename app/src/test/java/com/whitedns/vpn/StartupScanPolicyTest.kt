@@ -1,7 +1,9 @@
 package com.whitedns.vpn
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -186,6 +188,50 @@ class StartupScanPolicyTest {
         }.exceptionOrNull()
 
         assertTrue(failure is IOException)
+    }
+
+    @Test
+    fun startupFallbackRunsAfterPrimaryFailure() = runBlocking {
+        val calls = mutableListOf<String>()
+
+        val result = connectWithStartupFallback<String>(
+            primary = {
+                calls += "original"
+                throw IOException("health check failed")
+            },
+            fallback = { error ->
+                calls += "fallback:${error.message}"
+                "connected"
+            },
+        )
+
+        assertEquals("connected", result)
+        assertEquals(listOf("original", "fallback:health check failed"), calls)
+    }
+
+    @Test
+    fun startupFallbackRethrowsExcludedFailures() = runBlocking {
+        val failures = listOf(
+            CancellationException("canceled"),
+            MihomoCoreBusyException(),
+            MihomoCoreSetupTimeoutException(),
+        )
+
+        failures.forEach { expected ->
+            var fallbackCalls = 0
+            val failure = runCatching {
+                connectWithStartupFallback<String>(
+                    primary = { throw expected },
+                    fallback = {
+                        fallbackCalls += 1
+                        "unused"
+                    },
+                )
+            }.exceptionOrNull()
+
+            assertSame(expected, failure)
+            assertEquals(0, fallbackCalls)
+        }
     }
 
     private fun selection(

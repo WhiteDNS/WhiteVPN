@@ -31,6 +31,30 @@ import java.io.File
 import java.io.IOException
 import java.net.InetSocketAddress
 
+internal class MihomoCoreBusyException(cause: Throwable? = null) :
+    IOException("Mihomo core is still finishing startup. Please try again.", cause)
+
+internal class MihomoCoreSetupTimeoutException :
+    IOException("Mihomo core setup did not finish within 60 seconds")
+
+internal suspend fun <T> connectWithStartupFallback(
+    primary: suspend () -> T,
+    fallback: suspend (Throwable) -> T,
+): T {
+    return try {
+        primary()
+    } catch (error: Throwable) {
+        if (
+            error is CancellationException ||
+            error is MihomoCoreBusyException ||
+            error is MihomoCoreSetupTimeoutException
+        ) {
+            throw error
+        }
+        fallback(error)
+    }
+}
+
 class WhiteDnsVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -56,12 +80,6 @@ class WhiteDnsVpnService : VpnService() {
 
     private class DpiBypassStartupException(cause: Throwable) :
         IOException("ByeByeDPI failed to start", cause)
-
-    private class MihomoCoreBusyException(cause: Throwable? = null) :
-        IOException("Mihomo core is still finishing startup. Please try again.", cause)
-
-    private class MihomoCoreSetupTimeoutException :
-        IOException("Mihomo core setup did not finish within 60 seconds")
 
     private data class StartedMihomoRuntime(
         val profile: ConnectionProfile,
@@ -293,12 +311,13 @@ class WhiteDnsVpnService : VpnService() {
                 frontingIps = frontingIps,
             )
         } else {
-            startMihomoRuntimeAttempt(
+            connectWithOriginalOrTopIpCandidates(
+                eventPrefix = eventPrefix,
                 snapshot = snapshot,
+                profiles = profiles,
                 splitTunnelPlan = splitTunnelPlan,
                 selectedCountryCode = selectedCountryCode,
-                topEndpoint = null,
-                validateConnectivity = false,
+                excludedEndpoint = excludedEndpoint,
             )
         }
         applyStartedRuntime(
@@ -339,14 +358,60 @@ class WhiteDnsVpnService : VpnService() {
                 throw error
             }
             DiagnosticLogger.warn(this, "frontingIp.fallback.original", "ips=${frontingIps.size}", error)
-            startMihomoRuntimeAttempt(
+            val startedRuntime = connectWithOriginalOrTopIpCandidates(
+                eventPrefix = eventPrefix,
                 snapshot = snapshot,
+                profiles = profiles,
                 splitTunnelPlan = splitTunnelPlan,
                 selectedCountryCode = selectedCountryCode,
-                topEndpoint = null,
-                validateConnectivity = false,
-            ) to FRONTING_FALLBACK_NOTICE
+                excludedEndpoint = excludedEndpoint,
+            )
+            val notice = if (startedRuntime.cacheEndpoint) {
+                FRONTING_AUTOMATIC_FALLBACK_NOTICE
+            } else {
+                FRONTING_FALLBACK_NOTICE
+            }
+            startedRuntime to notice
         }
+    }
+
+    private suspend fun connectWithOriginalOrTopIpCandidates(
+        eventPrefix: String,
+        snapshot: MihomoSubscriptionSnapshot,
+        profiles: List<ConnectionProfile>,
+        splitTunnelPlan: SplitTunnelRuntimePlan,
+        selectedCountryCode: String?,
+        excludedEndpoint: CleanIpResult?,
+    ): StartedMihomoRuntime {
+        return connectWithStartupFallback(
+            primary = {
+                startMihomoRuntimeAttempt(
+                    snapshot = snapshot,
+                    splitTunnelPlan = splitTunnelPlan,
+                    selectedCountryCode = selectedCountryCode,
+                    topEndpoint = null,
+                )
+            },
+            fallback = { error ->
+                DiagnosticLogger.warn(
+                    this,
+                    "startup.original.fallback.topIp",
+                    "source=$eventPrefix",
+                    error,
+                )
+                stopActiveCoreForReplacement()
+                connectWithTopIpCandidates(
+                    eventPrefix = eventPrefix,
+                    snapshot = snapshot,
+                    profiles = profiles,
+                    splitTunnelPlan = splitTunnelPlan,
+                    selectedCountryCode = selectedCountryCode,
+                    bypassConnectionCache = false,
+                    excludedEndpoint = excludedEndpoint,
+                    frontingIps = emptyList(),
+                )
+            },
+        )
     }
 
     private suspend fun connectWithTopIpCandidates(
@@ -637,8 +702,8 @@ class WhiteDnsVpnService : VpnService() {
         if (delayProbeName.isBlank()) {
             throw IOException("No Mihomo proxy selected for delay test")
         }
+        var lastDelayFailure: Throwable? = null
         val delayMs = if (validateConnectivity) {
-            var lastDelayFailure: Throwable? = null
             MihomoRuntimeDefaults.HEALTH_URLS.firstNotNullOfOrNull { url ->
                 runCatching {
                     withContext(Dispatchers.IO) {
@@ -651,16 +716,25 @@ class WhiteDnsVpnService : VpnService() {
                         )
                     }
                 }.onFailure { lastDelayFailure = it }.getOrNull()
-            } ?: throw IOException("Mihomo delay test failed for $delayProbeName", lastDelayFailure)
+            } ?: -1L
         } else {
             -1L
         }
         if (validateConnectivity) {
-            DiagnosticLogger.info(
-                this,
-                "mihomo.delay.ok",
-                "name=$delayProbeName delayMs=$delayMs",
-            )
+            if (delayMs > 0) {
+                DiagnosticLogger.info(
+                    this,
+                    "mihomo.delay.ok",
+                    "name=$delayProbeName delayMs=$delayMs",
+                )
+            } else {
+                DiagnosticLogger.warn(
+                    this,
+                    "mihomo.delay.unavailable",
+                    "name=$delayProbeName continuingWithHttpHealth=true",
+                    lastDelayFailure,
+                )
+            }
             verifyRuntimeHealth()
         } else {
             DiagnosticLogger.info(this, "mihomo.delay.deferred", "name=$delayProbeName")
@@ -2005,6 +2079,8 @@ class WhiteDnsVpnService : VpnService() {
         const val TUN_ESTABLISH_ATTEMPTS = 3
         const val TUN_ESTABLISH_RETRY_DELAY_MS = 250L
         const val FRONTING_FALLBACK_NOTICE = "None of the Fronting IPs were reachable. Used original connection."
+        const val FRONTING_AUTOMATIC_FALLBACK_NOTICE =
+            "Configured Fronting IPs and original connection were unreachable. Used an automatic fallback IP."
         const val SCAN_DIAGNOSTICS_ENABLED = true
         const val MIHOMO_TUN_STACK = "gvisor"
         const val MIHOMO_TUN_IPV4_ADDRESS = "172.19.0.1"
