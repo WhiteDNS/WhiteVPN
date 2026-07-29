@@ -186,7 +186,10 @@ class ConfigRepository(private val context: Context) {
     }
 
     private fun pruneProfileCaches(catalog: SubscriptionCatalog) {
-        val delayRemoved = subscriptionStore.pruneTopDelaySelections(catalog.profiles)
+        val delayRemoved = subscriptionStore.pruneConnectionDelayRecords(
+            subscriptionId = subscriptionStore.readSelectedSubscriptionId(),
+            profiles = catalog.profiles,
+        )
         val lastSelectedRemoved = scanStateStore.pruneLastSelectedProfile(catalog.profiles)
         if (delayRemoved > 0 || lastSelectedRemoved) {
             DiagnosticLogger.info(

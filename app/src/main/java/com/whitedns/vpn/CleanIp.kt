@@ -27,6 +27,12 @@ import kotlin.system.measureTimeMillis
 
 data class CleanIpCandidate(val ip: String, val port: Int)
 
+data class AmneziaNoiseSettings(
+    val count: Int,
+    val minSize: Int,
+    val maxSize: Int,
+)
+
 data class ConnectionProfile(
     val tag: String,
     val type: String,
@@ -42,6 +48,9 @@ data class ConnectionProfile(
         outboundJson = null,
     ),
     val outboundJson: String? = null,
+    val echEnabled: Boolean = false,
+    val echCapable: Boolean = false,
+    val amneziaNoise: AmneziaNoiseSettings? = null,
 ) {
     val cacheKey: String
         get() = listOf(fingerprint, type, port.toString(), validationHost.lowercase()).joinToString("|")

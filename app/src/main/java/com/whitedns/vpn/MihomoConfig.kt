@@ -19,6 +19,9 @@ data class MihomoProxy(
     val type: String,
     val server: String,
     val port: Int,
+    val echEnabled: Boolean = false,
+    val echCapable: Boolean = false,
+    val amneziaNoise: AmneziaNoiseSettings? = null,
 )
 
 data class MihomoProxyGroup(
@@ -52,6 +55,7 @@ object MihomoConfigParser {
         val groups = mutableListOf<MihomoProxyGroup>()
         var section: String? = null
         var current = mutableMapOf<String, String>()
+        var nestedKey: String? = null
 
         fun flush() {
             when (section) {
@@ -59,6 +63,7 @@ object MihomoConfigParser {
                 "proxy-groups" -> current.toGroup()?.let(groups::add)
             }
             current = mutableMapOf()
+            nestedKey = null
         }
 
         yaml.lineSequence().forEach { rawLine ->
@@ -90,8 +95,28 @@ object MihomoConfigParser {
 
             if (indent == 4) {
                 parseKeyValue(content)?.let { (key, value) ->
-                    if (key in setOf("name", "type", "server", "port")) {
+                    nestedKey = key.takeIf { value.isBlank() }
+                    if (key in setOf("name", "type", "server", "port", "tls")) {
                         current[key] = decodeScalar(value)
+                    } else if (key == "ech-opts" && INLINE_ECH_ENABLED.containsMatchIn(value)) {
+                        current["ech-enabled"] = "true"
+                    } else if (key == "reality-opts") {
+                        current["reality-enabled"] = "true"
+                    } else if (key == "amnezia-wg-option") {
+                        INLINE_AMNEZIA_FIELDS.forEach { field ->
+                            inlineInteger(value, field)?.let { current["amnezia-$field"] = it.toString() }
+                        }
+                    }
+                }
+                return@forEach
+            }
+
+            if (indent == 6 && nestedKey in setOf("ech-opts", "amnezia-wg-option")) {
+                parseKeyValue(content)?.let { (key, value) ->
+                    if (nestedKey == "ech-opts" && key == "enable") {
+                        current["ech-enabled"] = decodeScalar(value)
+                    } else if (nestedKey == "amnezia-wg-option" && key in INLINE_AMNEZIA_FIELDS) {
+                        current["amnezia-$key"] = decodeScalar(value)
                     }
                 }
             }
@@ -109,7 +134,21 @@ object MihomoConfigParser {
         val type = this["type"]?.takeIf(String::isNotBlank) ?: return null
         val server = this["server"]?.takeIf(String::isNotBlank) ?: return null
         val port = this["port"]?.toIntOrNull()?.takeIf { it > 0 } ?: return null
-        return MihomoProxy(name = name, type = type, server = server, port = port)
+        val tlsEnabled = this["tls"].equals("true", ignoreCase = true)
+        val realityEnabled = this["reality-enabled"].equals("true", ignoreCase = true)
+        return MihomoProxy(
+            name = name,
+            type = type,
+            server = server,
+            port = port,
+            echEnabled = this["ech-enabled"].equals("true", ignoreCase = true),
+            echCapable = MihomoConnectionOptionsPolicy.echCapable(type, tlsEnabled, realityEnabled),
+            amneziaNoise = AmneziaNoiseSettings(
+                count = this["amnezia-jc"]?.toIntOrNull() ?: 0,
+                minSize = this["amnezia-jmin"]?.toIntOrNull() ?: 0,
+                maxSize = this["amnezia-jmax"]?.toIntOrNull() ?: 0,
+            ).takeIf(MihomoConnectionOptionsPolicy::isValidNoise),
+        )
     }
 
     private fun MutableMap<String, String>.toGroup(): MihomoProxyGroup? {
@@ -124,6 +163,9 @@ object MihomoConfigParser {
             .put("type", type)
             .put("server", server)
             .put("port", port)
+            .put("ech-enabled", echEnabled)
+            .put("ech-capable", echCapable)
+            .put("amnezia-noise", amneziaNoise?.let { "${it.count}:${it.minSize}:${it.maxSize}" }.orEmpty())
             .toString()
         return ConnectionProfile(
             tag = name,
@@ -140,7 +182,21 @@ object MihomoConfigParser {
                 outboundJson = outbound,
             ),
             outboundJson = outbound,
+            echEnabled = echEnabled,
+            echCapable = echCapable,
+            amneziaNoise = amneziaNoise,
         )
+    }
+
+    private val INLINE_ECH_ENABLED = Regex("""['\"]?enable['\"]?\s*:\s*true\b""", RegexOption.IGNORE_CASE)
+    private val INLINE_AMNEZIA_FIELDS = setOf("jc", "jmin", "jmax")
+
+    private fun inlineInteger(value: String, key: String): Int? {
+        return Regex("""['\"]?$key['\"]?\s*:\s*(-?\d+)""", RegexOption.IGNORE_CASE)
+            .find(value)
+            ?.groupValues
+            ?.get(1)
+            ?.toIntOrNull()
     }
 
     private fun parseKeyValue(content: String): Pair<String, String>? {

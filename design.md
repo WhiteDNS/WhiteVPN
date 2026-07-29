@@ -13,15 +13,17 @@ instrument detail for the roughly half of users who rely on advanced controls.
 
 - App pages: **Workbench** — one dominant task, live state directly underneath,
   then ruled controls. Cards are reserved for containment, not every row.
-- VPN surface: asymmetrical connection field · live metric strip · settings list
-  · first-class Advanced disclosure.
+- VPN surface: asymmetrical connection field · live metric strip · essential
+  settings list.
 - Subscriptions surface: edge-aligned heading · ruled source list · inline actions.
+- Advanced surface: spacious section groups for security, WARP, fronting, and DNS.
 - Content/marketing pages: not in this redesign.
 
 ## Navigation and close
 
 - Navigation: **N9 edge discipline**, adapted to a native, edge-to-edge bottom
-  rail. No floating pill or detached glass dock.
+  rail with VPN, Subscriptions, and Advanced as equal destinations. No floating
+  pill or detached glass dock.
 - Legal close: **Ft2 single line** — one quiet copyright/link row, no footer card.
 
 ## Theme

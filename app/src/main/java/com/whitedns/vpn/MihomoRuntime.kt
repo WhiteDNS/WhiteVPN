@@ -65,12 +65,95 @@ class TlsIntegrityPreferenceStore(context: Context) {
     }
 }
 
+data class MihomoConnectionOptions(
+    val amneziaNoiseEnabled: Boolean = false,
+    val amneziaNoise: AmneziaNoiseSettings = MihomoConnectionOptionsPolicy.DEFAULT_NOISE,
+)
+
+object MihomoConnectionOptionsPolicy {
+    const val MIN_NOISE_COUNT = 1
+    const val MAX_NOISE_COUNT = 20
+    const val MIN_NOISE_SIZE = 1
+    const val MAX_NOISE_SIZE = 1280
+    val DEFAULT_NOISE = AmneziaNoiseSettings(count = 5, minSize = 50, maxSize = 100)
+
+    fun validateNoise(settings: AmneziaNoiseSettings): AmneziaNoiseSettings {
+        require(settings.count in MIN_NOISE_COUNT..MAX_NOISE_COUNT) {
+            "Count must be between $MIN_NOISE_COUNT and $MAX_NOISE_COUNT"
+        }
+        require(settings.minSize in MIN_NOISE_SIZE..MAX_NOISE_SIZE) {
+            "Minimum size must be between $MIN_NOISE_SIZE and $MAX_NOISE_SIZE"
+        }
+        require(settings.maxSize in MIN_NOISE_SIZE..MAX_NOISE_SIZE) {
+            "Maximum size must be between $MIN_NOISE_SIZE and $MAX_NOISE_SIZE"
+        }
+        require(settings.minSize <= settings.maxSize) { "Minimum size cannot exceed maximum size" }
+        return settings
+    }
+
+    fun isValidNoise(settings: AmneziaNoiseSettings): Boolean =
+        runCatching { validateNoise(settings) }.isSuccess
+
+    fun echCapable(type: String, tlsEnabled: Boolean, realityEnabled: Boolean): Boolean {
+        if (realityEnabled) return false
+        return when (type.lowercase()) {
+            "trojan", "anytls", "trusttunnel", "tuic", "hysteria", "hysteria2" -> true
+            "vless", "vmess" -> tlsEnabled
+            else -> false
+        }
+    }
+
+    fun applyTo(profile: ConnectionProfile, options: MihomoConnectionOptions): ConnectionProfile {
+        return profile.copy(
+            amneziaNoise = if (options.amneziaNoiseEnabled && profile.type.equals("wireguard", true)) {
+                options.amneziaNoise
+            } else {
+                profile.amneziaNoise
+            },
+        )
+    }
+}
+
+class MihomoConnectionOptionsPreferenceStore(context: Context) {
+    private val prefs = context.getSharedPreferences("white_dns_connection_options", Context.MODE_PRIVATE)
+
+    fun read(): MihomoConnectionOptions {
+        val noise = AmneziaNoiseSettings(
+            count = prefs.getInt(KEY_NOISE_COUNT, MihomoConnectionOptionsPolicy.DEFAULT_NOISE.count),
+            minSize = prefs.getInt(KEY_NOISE_MIN_SIZE, MihomoConnectionOptionsPolicy.DEFAULT_NOISE.minSize),
+            maxSize = prefs.getInt(KEY_NOISE_MAX_SIZE, MihomoConnectionOptionsPolicy.DEFAULT_NOISE.maxSize),
+        ).takeIf(MihomoConnectionOptionsPolicy::isValidNoise) ?: MihomoConnectionOptionsPolicy.DEFAULT_NOISE
+        return MihomoConnectionOptions(
+            amneziaNoiseEnabled = prefs.getBoolean(KEY_AMNEZIA_NOISE_ENABLED, false),
+            amneziaNoise = noise,
+        )
+    }
+
+    fun saveAmneziaNoise(enabled: Boolean, settings: AmneziaNoiseSettings) {
+        val valid = MihomoConnectionOptionsPolicy.validateNoise(settings)
+        prefs.edit()
+            .putBoolean(KEY_AMNEZIA_NOISE_ENABLED, enabled)
+            .putInt(KEY_NOISE_COUNT, valid.count)
+            .putInt(KEY_NOISE_MIN_SIZE, valid.minSize)
+            .putInt(KEY_NOISE_MAX_SIZE, valid.maxSize)
+            .apply()
+    }
+
+    private companion object {
+        const val KEY_AMNEZIA_NOISE_ENABLED = "amnezia_noise_enabled"
+        const val KEY_NOISE_COUNT = "noise_count"
+        const val KEY_NOISE_MIN_SIZE = "noise_min_size"
+        const val KEY_NOISE_MAX_SIZE = "noise_max_size"
+    }
+}
+
 class TlsIntegrityException(cause: Throwable) : IOException("TLS certificate validation failed", cause)
 
-enum class DnsPrivacyMode(val wireName: String, val label: String) {
-    Automatic("automatic", "خودکار"),
-    DoH("doh", "DoH"),
-    DoT("dot", "DoT");
+enum class DnsPrivacyMode(val wireName: String, val labelRes: Int) {
+    Automatic("automatic", R.string.dns_mode_automatic),
+    DoH("doh", R.string.dns_mode_doh),
+    DoT("dot", R.string.dns_mode_dot),
+    ;
 
     companion object {
         fun fromWireName(value: String?): DnsPrivacyMode {
@@ -607,6 +690,156 @@ object MihomoFrontingPatcher {
     }
 }
 
+object MihomoConnectionOptionsPatcher {
+    fun patch(rawYaml: String, options: MihomoConnectionOptions): String {
+        if (!options.amneziaNoiseEnabled) return rawYaml
+        val output = mutableListOf<String>()
+        var inProxies = false
+        var currentProxy = mutableListOf<String>()
+
+        fun flushProxy() {
+            if (currentProxy.isEmpty()) return
+            output += patchProxyBlock(currentProxy, options)
+            currentProxy = mutableListOf()
+        }
+
+        rawYaml.replace("\r\n", "\n").replace('\r', '\n').split('\n').forEach { line ->
+            val topLevelKey = topLevelKey(line)
+            if (topLevelKey != null) {
+                if (inProxies) flushProxy()
+                inProxies = topLevelKey == "proxies"
+                output += line
+                return@forEach
+            }
+            if (!inProxies) {
+                output += line
+                return@forEach
+            }
+            if (indentation(line) == 2 && line.trimStart().startsWith("- ")) {
+                flushProxy()
+                currentProxy += line
+            } else if (currentProxy.isNotEmpty()) {
+                currentProxy += line
+            } else {
+                output += line
+            }
+        }
+        if (inProxies) flushProxy()
+        return output.joinToString("\n")
+    }
+
+    private fun patchProxyBlock(
+        lines: List<String>,
+        options: MihomoConnectionOptions,
+    ): List<String> {
+        val type = proxyFieldValue(lines, "type").orEmpty()
+        var patched = lines
+        if (options.amneziaNoiseEnabled && type.equals("wireguard", true)) {
+            val noise = options.amneziaNoise
+            patched = upsertNestedOptions(
+                patched,
+                "amnezia-wg-option",
+                linkedMapOf(
+                    "jc" to noise.count.toString(),
+                    "jmin" to noise.minSize.toString(),
+                    "jmax" to noise.maxSize.toString(),
+                ),
+            )
+        }
+        return patched
+    }
+
+    private fun upsertNestedOptions(
+        lines: List<String>,
+        key: String,
+        fields: Map<String, String>,
+    ): List<String> {
+        if (lines.size == 1 && lines.single().trimStart().startsWith("- {")) {
+            return listOf(upsertInlineMap(lines.single(), key, fields))
+        }
+        val start = lines.indexOfFirst { indentation(it) == 4 && fieldName(it) == key }
+        if (start < 0) {
+            return lines + "    $key:" + fields.map { (field, value) -> "      $field: $value" }
+        }
+        if (lines[start].substringAfter(':').trim().startsWith("{")) {
+            return lines.toMutableList().also { it[start] = upsertInlineMap(it[start], key, fields) }
+        }
+
+        val patched = lines.toMutableList()
+        var end = (start + 1 until patched.size)
+            .firstOrNull { indentation(patched[it]) <= 4 && patched[it].isNotBlank() }
+            ?: patched.size
+        fields.forEach { (field, value) ->
+            val index = (start + 1 until end).firstOrNull {
+                indentation(patched[it]) == 6 && fieldName(patched[it]) == field
+            }
+            if (index == null) {
+                patched.add(end, "      $field: $value")
+                end += 1
+            } else {
+                patched[index] = "      $field: $value"
+            }
+        }
+        return patched
+    }
+
+    private fun upsertInlineMap(line: String, key: String, fields: Map<String, String>): String {
+        val keyPattern = Regex.escape(key)
+        val nestedMap = Regex("""(['\"]?$keyPattern['\"]?\s*:\s*)\{([^}]*)}""")
+        val match = nestedMap.find(line)
+        if (match != null) {
+            val body = patchInlineFields(match.groupValues[2], fields)
+            return line.replaceRange(match.range, "${match.groupValues[1]}{$body}")
+        }
+        val close = line.lastIndexOf('}')
+        if (close < 0) return line
+        val separator = if (line.substring(0, close).trimEnd().endsWith('{')) "" else ", "
+        val body = fields.entries.joinToString(", ") { (field, value) -> "$field: $value" }
+        return line.substring(0, close) + "$separator$key: {$body}" + line.substring(close)
+    }
+
+    private fun patchInlineFields(body: String, fields: Map<String, String>): String {
+        var patched = body.trim()
+        fields.forEach { (field, value) ->
+            val fieldPattern = Regex("""((?:^|,\s*)['\"]?${Regex.escape(field)}['\"]?\s*:\s*)([^,}]+)""")
+            val match = fieldPattern.find(patched)
+            patched = if (match == null) {
+                patched + if (patched.isBlank()) "$field: $value" else ", $field: $value"
+            } else {
+                val valueRange = match.groups[2]?.range ?: return@forEach
+                patched.replaceRange(valueRange, value)
+            }
+        }
+        return patched
+    }
+
+    private fun proxyFieldValue(lines: List<String>, key: String): String? {
+        lines.firstOrNull { indentation(it) == 4 && fieldName(it) == key }?.let { line ->
+            return yamlScalar(line.substringAfter(':'))
+        }
+        val inline = lines.singleOrNull()?.trimStart()?.takeIf { it.startsWith("- {") } ?: return null
+        return Regex("""(?:^|[,{]\s*)['\"]?${Regex.escape(key)}['\"]?\s*:\s*([^,}]+)""")
+            .find(inline)
+            ?.groupValues
+            ?.get(1)
+            ?.let(::yamlScalar)
+    }
+
+    private fun fieldName(line: String): String =
+        line.trimStart().substringBefore(':').trim().removeSurrounding("\"").removeSurrounding("'")
+
+    private fun yamlScalar(value: String): String =
+        value.substringBefore(" #").trim().removeSurrounding("\"").removeSurrounding("'")
+
+    private fun topLevelKey(line: String): String? {
+        if (line.isBlank() || line.first().isWhitespace() || line.trimStart().startsWith("#")) return null
+        return line.substringBefore(':').trim().takeIf { ':' in line && it.isNotBlank() }
+    }
+
+    private fun indentation(line: String): Int =
+        line.indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 } ?: line.length
+}
+
 object MihomoDpiBypassPatcher {
     fun patch(
         rawYaml: String,
@@ -874,6 +1107,58 @@ object MihomoControllerProxies {
             name = now
         }
         return name
+    }
+
+    fun selectorPath(
+        response: JSONObject,
+        targetName: String,
+        preferredRoots: List<String> = emptyList(),
+    ): List<MihomoGroupSelection> {
+        val proxies = response.optJSONObject("proxies") ?: return emptyList()
+        val selectorNames = proxies.keys().asSequence()
+            .filter { name ->
+                proxies.optJSONObject(name)
+                    ?.optString("type")
+                    .equals("Selector", ignoreCase = true)
+            }
+            .toList()
+        val roots = (preferredRoots + selectorNames).distinct()
+        roots.forEach { root ->
+            val path = selectorPathFrom(
+                proxies = proxies,
+                currentName = root,
+                targetName = targetName,
+                visited = emptySet(),
+            ) ?: return@forEach
+            return path.zipWithNext()
+                .map { (selector, selected) -> MihomoGroupSelection(selector, selected) }
+                .reversed()
+        }
+        return emptyList()
+    }
+
+    private fun selectorPathFrom(
+        proxies: JSONObject,
+        currentName: String,
+        targetName: String,
+        visited: Set<String>,
+    ): List<String>? {
+        if (currentName == targetName) return listOf(targetName)
+        if (currentName in visited || visited.size >= MAX_GROUP_DEPTH) return null
+        val item = proxies.optJSONObject(currentName) ?: return null
+        if (!item.optString("type").equals("Selector", ignoreCase = true)) return null
+        val members = item.optJSONArray("all") ?: return null
+        for (index in 0 until members.length()) {
+            val member = members.optString(index).takeIf(String::isNotBlank) ?: continue
+            val childPath = selectorPathFrom(
+                proxies = proxies,
+                currentName = member,
+                targetName = targetName,
+                visited = visited + currentName,
+            ) ?: continue
+            return listOf(currentName) + childPath
+        }
+        return null
     }
 
     private const val MAX_GROUP_DEPTH = 8

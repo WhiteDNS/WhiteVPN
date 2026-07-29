@@ -14,11 +14,7 @@ data class ConnectionCountry(
 data class LocationSelectorOption(
     val countryCode: String?,
     val label: String,
-) {
-    companion object {
-        val AUTO = LocationSelectorOption(countryCode = null, label = "خودکار")
-    }
-}
+)
 
 data class LocationFilterResult(
     val profiles: List<ConnectionProfile>,
@@ -28,35 +24,42 @@ data class LocationFilterResult(
 )
 
 object ConnectionLocationPolicy {
-    fun selectorOptions(profiles: List<ConnectionProfile>): List<LocationSelectorOption> {
+    fun selectorOptions(
+        profiles: List<ConnectionProfile>,
+        automaticLabel: String = "Automatic",
+        displayLocale: Locale = Locale.getDefault(),
+    ): List<LocationSelectorOption> {
         val countries = profiles
-            .mapNotNull { profile -> countryForProfile(profile) }
+            .mapNotNull { profile -> countryForProfile(profile, displayLocale) }
             .distinctBy { it.code }
             .sortedWith(compareBy<ConnectionCountry> { it.country }.thenBy { it.code })
             .map { country -> country.selectorOption() }
-        return listOf(LocationSelectorOption.AUTO) + countries
+        return listOf(LocationSelectorOption(countryCode = null, label = automaticLabel)) + countries
     }
 
     fun filterProfiles(
         profiles: List<ConnectionProfile>,
         selectedCountryCode: String?,
+        automaticLabel: String = "Automatic",
+        displayLocale: Locale = Locale.getDefault(),
     ): LocationFilterResult {
+        val automatic = LocationSelectorOption(countryCode = null, label = automaticLabel)
         val countryCode = normalizeCountryCode(selectedCountryCode)
             ?: return LocationFilterResult(
                 profiles = profiles,
                 selectedCountryCode = null,
-                selectedLabel = LocationSelectorOption.AUTO.label,
+                selectedLabel = automatic.label,
                 resetToAuto = false,
             )
-        val selectedCountry = countryFromCode(countryCode)
+        val selectedCountry = countryFromCode(countryCode, displayLocale)
         val selectedProfiles = profiles.filter { profile ->
-            countryForProfile(profile)?.code == countryCode
+            countryForProfile(profile, displayLocale)?.code == countryCode
         }
         if (selectedProfiles.isEmpty()) {
             return LocationFilterResult(
                 profiles = profiles,
                 selectedCountryCode = null,
-                selectedLabel = LocationSelectorOption.AUTO.label,
+                selectedLabel = automatic.label,
                 resetToAuto = true,
             )
         }
@@ -68,21 +71,31 @@ object ConnectionLocationPolicy {
         )
     }
 
-    fun optionForCode(countryCode: String?): LocationSelectorOption? {
-        return countryFromCode(countryCode)?.selectorOption()
+    fun optionForCode(
+        countryCode: String?,
+        displayLocale: Locale = Locale.getDefault(),
+    ): LocationSelectorOption? {
+        return countryFromCode(countryCode, displayLocale)?.selectorOption()
     }
 
-    fun countryForProfile(profile: ConnectionProfile): ConnectionCountry? {
-        return countryFromText(profile.tag, profile.server)
+    fun countryForProfile(
+        profile: ConnectionProfile,
+        displayLocale: Locale = Locale.getDefault(),
+    ): ConnectionCountry? {
+        return countryFromText(displayLocale, profile.tag, profile.server)
     }
 
     fun countryFromText(vararg parts: String): ConnectionCountry? {
+        return countryFromText(Locale.getDefault(), *parts)
+    }
+
+    private fun countryFromText(displayLocale: Locale, vararg parts: String): ConnectionCountry? {
         val source = parts.joinToString(" ")
         extractRegionalFlagCode(source)?.let { code ->
-            countryFromCode(code)?.let { return it }
+            countryFromCode(code, displayLocale)?.let { return it }
         }
         extractProfileCodeToken(source)?.let { code ->
-            countryFromCode(code)?.let { return it }
+            countryFromCode(code, displayLocale)?.let { return it }
         }
 
         val normalized = source
@@ -93,18 +106,21 @@ object ConnectionLocationPolicy {
         COUNTRY_MATCHERS.firstOrNull { matcher ->
             matcher.tokens.any { token -> searchable.contains(" $token ") }
         }?.let { matcher ->
-            return countryFromCode(matcher.code)
+            return countryFromCode(matcher.code, displayLocale)
         }
 
         return null
     }
 
-    fun countryFromCode(rawCode: String?): ConnectionCountry? {
+    fun countryFromCode(
+        rawCode: String?,
+        displayLocale: Locale = Locale.getDefault(),
+    ): ConnectionCountry? {
         val code = normalizeCountryCode(rawCode) ?: return null
         val country = Locale.Builder()
             .setRegion(code)
             .build()
-            .getDisplayCountry(Locale.forLanguageTag("fa"))
+            .getDisplayCountry(displayLocale)
             .ifBlank { return null }
         return ConnectionCountry(
             code = code,

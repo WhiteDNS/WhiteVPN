@@ -10,7 +10,7 @@ class ConnectButtonModelTest {
     fun stoppedStateConnects() {
         val model = ConnectButtonModel(VpnState.Stopped)
 
-        assertEquals("اتصال", model.label())
+        assertEquals(R.string.connect_action_connect, model.labelRes())
         assertEquals(Actions.CONNECT, model.nextAction())
         assertTrue(model.isEnabled())
     }
@@ -19,16 +19,27 @@ class ConnectButtonModelTest {
     fun startedStateDisconnects() {
         val model = ConnectButtonModel(VpnState.Started)
 
-        assertEquals("قطع اتصال", model.label())
+        assertEquals(R.string.connect_action_disconnect, model.labelRes())
         assertEquals(Actions.DISCONNECT, model.nextAction())
         assertTrue(model.isEnabled())
+    }
+
+    @Test
+    fun alwaysOnStateCannotDisconnect() {
+        val model = ConnectButtonModel(VpnState.Started)
+
+        model.onStateChanged(VpnState.Started, alwaysOn = true)
+
+        assertEquals(R.string.connect_action_always_on, model.labelRes())
+        assertEquals(null, model.nextAction())
+        assertFalse(model.isEnabled())
     }
 
     @Test
     fun startingStateCanCancelConnect() {
         val model = ConnectButtonModel(VpnState.Starting)
 
-        assertEquals("در حال اتصال…", model.label())
+        assertEquals(R.string.connect_action_connecting, model.labelRes())
         assertEquals(Actions.DISCONNECT, model.nextAction())
         assertTrue(model.isEnabled())
     }
@@ -37,7 +48,7 @@ class ConnectButtonModelTest {
     fun stoppingStateIsDisabled() {
         val model = ConnectButtonModel(VpnState.Stopping)
 
-        assertEquals("در حال قطع اتصال…", model.label())
+        assertEquals(R.string.connect_action_disconnecting, model.labelRes())
         assertEquals(null, model.nextAction())
         assertFalse(model.isEnabled())
     }
@@ -48,7 +59,7 @@ class ConnectButtonModelTest {
 
         model.onStateChanged(VpnState.Error("failed"))
 
-        assertEquals("تلاش دوباره", model.label())
+        assertEquals(R.string.connect_action_retry, model.labelRes())
         assertEquals(Actions.CONNECT, model.nextAction())
         assertTrue(model.isEnabled())
     }
@@ -57,7 +68,7 @@ class ConnectButtonModelTest {
     fun legacyDailyLimitStateRestoresConnectButton() {
         val model = ConnectButtonModel(VpnState.DailyLimitReached)
 
-        assertEquals("تلاش دوباره", model.label())
+        assertEquals(R.string.connect_action_retry, model.labelRes())
         assertEquals(Actions.CONNECT, model.nextAction())
         assertTrue(model.isEnabled())
     }

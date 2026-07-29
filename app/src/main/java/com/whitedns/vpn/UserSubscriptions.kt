@@ -171,7 +171,7 @@ object JsonSubscriptionImporter {
     }
 
     private fun isSupportedMihomoProxy(proxy: JSONObject): Boolean =
-        proxy.optString("type") in setOf("vless", "vmess", "trojan", "ss") &&
+        proxy.optString("type") in setOf("vless", "vmess", "trojan", "ss", "wireguard") &&
             proxy.optString("name").isNotBlank() &&
             proxy.optString("server").isNotBlank() &&
             proxy.optInt("port") in 1..65535
@@ -274,6 +274,22 @@ class UserSubscriptionManager(
         )
         store.saveUserSubscription(item, imported.yaml)
         return item
+    }
+
+    fun update(id: String, name: String, input: String): UserSubscription {
+        val existing = store.readUserSubscription(id) ?: throw IOException("سابسکریپشن دیگر وجود ندارد")
+        val cleanName = name.trim().take(60)
+        require(cleanName.isNotBlank()) { "نام الزامی است" }
+        val cleanInput = input.trim()
+        val imported = UserSubscriptionImporter.import(load(cleanInput))
+        return existing.copy(
+            name = cleanName,
+            input = cleanInput,
+            format = imported.format,
+            connectionCount = imported.connectionCount,
+            updatedAt = System.currentTimeMillis(),
+            lastError = "",
+        ).also { store.saveUserSubscription(it, imported.yaml) }
     }
 
     fun refresh(id: String): UserSubscription {

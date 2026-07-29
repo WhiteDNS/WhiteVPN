@@ -344,6 +344,54 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
+    fun connectionOptionsPatchWireGuardNoiseWithoutChangingEch() {
+        val yaml = """
+            proxies:
+              - name: TLS
+                type: vless
+                server: tls.example.com
+                port: 443
+                tls: true
+                ech-opts: {'enable': false, 'query-server-name': 'ech.example.com'}
+              - name: Reality
+                type: vless
+                server: reality.example.com
+                port: 443
+                tls: true
+                reality-opts:
+                  public-key: key
+              - name: WARP
+                type: wireguard
+                server: 162.159.192.1
+                port: 2408
+                amnezia-wg-option:
+                  jc: 1
+                  jmin: 10
+                  jmax: 20
+                  s1: 15
+              - { name: Inline WARP, type: wireguard, server: 162.159.192.2, port: 2408, amnezia-wg-option: {'jc': 2, 'jmin': 20, 'jmax': 30} }
+        """.trimIndent()
+        val options = MihomoConnectionOptions(
+            amneziaNoiseEnabled = true,
+            amneziaNoise = AmneziaNoiseSettings(5, 50, 100),
+        )
+
+        val patched = MihomoConnectionOptionsPatcher.patch(yaml, options)
+
+        assertEquals(1, Regex("ech-opts:").findAll(patched).count())
+        assertTrue(patched.contains("ech-opts: {'enable': false, 'query-server-name': 'ech.example.com'}"))
+        assertTrue(patched.contains("jc: 5"))
+        assertTrue(patched.contains("jmin: 50"))
+        assertTrue(patched.contains("jmax: 100"))
+        assertTrue(patched.contains("s1: 15"))
+        assertEquals(2, Regex("amnezia-wg-option:").findAll(patched).count())
+        assertEquals(yaml, MihomoConnectionOptionsPatcher.patch(yaml, MihomoConnectionOptions()))
+        assertThrows(IllegalArgumentException::class.java) {
+            MihomoConnectionOptionsPolicy.validateNoise(AmneziaNoiseSettings(5, 101, 100))
+        }
+    }
+
+    @Test
     fun dpiBypassPatcherAddsLocalProxyAndDialerProxyOnlyWhenEnabled() {
         val yaml = """
             proxies:
@@ -394,6 +442,44 @@ class MihomoRuntimeConfigBuilderTest {
         )
 
         assertEquals("🇩🇪 DE | 01", MihomoControllerProxies.activeProxyName(response, "🚀 Proxy Select"))
+    }
+
+    @Test
+    fun controllerProxiesBuildLeafFirstSelectorPathForExplicitConnection() {
+        val response = JSONObject(
+            """
+                {
+                  "proxies": {
+                    "WhiteDNS Proxy": {
+                      "type": "Selector",
+                      "all": ["Automatic", "Manual"]
+                    },
+                    "Automatic": {
+                      "type": "URLTest",
+                      "all": ["Node A", "Node B"]
+                    },
+                    "Manual": {
+                      "type": "Selector",
+                      "all": ["Node A", "Node B"]
+                    },
+                    "Node A": { "type": "Vless" },
+                    "Node B": { "type": "Trojan" }
+                  }
+                }
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            listOf(
+                MihomoGroupSelection("Manual", "Node B"),
+                MihomoGroupSelection("WhiteDNS Proxy", "Manual"),
+            ),
+            MihomoControllerProxies.selectorPath(
+                response = response,
+                targetName = "Node B",
+                preferredRoots = listOf("WhiteDNS Proxy"),
+            ),
+        )
     }
 
     @Test

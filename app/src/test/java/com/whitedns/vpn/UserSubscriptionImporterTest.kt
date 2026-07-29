@@ -206,6 +206,39 @@ class UserSubscriptionImporterTest {
     }
 
     @Test
+    fun importerNormalizesClashJsonWireGuardSubscriptions() {
+        val imported = UserSubscriptionImporter.import(
+            """
+            {
+              "proxies": [{
+                "name": "WARP Pro",
+                "type": "wireguard",
+                "server": "162.159.192.1",
+                "port": 2408,
+                "ip": "172.16.0.2",
+                "private-key": "private-key",
+                "public-key": "public-key",
+                "reserved": [1, 2, 3],
+                "allowed-ips": ["0.0.0.0/0", "::/0"],
+                "udp": true,
+                "amnezia-wg-option": {"jc": 4, "jmin": 40, "jmax": 70}
+              }]
+            }
+            """.trimIndent(),
+            nowMs = 123L,
+        )
+        val snapshot = MihomoConfigParser.parse(imported.yaml, 123L)
+
+        assertEquals(UserSubscriptionFormat.Mihomo, imported.format)
+        assertEquals(1, imported.connectionCount)
+        assertEquals("wireguard", snapshot.catalog.profiles.single().type)
+        assertEquals(AmneziaNoiseSettings(4, 40, 70), snapshot.catalog.profiles.single().amneziaNoise)
+        assertTrue(imported.yaml.contains("private-key: 'private-key'"))
+        assertTrue(imported.yaml.contains("allowed-ips: ['0.0.0.0/0', '::/0']"))
+        assertTrue(imported.yaml.contains("amnezia-wg-option: {'jc': 4, 'jmin': 40, 'jmax': 70}"))
+    }
+
+    @Test
     fun importerNormalizesXrayJsonConfigArrays() {
         val imported = UserSubscriptionImporter.import(
             """

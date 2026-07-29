@@ -7,6 +7,9 @@ CORE_DIR="${FLCLASH_DIR}/core"
 SUBMODULE_DIR="${CORE_DIR}/Clash.Meta"
 OUT_JNI_DIR="${ROOT_DIR}/app/src/main/jniLibs"
 OUT_INCLUDE_DIR="${ROOT_DIR}/app/src/main/cpp/includes"
+VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
+MIHOMO_TAG="v1.19.29"
+FLCLASH_PATCH_COMMIT="80362fc1895dcf60b79b562896653046e0687413"
 API_LEVEL="${ANDROID_API_LEVEL:-26}"
 ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
 
@@ -20,11 +23,20 @@ if [[ ! -f "${SUBMODULE_DIR}/go.mod" ]]; then
     echo "FlClash Clash.Meta submodule is present but incomplete: ${SUBMODULE_DIR}" >&2
     exit 1
   fi
-  echo "Fetching FlClash Clash.Meta source..."
+  echo "Fetching Mihomo ${MIHOMO_TAG} with FlClash compatibility..."
   rm -rf "${SUBMODULE_DIR}"
-  git clone --depth 1 --branch FlClash \
-    https://github.com/chen08209/Clash.Meta.git \
+  git clone --depth 1 --branch "${MIHOMO_TAG}" \
+    https://github.com/MetaCubeX/mihomo.git \
     "${SUBMODULE_DIR}"
+  git -C "${SUBMODULE_DIR}" fetch --depth 2 \
+    https://github.com/chen08209/Clash.Meta.git "${FLCLASH_PATCH_COMMIT}"
+  git -c commit.gpgsign=false -C "${SUBMODULE_DIR}" cherry-pick "${FLCLASH_PATCH_COMMIT}"
+fi
+
+if ! git -C "${SUBMODULE_DIR}" rev-parse --verify "${MIHOMO_TAG}^{commit}" >/dev/null 2>&1 ||
+  ! git -C "${SUBMODULE_DIR}" merge-base --is-ancestor "${MIHOMO_TAG}" HEAD; then
+  echo "FlClash Mihomo source is not based on ${MIHOMO_TAG}: ${SUBMODULE_DIR}" >&2
+  exit 1
 fi
 
 if ! command -v go >/dev/null 2>&1; then
@@ -77,6 +89,8 @@ fi
 
 outputs_exist() {
   local abi
+  [[ -f "${VERSION_FILE}" ]] || return 1
+  [[ "$(<"${VERSION_FILE}")" == "${MIHOMO_TAG}" ]] || return 1
   for abi in "${ABIS[@]}"; do
     [[ -f "${OUT_JNI_DIR}/${abi}/libclash.so" ]] || return 1
     [[ -f "${OUT_INCLUDE_DIR}/${abi}/libclash.h" ]] || return 1
@@ -88,6 +102,8 @@ if [[ "${FORCE_FLCLASH_CORE_BUILD:-0}" != "1" ]] && outputs_exist; then
   echo "FlClash core outputs already exist. Set FORCE_FLCLASH_CORE_BUILD=1 to rebuild."
   exit 0
 fi
+
+(cd "${CORE_DIR}" && go mod tidy)
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
@@ -144,7 +160,7 @@ build_abi() {
       CC="${cc}" \
       CFLAGS="-O3 -Werror" \
       go build \
-        -ldflags="-w -s" \
+        -ldflags="-X github.com/metacubex/mihomo/constant.Version=${MIHOMO_TAG} -w -s" \
         -tags=with_gvisor \
         -buildmode=c-shared \
         -o "${tmp_out}/libclash.so" \
@@ -160,4 +176,5 @@ for abi in "${ABIS[@]}"; do
   build_abi "${abi}"
 done
 
+printf '%s\n' "${MIHOMO_TAG}" > "${VERSION_FILE}"
 echo "FlClash Mihomo core generated under app/src/main/jniLibs."

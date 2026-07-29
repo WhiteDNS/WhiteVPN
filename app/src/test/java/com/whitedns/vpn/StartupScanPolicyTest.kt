@@ -10,6 +10,17 @@ import java.io.IOException
 
 class StartupScanPolicyTest {
     @Test
+    fun tcpProbePortsExcludeWireGuardProfiles() {
+        val profiles = listOf(
+            profile(type = "wireguard", port = 2408),
+            profile(type = "WIREGUARD", port = 500),
+            profile(type = "vless", port = 443),
+        )
+
+        assertEquals(listOf(443), StartupScanPolicy.tcpProbePorts(profiles))
+    }
+
+    @Test
     fun priorityPortsPreferCommonTlsPorts() {
         assertEquals(listOf(443, 8443), StartupScanPolicy.priorityPorts(listOf(22, 80, 443, 8443)))
     }
@@ -250,6 +261,17 @@ class StartupScanPolicyTest {
             ),
             delayMs = 100,
             selectedAt = 1,
+        )
+    }
+
+    private fun profile(type: String, port: Int): ConnectionProfile {
+        return ConnectionProfile(
+            tag = "$type-$port",
+            type = type,
+            server = "example.com",
+            port = port,
+            transport = "",
+            validationHost = "example.com",
         )
     }
 }

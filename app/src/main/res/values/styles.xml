@@ -21,6 +21,29 @@
         <item name="android:colorAccent">@color/whitedns_primary</item>
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
+        <item name="tabStyle">@style/WhiteDnsTabLayout</item>
+    </style>
+
+    <style name="WhiteDnsTabTextAppearance" parent="TextAppearance.Material3.TitleSmall">
+        <item name="android:fontFamily">@font/vazirmatn</item>
+        <item name="fontFamily">@font/vazirmatn</item>
+    </style>
+
+    <style name="WhiteDnsTabLayout" parent="Widget.Material3.TabLayout">
+        <item name="tabTextAppearance">@style/WhiteDnsTabTextAppearance</item>
+    </style>
+
+    <style name="WhiteDnsPopupMenu" parent="Widget.AppCompat.PopupMenu">
+        <item name="android:popupBackground">@color/whitedns_surface</item>
+    </style>
+
+    <style name="WhiteDnsPopupTheme" parent="ThemeOverlay.AppCompat">
+        <item name="android:fontFamily">@font/vazirmatn</item>
+        <item name="fontFamily">@font/vazirmatn</item>
+        <item name="colorAccent">@color/whitedns_primary</item>
+        <item name="colorControlHighlight">@color/whitedns_primary_container</item>
+        <item name="colorControlNormal">@color/whitedns_on_surface_variant</item>
+        <item name="popupMenuStyle">@style/WhiteDnsPopupMenu</item>
     </style>
 
     <style name="AppTheme" parent="BaseAppTheme" />

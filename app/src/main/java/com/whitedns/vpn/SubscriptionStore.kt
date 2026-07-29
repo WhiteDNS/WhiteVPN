@@ -5,6 +5,31 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
+enum class ConnectionDelayStatus(val wireName: String) {
+    Success("success"),
+    Failure("failure");
+
+    companion object {
+        fun fromWireName(value: String): ConnectionDelayStatus? =
+            entries.firstOrNull { it.wireName == value }
+    }
+}
+
+data class ConnectionDelayRecord(
+    val subscriptionId: String,
+    val fingerprint: String,
+    val delayMs: Int?,
+    val status: ConnectionDelayStatus,
+    val testedAt: Long,
+)
+
+object ConnectionDelayRecordPolicy {
+    fun latest(records: List<ConnectionDelayRecord>): List<ConnectionDelayRecord> =
+        records
+            .groupBy { it.subscriptionId to it.fingerprint }
+            .mapNotNull { (_, matches) -> matches.maxByOrNull(ConnectionDelayRecord::testedAt) }
+}
+
 class SubscriptionStore(private val context: Context) {
     fun readUserSubscriptions(): List<UserSubscription> {
         val file = userSubscriptionsFile()
@@ -81,6 +106,7 @@ class SubscriptionStore(private val context: Context) {
         }
         writeFile(userSubscriptionsFile(), items.toString())
         userSubscriptionYamlFile(id).delete()
+        deleteConnectionDelayRecords(id)
         if (readSelectedSubscriptionId() == id) saveSelectedSubscriptionId(DEFAULT_SUBSCRIPTION_ID)
     }
 
@@ -157,87 +183,146 @@ class SubscriptionStore(private val context: Context) {
         )
     }
 
-    fun readTopDelaySelections(
+    fun readConnectionDelayRecords(
+        subscriptionId: String,
         profiles: List<ConnectionProfile>,
         nowMs: Long = System.currentTimeMillis(),
         ttlMs: Long = ProfileDelayCacheDefaults.DELAY_CACHE_TTL_MS,
-    ): List<SelectedConnectionProfile> {
+    ): List<ConnectionDelayRecord> = synchronized(DELAY_RECORDS_LOCK) {
         val byFingerprint = profiles.associateBy { it.fingerprint }
+        val matchingRecords = readDelayRecords()
+            .filter { record ->
+                (record.subscriptionId == subscriptionId || record.subscriptionId.isBlank()) &&
+                    record.fingerprint in byFingerprint &&
+                    record.testedAt > 0L &&
+                    nowMs - record.testedAt in 0..ttlMs
+            }
+            .map { record ->
+                if (record.subscriptionId.isBlank()) record.copy(subscriptionId = subscriptionId) else record
+            }
+        ConnectionDelayRecordPolicy.latest(matchingRecords)
+            .sortedWith(
+                compareBy<ConnectionDelayRecord> { it.status != ConnectionDelayStatus.Success }
+                    .thenBy { it.delayMs ?: Int.MAX_VALUE }
+                    .thenByDescending(ConnectionDelayRecord::testedAt),
+            )
+    }
+
+    fun saveConnectionDelayRecord(record: ConnectionDelayRecord) {
+        if (record.subscriptionId.isBlank() || record.fingerprint.isBlank() || record.testedAt <= 0L) return
+        synchronized(DELAY_RECORDS_LOCK) {
+            val validDelayMs = record.delayMs?.takeIf {
+                record.status == ConnectionDelayStatus.Success && it > 0
+            }
+            val normalized = record.copy(
+                delayMs = validDelayMs,
+                status = if (validDelayMs != null) {
+                    ConnectionDelayStatus.Success
+                } else {
+                    ConnectionDelayStatus.Failure
+                },
+            )
+            val records = readDelayRecords()
+                .filterNot {
+                    it.fingerprint == normalized.fingerprint &&
+                        (it.subscriptionId == normalized.subscriptionId || it.subscriptionId.isBlank())
+                }
+                .plus(normalized)
+            writeDelayRecords(ConnectionDelayRecordPolicy.latest(records))
+        }
+    }
+
+    fun pruneConnectionDelayRecords(
+        subscriptionId: String,
+        profiles: List<ConnectionProfile>,
+        nowMs: Long = System.currentTimeMillis(),
+        ttlMs: Long = ProfileDelayCacheDefaults.DELAY_CACHE_TTL_MS,
+    ): Int = synchronized(DELAY_RECORDS_LOCK) {
+        val validFingerprints = profiles.map { it.fingerprint }.toSet()
+        val existing = readDelayRecords()
+        var removed = 0
+        val kept = existing.mapNotNull { record ->
+            val belongsToSubscription = record.subscriptionId == subscriptionId ||
+                (record.subscriptionId.isBlank() && record.fingerprint in validFingerprints)
+            if (!belongsToSubscription) return@mapNotNull record
+            val valid = record.fingerprint in validFingerprints &&
+                record.testedAt > 0L &&
+                nowMs - record.testedAt in 0..ttlMs &&
+                (
+                    record.status == ConnectionDelayStatus.Failure ||
+                        record.delayMs?.let { it > 0 } == true
+                    )
+            if (!valid) {
+                removed += 1
+                null
+            } else {
+                record.copy(subscriptionId = subscriptionId)
+            }
+        }
+        val normalized = ConnectionDelayRecordPolicy.latest(kept)
+        if (removed > 0 || normalized != existing) {
+            writeDelayRecords(normalized)
+        }
+        removed
+    }
+
+    private fun deleteConnectionDelayRecords(subscriptionId: String) {
+        synchronized(DELAY_RECORDS_LOCK) {
+            val existing = readDelayRecords()
+            val kept = existing.filterNot { it.subscriptionId == subscriptionId }
+            if (kept.size != existing.size) writeDelayRecords(kept)
+        }
+    }
+
+    private fun readDelayRecords(): List<ConnectionDelayRecord> {
         val file = delaysFile()
         if (!file.exists() || file.length() == 0L) return emptyList()
         return runCatching {
             val items = JSONArray(file.readText())
-            val selections = mutableListOf<SelectedConnectionProfile>()
-            for (index in 0 until items.length()) {
-                val item = items.optJSONObject(index) ?: continue
-                val selectedAt = item.optLong("selectedAt", 0L)
-                if (selectedAt <= 0L || nowMs - selectedAt > ttlMs) continue
-                val profile = byFingerprint[item.optString("fingerprint")] ?: continue
-                val delayMs = item.optInt("delayMs", -1).takeIf { it > 0 } ?: continue
-                selections += SelectedConnectionProfile(profile, delayMs, selectedAt)
+            buildList {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val fingerprint = item.optString("fingerprint").takeIf(String::isNotBlank) ?: continue
+                    val testedAt = item.optLong(
+                        "testedAt",
+                        item.optLong("selectedAt", 0L),
+                    )
+                    if (testedAt <= 0L) continue
+                    val delayMs = item.optInt("delayMs", -1).takeIf { it > 0 }
+                    val storedStatus = ConnectionDelayStatus.fromWireName(item.optString("status"))
+                        ?: if (delayMs != null) ConnectionDelayStatus.Success else ConnectionDelayStatus.Failure
+                    val status = if (storedStatus == ConnectionDelayStatus.Success && delayMs != null) {
+                        ConnectionDelayStatus.Success
+                    } else {
+                        ConnectionDelayStatus.Failure
+                    }
+                    add(
+                        ConnectionDelayRecord(
+                            subscriptionId = item.optString("subscriptionId"),
+                            fingerprint = fingerprint,
+                            delayMs = delayMs,
+                            status = status,
+                            testedAt = testedAt,
+                        ),
+                    )
+                }
             }
-            selections.sortedWith(compareBy<SelectedConnectionProfile> { it.delayMs }.thenByDescending { it.selectedAt })
         }.getOrDefault(emptyList())
     }
 
-    fun mergeTopDelaySelections(
-        profiles: List<ConnectionProfile>,
-        newSelections: List<SelectedConnectionProfile>,
-        nowMs: Long = System.currentTimeMillis(),
-    ) {
-        val existing = readTopDelaySelections(profiles, nowMs)
-        val merged = (newSelections + existing)
-            .filter { it.delayMs > 0 }
-            .groupBy { it.profile.fingerprint }
-            .map { (_, selections) ->
-                selections.minWith(compareBy<SelectedConnectionProfile> { it.delayMs }.thenByDescending { it.selectedAt })
-            }
-            .sortedWith(compareBy<SelectedConnectionProfile> { it.delayMs }.thenByDescending { it.selectedAt })
-            .take(ProfileDelayCacheDefaults.MAX_DELAY_CACHE_PROFILES)
-
+    private fun writeDelayRecords(records: List<ConnectionDelayRecord>) {
         val items = JSONArray()
-        merged.forEach { selection ->
+        records.forEach { record ->
             items.put(
                 JSONObject()
-                    .put("fingerprint", selection.profile.fingerprint)
-                    .put("delayMs", selection.delayMs)
-                    .put("selectedAt", selection.selectedAt),
+                    .put("subscriptionId", record.subscriptionId)
+                    .put("fingerprint", record.fingerprint)
+                    .put("delayMs", record.delayMs ?: JSONObject.NULL)
+                    .put("status", record.status.wireName)
+                    .put("testedAt", record.testedAt),
             )
         }
         writeFile(delaysFile(), items.toString())
-    }
-
-    fun pruneTopDelaySelections(
-        profiles: List<ConnectionProfile>,
-        nowMs: Long = System.currentTimeMillis(),
-        ttlMs: Long = ProfileDelayCacheDefaults.DELAY_CACHE_TTL_MS,
-    ): Int {
-        val file = delaysFile()
-        if (!file.exists() || file.length() == 0L) return 0
-        val validFingerprints = profiles.map { it.fingerprint }.toSet()
-        return runCatching {
-            val existing = JSONArray(file.readText())
-            val kept = JSONArray()
-            var removed = 0
-            for (index in 0 until existing.length()) {
-                val item = existing.optJSONObject(index)
-                val selectedAt = item?.optLong("selectedAt", 0L) ?: 0L
-                val fingerprint = item?.optString("fingerprint").orEmpty()
-                val isValid = fingerprint in validFingerprints &&
-                    selectedAt > 0L &&
-                    nowMs - selectedAt <= ttlMs &&
-                    item?.optInt("delayMs", -1)?.let { it > 0 } == true
-                if (isValid) {
-                    kept.put(item)
-                } else {
-                    removed += 1
-                }
-            }
-            if (removed > 0) {
-                writeFile(file, kept.toString())
-            }
-            removed
-        }.getOrDefault(0)
     }
 
     private fun catalogFile(): File = File(context.filesDir, CATALOG_FILE)
@@ -270,10 +355,10 @@ class SubscriptionStore(private val context: Context) {
         private const val USER_SUBSCRIPTIONS_FILE = "user-subscriptions.json"
         private const val USER_SUBSCRIPTION_PREFS = "white_dns_user_subscriptions"
         private const val KEY_SELECTED_SUBSCRIPTION = "selected_subscription"
+        private val DELAY_RECORDS_LOCK = Any()
     }
 }
 
 object ProfileDelayCacheDefaults {
     const val DELAY_CACHE_TTL_MS = 24 * 60 * 60 * 1_000L
-    const val MAX_DELAY_CACHE_PROFILES = 24
 }
