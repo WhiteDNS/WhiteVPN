@@ -29,6 +29,7 @@ client whose threat model includes a hostile network operator and hostile subscr
 | 12 | Scanner sockets proceed when `VpnService.protect()` fails | Low | Reported, unchanged |
 | 13 | Mihomo YAML subscriptions may still set `skip-cert-verify` | Low | Reported, unchanged |
 | 14 | `jniStopProxy` closes `server_fd` without synchronisation | Low | Reported, unchanged |
+| 15 | Firebase Analytics merges advertising-ID permissions into the APK | Medium | Reported, unchanged |
 
 ---
 
@@ -173,6 +174,31 @@ stored and executed as-is, so it can still disable certificate validation. Rewri
 config is intrusive and would break intentional self-signed setups; surfacing a warning in the
 subscription UI when an imported profile contains `skip-cert-verify: true` would be the better fix.
 
+**15. Firebase Analytics merges advertising-ID permissions into the APK.** `AndroidManifest.xml`
+declares five permissions. The *built* APK requests ten, because `firebase-analytics` contributes
+`com.google.android.gms.permission.AD_ID`, `android.permission.ACCESS_ADSERVICES_ATTRIBUTION`,
+`android.permission.ACCESS_ADSERVICES_AD_ID`, `com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE`
+and `WAKE_LOCK` through manifest merging. This was found by dumping the manifest of a built APK — it
+is not visible in the source manifest.
+
+For a censorship-circumvention client this matters more than usual: the app collects a resettable
+advertising identifier and install-referrer data that can correlate a user across apps, and the
+permission list is what a privacy-conscious user inspects on the store listing. The app only logs
+four coarse events (`app_opened`, `vpn_connected`, `connection_try_failed`, `vpn_disconnected`), none
+of which need an advertising ID.
+
+Suggested change, not applied because it alters analytics behaviour and is a product call:
+
+```xml
+<uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
+<uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" tools:node="remove" />
+<uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION" tools:node="remove" />
+<uses-permission android:name="com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE" tools:node="remove" />
+```
+
+Pair it with `FirebaseAnalytics.setAnalyticsCollectionEnabled` gated on the existing privacy-policy
+acceptance, so nothing is reported before the user consents.
+
 **14. `jniStopProxy` closes `server_fd` without synchronisation.** In `byedpi_bridge.cpp` the stop
 path calls `shutdown`/`close` on `server_fd` from the caller's thread while the proxy thread may
 still be using it, and `g_proxy_mutex` does not cover that field. This is a file-descriptor reuse
@@ -210,7 +236,18 @@ edits are validated. Four new regression tests cover findings 2–5:
 Two existing tests were updated because `skip-cert-verify: false` is now emitted explicitly on
 vless and trojan proxies, and `WhiteDnsConfigTest` no longer asserts the literal passphrases.
 
-**Not verified here:** a release APK build, and therefore the new `validateReleaseInputs` guard on
-missing payload keys, along with finding 2's TLS change against live Cloudflare endpoints. Both need
-the FlClash Go toolchain that `scripts/build-flclash-core.sh` drives, which was not available on the
-audit machine. Run `make release` and one on-device connect before merging.
+`./gradlew assembleDebug` — debug APKs built for all five splits after compiling the FlClash Mihomo
+core for `armeabi-v7a`, `arm64-v8a`, `x86` and `x86_64`. Dumping the built manifest confirms
+`allowBackup=false` alongside both `fullBackupContent` and `dataExtractionRules`, and the
+signature-level `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` that `ContextCompat.registerReceiver`
+relies on. That same dump is how finding 15 was found.
+
+**Not verified here:** a signed release build, and therefore the new `validateReleaseInputs` guard on
+missing payload keys — it needs release signing credentials that are not on the audit machine. The
+runtime behaviour of findings 2, 3 and 5 against live endpoints also needs one on-device connect.
+Run `make release` and a manual connect before merging.
+
+**Windows note:** `:app:buildFlClashCore` invokes `scripts/build-flclash-core.sh` via
+`commandLine(...)`, which Gradle cannot exec on Windows. Running the script through `bash` first and
+then `assembleDebug -x buildFlClashCore` works. Using `commandLine("bash", script)` would make the
+documented build work on Windows too; not changed here as it is outside the audit's scope.
