@@ -170,6 +170,28 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
+    fun flClashRuntimeYamlBindsTheDnsListenerToLoopbackOnly() {
+        val yaml = """
+            proxies:
+              - name: Node
+                type: http
+                server: example.com
+                port: 443
+        """.trimIndent()
+
+        val runtimeYaml = MihomoRuntimeConfigBuilder.flClashRuntimeYaml(
+            rawYaml = yaml,
+            secret = "secret-123",
+            controlPort = 39125,
+        )
+
+        // `allow-lan: false` does not gate the DNS listener, so binding 0.0.0.0 would expose an
+        // open resolver to every other device on the network.
+        assertTrue(runtimeYaml.contains("listen: 127.0.0.1:1053"))
+        assertFalse(runtimeYaml.contains("0.0.0.0"))
+    }
+
+    @Test
     fun flClashRuntimeYamlRoutesDnsThroughWhiteDnsProxyGroup() {
         val yaml = """
             proxies:

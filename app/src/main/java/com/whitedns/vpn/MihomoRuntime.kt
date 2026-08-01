@@ -21,6 +21,7 @@ object MihomoRuntimeDefaults {
     const val MIXED_PORT = 2080
     const val FALLBACK_CONTROL_PORT = 9090
     const val CONTROLLER_HOST = "127.0.0.1"
+    const val DNS_LISTEN_PORT = 1053
     val HEALTH_URLS = listOf(
         "https://valid-isrgrootx1.letsencrypt.org/",
         "https://connectivitycheck.gstatic.com/generate_204",
@@ -418,7 +419,9 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                 append("global-client-fingerprint: chrome\n")
                 append("dns:\n")
                 append("  enable: true\n")
-                append("  listen: 0.0.0.0:1053\n")
+                // Loopback only: `allow-lan: false` gates the proxy listeners but not this one, so
+                // binding 0.0.0.0 would expose an open resolver to every peer on the same Wi-Fi.
+                append("  listen: ${MihomoRuntimeDefaults.CONTROLLER_HOST}:${MihomoRuntimeDefaults.DNS_LISTEN_PORT}\n")
                 append("  ipv6: false\n")
                 append("  respect-rules: ${dnsProxyGroup != null}\n")
                 append("  enhanced-mode: fake-ip\n")

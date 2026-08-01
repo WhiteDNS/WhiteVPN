@@ -387,6 +387,7 @@ class CleanIpScanner(
                         .createSocket(rawSocket, speedTestHost, candidate.port, true) as SSLSocket
                     sslSocket.use { tlsSocket ->
                         tlsSocket.soTimeout = speedTestTimeoutMs
+                        tlsSocket.verifyHostnameOnHandshake(speedTestHost)
                         tlsSocket.startHandshake()
                         writeDownloadRequest(tlsSocket)
                         readDownloadBytesPerSecond(tlsSocket)
@@ -398,6 +399,19 @@ class CleanIpScanner(
             }
         }.getOrNull()
             ?: 0L
+    }
+
+    /**
+     * A plain [SSLSocket] validates the certificate chain but does **not** check that the
+     * certificate actually belongs to the host we asked for. Without this the speed test would
+     * accept any chain that a trusted CA ever signed, which lets an on-path attacker make an
+     * endpoint of their choosing look fast and get it picked as the connection target.
+     */
+    private fun SSLSocket.verifyHostnameOnHandshake(host: String) {
+        sslParameters = sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+        if (sslParameters.endpointIdentificationAlgorithm != "HTTPS") {
+            throw IOException("Unable to enable TLS hostname verification for $host")
+        }
     }
 
     private fun protectBestEffort(socket: Socket, event: String) {
