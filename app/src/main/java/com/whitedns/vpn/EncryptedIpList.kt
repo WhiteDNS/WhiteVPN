@@ -51,6 +51,11 @@ object EncryptedPayloadCodec {
         passphrase: String,
         label: String = "encrypted payload",
     ): String {
+        // The passphrase is injected at build time and is empty when a build was configured
+        // without it. Fail loudly rather than deriving a key from the empty string.
+        if (passphrase.isBlank()) {
+            throw IOException("No decryption key is configured for $label")
+        }
         val root = JSONObject(payloadJson)
         require(root.optInt("version") == 1) { "Unsupported $label version" }
         require(root.optString("algorithm") == "AES-GCM") { "Unsupported $label algorithm" }

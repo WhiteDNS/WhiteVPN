@@ -24,6 +24,28 @@ fun releaseStoreFile(path: String) = File(path).let { candidate ->
     if (candidate.isAbsolute) candidate else rootProject.file(path)
 }
 
+// Payload decryption keys. These used to be literals in WhiteDnsConfig.kt, which put them in every
+// APK and in the git history. They are injected at build time instead — see secrets.properties.example.
+val payloadSecretsFile = rootProject.file("secrets.properties")
+val payloadSecrets = Properties().apply {
+    if (payloadSecretsFile.isFile) {
+        payloadSecretsFile.inputStream().use { load(it) }
+    }
+}
+
+fun payloadSecret(propertyName: String, environmentName: String): String {
+    return System.getenv(environmentName)?.takeIf { it.isNotBlank() }
+        ?: payloadSecrets.getProperty(propertyName)?.takeIf { it.isNotBlank() }
+        ?: ""
+}
+
+val mihomoSubscriptionKey = payloadSecret("mihomoSubscriptionKey", "WHITEDNS_MIHOMO_SUBSCRIPTION_KEY")
+val encryptedIpListKey = payloadSecret("encryptedIpListKey", "WHITEDNS_ENCRYPTED_IP_LIST_KEY")
+val hasPayloadSecrets = mihomoSubscriptionKey.isNotBlank() && encryptedIpListKey.isNotBlank()
+
+fun buildConfigStringLiteral(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\u0024") + "\""
+
 val releaseStoreFilePath = releaseSigningValue("storeFile", "WHITEDNS_RELEASE_STORE_FILE")
 val releaseStorePassword = releaseSigningValue("storePassword", "WHITEDNS_RELEASE_STORE_PASSWORD")
 val releaseKeyAlias = releaseSigningValue("keyAlias", "WHITEDNS_RELEASE_KEY_ALIAS")
@@ -47,6 +69,9 @@ android {
         versionName = "0.0.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "MIHOMO_SUBSCRIPTION_KEY", buildConfigStringLiteral(mihomoSubscriptionKey))
+        buildConfigField("String", "ENCRYPTED_IP_LIST_KEY", buildConfigStringLiteral(encryptedIpListKey))
 
         externalNativeBuild {
             cmake {
@@ -176,6 +201,13 @@ val validateReleaseInputs = tasks.register("validateReleaseInputs") {
         val store = releaseStoreFile(releaseStoreFilePath!!)
         if (!store.isFile) {
             throw GradleException("Release keystore not found: ${store.absolutePath}")
+        }
+        if (!hasPayloadSecrets) {
+            throw GradleException(
+                "Payload decryption keys are not configured. Set WHITEDNS_MIHOMO_SUBSCRIPTION_KEY " +
+                    "and WHITEDNS_ENCRYPTED_IP_LIST_KEY, or create secrets.properties from " +
+                    "secrets.properties.example.",
+            )
         }
     }
 }

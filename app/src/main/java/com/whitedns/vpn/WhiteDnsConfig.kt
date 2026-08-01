@@ -10,11 +10,14 @@ import java.net.URL
 
 object WhiteDnsConfig {
     const val MIHOMO_SUBSCRIPTION_URL = "https://whitedns-sub.whitedns.workers.dev/mihomo/encrypted"
-    const val MIHOMO_SUBSCRIPTION_KEY = "#2gzwj1##z%BVq*7M2sfxe6sV23ut1LQr87JagD4D#&"
     const val ENCRYPTED_IP_LIST_URL =
         "https://whitedns-encrypted-ip-list.whitedns.workers.dev/v1/results/ips/encrypted"
-    const val ENCRYPTED_IP_LIST_KEY = "kc*P\$Hfw\$YqRSf%Ypyfzx#F\$kncPk9QG5%!W8M83K@f"
     const val SUBSCRIPTION_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1_000L
+
+    // Injected at build time from secrets.properties or the environment; see app/build.gradle.kts.
+    // Release builds fail when these are unset, debug builds get an empty string.
+    val MIHOMO_SUBSCRIPTION_KEY: String get() = BuildConfig.MIHOMO_SUBSCRIPTION_KEY
+    val ENCRYPTED_IP_LIST_KEY: String get() = BuildConfig.ENCRYPTED_IP_LIST_KEY
 }
 
 class ConfigRepository(private val context: Context) {

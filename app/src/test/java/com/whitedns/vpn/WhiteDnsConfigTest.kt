@@ -10,10 +10,6 @@ class WhiteDnsConfigTest {
             "https://whitedns-sub.whitedns.workers.dev/mihomo/encrypted",
             WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL,
         )
-        assertEquals(
-            "#2gzwj1##z%BVq*7M2sfxe6sV23ut1LQr87JagD4D#&",
-            WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
-        )
     }
 
     @Test
@@ -22,11 +18,21 @@ class WhiteDnsConfigTest {
     }
 
     @Test
-    fun encryptedIpListConfigIsPinned() {
+    fun encryptedIpListUrlIsPinned() {
         assertEquals(
             "https://whitedns-encrypted-ip-list.whitedns.workers.dev/v1/results/ips/encrypted",
             WhiteDnsConfig.ENCRYPTED_IP_LIST_URL,
         )
-        assertEquals("kc*P\$Hfw\$YqRSf%Ypyfzx#F\$kncPk9QG5%!W8M83K@f", WhiteDnsConfig.ENCRYPTED_IP_LIST_KEY)
+    }
+
+    /**
+     * The decryption passphrases must never be literals in this repository again. They are injected
+     * from secrets.properties or the environment, so the only thing worth asserting here is that
+     * the config reads them from BuildConfig rather than carrying its own copy.
+     */
+    @Test
+    fun payloadKeysComeFromBuildTimeInjection() {
+        assertEquals(BuildConfig.MIHOMO_SUBSCRIPTION_KEY, WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY)
+        assertEquals(BuildConfig.ENCRYPTED_IP_LIST_KEY, WhiteDnsConfig.ENCRYPTED_IP_LIST_KEY)
     }
 }

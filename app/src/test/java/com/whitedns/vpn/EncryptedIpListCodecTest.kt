@@ -14,14 +14,11 @@ import javax.crypto.spec.SecretKeySpec
 class EncryptedIpListCodecTest {
     @Test
     fun decryptsRawAesGcmPayloadText() {
-        val payload = encryptedPayload(
-            plaintext = "dmxlc3M6Ly9leGFtcGxl",
-            passphrase = WhiteDnsConfig.ENCRYPTED_IP_LIST_KEY,
-        )
+        val payload = encryptedPayload(plaintext = "dmxlc3M6Ly9leGFtcGxl")
 
         val plaintext = EncryptedPayloadCodec.decryptText(
             payload,
-            WhiteDnsConfig.ENCRYPTED_IP_LIST_KEY,
+            TEST_PASSPHRASE,
             label = "encrypted subscription",
         )
 
@@ -30,18 +27,24 @@ class EncryptedIpListCodecTest {
 
     @Test
     fun decryptsEncryptedMihomoYamlPayloadText() {
-        val payload = encryptedPayload(
-            plaintext = "proxies:\n  - name: Example\n",
-            passphrase = WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
-        )
+        val payload = encryptedPayload(plaintext = "proxies:\n  - name: Example\n")
 
         val plaintext = EncryptedPayloadCodec.decryptText(
             payload,
-            WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
+            TEST_PASSPHRASE,
             label = "encrypted Mihomo subscription",
         )
 
         assertEquals("proxies:\n  - name: Example\n", plaintext)
+    }
+
+    @Test
+    fun rejectsBlankPassphrase() {
+        val payload = encryptedPayload(plaintext = "104.16.7.92")
+
+        assertThrows(IOException::class.java) {
+            EncryptedPayloadCodec.decryptText(payload, "", label = "encrypted IP list")
+        }
     }
 
     @Test
@@ -55,7 +58,7 @@ class EncryptedIpListCodecTest {
             """.trimIndent(),
         )
 
-        val ips = EncryptedIpListCodec.decryptIpList(payload)
+        val ips = EncryptedIpListCodec.decryptIpList(payload, TEST_PASSPHRASE)
 
         assertEquals(listOf("104.16.7.92", "104.16.3.200"), ips)
     }
@@ -67,7 +70,7 @@ class EncryptedIpListCodecTest {
             .toString()
 
         assertThrows(IllegalArgumentException::class.java) {
-            EncryptedIpListCodec.decryptIpList(payload)
+            EncryptedIpListCodec.decryptIpList(payload, TEST_PASSPHRASE)
         }
     }
 
@@ -78,13 +81,13 @@ class EncryptedIpListCodecTest {
             .toString()
 
         assertThrows(IOException::class.java) {
-            EncryptedIpListCodec.decryptIpList(payload)
+            EncryptedIpListCodec.decryptIpList(payload, TEST_PASSPHRASE)
         }
     }
 
     private fun encryptedPayload(
         plaintext: String,
-        passphrase: String = WhiteDnsConfig.ENCRYPTED_IP_LIST_KEY,
+        passphrase: String = TEST_PASSPHRASE,
     ): String {
         val iv = ByteArray(12) { index -> (index + 1).toByte() }
         val key = MessageDigest.getInstance("SHA-256")
@@ -105,5 +108,11 @@ class EncryptedIpListCodecTest {
 
     private fun base64Url(value: ByteArray): String {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(value)
+    }
+
+    private companion object {
+        // The real passphrases are injected at build time and are absent from this repository, so
+        // these round-trip tests use a fixture of their own.
+        const val TEST_PASSPHRASE = "test-passphrase"
     }
 }
