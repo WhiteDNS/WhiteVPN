@@ -79,6 +79,7 @@ internal object SubConvConverter {
         val security = query["security"].orEmpty().lowercase()
         if (security.endsWith("tls") || security == "reality") {
             proxy.put("tls", true)
+                .put("skip-cert-verify", false)
                 .put("client-fingerprint", query["fp"].orEmpty().ifBlank { "chrome" })
             query["alpn"]?.takeIf(String::isNotBlank)?.let { proxy.put("alpn", it.split(',')) }
             query["pcs"]?.takeIf(String::isNotBlank)?.let { proxy.put("fingerprint", it) }
@@ -203,7 +204,10 @@ internal object SubConvConverter {
             .put("password", endpoint.userInfo)
             .put("udp", true)
             .apply {
-                query["allowInsecure"]?.let { put("skip-cert-verify", parseBoolean(it)) }
+                // `allowInsecure` is honoured as an explicit false only. Letting a share link turn
+                // certificate validation off would hand anyone who can hand the user a link the
+                // ability to read the tunnelled traffic.
+                put("skip-cert-verify", false)
                 query["sni"]?.takeIf(String::isNotBlank)?.let { put("sni", it) }
                 query["alpn"]?.takeIf(String::isNotBlank)?.let { put("alpn", it.split(',')) }
                 val network = query["type"].orEmpty().lowercase()
@@ -413,7 +417,7 @@ internal object SubConvConverter {
                 tls.optString("serverName").takeIf(String::isNotBlank)?.let { output.put("servername", it) }
                 tls.optString("fingerprint").takeIf(String::isNotBlank)?.let { output.put("client-fingerprint", it) }
                 tls.optJSONArray("alpn")?.takeIf { it.length() > 0 }?.let { output.put("alpn", it) }
-                if (tls.optBoolean("allowInsecure")) output.put("skip-cert-verify", true)
+                output.put("skip-cert-verify", false)
             }
             if (security == "reality") settings.optJSONObject("realitySettings")?.let { reality ->
                 reality.optString("publicKey").takeIf(String::isNotBlank)?.let { key ->
@@ -500,8 +504,6 @@ internal object SubConvConverter {
 
     private fun splitCsv(value: String): List<String>? =
         value.split(',').map(String::trim).filter(String::isNotBlank).takeIf(List<String>::isNotEmpty)
-
-    private fun parseBoolean(value: String): Boolean = value.lowercase() in setOf("1", "true")
 
     @OptIn(ExperimentalEncodingApi::class)
     private fun decodeBase64Text(value: String): String? {

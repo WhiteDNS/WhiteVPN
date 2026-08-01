@@ -140,7 +140,9 @@ object JsonSubscriptionImporter {
             proxy.put("tls", true)
             tls.optString("serverName").takeIf(String::isNotBlank)?.let { proxy.put("servername", it) }
             tls.optString("fingerprint").takeIf(String::isNotBlank)?.let { proxy.put("client-fingerprint", it) }
-            if (tls.optBoolean("allowInsecure")) proxy.put("skip-cert-verify", true)
+            // `allowInsecure` from the imported document is deliberately not propagated; see
+            // MihomoLinkConfigBuilder. Certificate validation stays on for every imported proxy.
+            proxy.put("skip-cert-verify", false)
             tls.optJSONArray("alpn")?.takeIf { it.length() > 0 }?.let { proxy.put("alpn", it) }
             if (security == "reality") {
                 val reality = JSONObject()
@@ -183,7 +185,7 @@ object MihomoLinkConfigBuilder {
     private const val AUTO_GROUP = "WhiteDNS Auto"
 
     fun build(proxies: List<JSONObject>): String {
-        val unique = proxies.distinctBy { it.getString("name") }
+        val unique = proxies.filter(::isYamlSafeProxy).distinctBy { it.getString("name") }
         require(unique.isNotEmpty()) { "اتصال سازگار با v1 پیدا نشد" }
         val proxyYaml = buildString {
             appendLine("proxies:")
@@ -227,6 +229,31 @@ object MihomoLinkConfigBuilder {
         appendLine("rules:")
         appendLine("  - ${quote("MATCH,$SELECT_GROUP")}")
     }
+
+    /**
+     * Proxy objects arrive verbatim from an imported Clash or Xray JSON document, and this builder
+     * emits their keys and values as YAML lines. A line break anywhere in that data would let a
+     * hostile subscription append arbitrary directives — extra proxies, rules, `skip-cert-verify`
+     * — to the profile the core then runs. Quoting alone is not enough because a YAML scalar may
+     * legally span lines, so a proxy carrying any line-structure character is dropped instead.
+     */
+    private fun isYamlSafeProxy(proxy: JSONObject): Boolean =
+        proxy.keys().asSequence().all { key -> isYamlSafeText(key) && isYamlSafeValue(proxy.get(key)) }
+
+    private fun isYamlSafeValue(value: Any?): Boolean = when (value) {
+        null, JSONObject.NULL -> true
+        is String -> isYamlSafeText(value)
+        is JSONObject -> value.keys().asSequence()
+            .all { key -> isYamlSafeText(key) && isYamlSafeValue(value.get(key)) }
+        is JSONArray -> (0 until value.length()).all { index -> isYamlSafeValue(value.get(index)) }
+        is Map<*, *> -> value.entries.all { (key, item) ->
+            isYamlSafeText(key.toString()) && isYamlSafeValue(item)
+        }
+        is Iterable<*> -> value.all(::isYamlSafeValue)
+        else -> isYamlSafeText(value.toString())
+    }
+
+    private fun isYamlSafeText(value: String): Boolean = value.none { it == '\n' || it == '\r' }
 
     private fun yamlValue(value: Any?): String = when (value) {
         null, JSONObject.NULL -> "null"

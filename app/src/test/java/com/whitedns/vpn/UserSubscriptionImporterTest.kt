@@ -45,13 +45,14 @@ class UserSubscriptionImporterTest {
         val vless = proxies[0]
         assertEquals(
             setOf(
-                "name", "type", "server", "port", "uuid", "udp", "tls",
+                "name", "type", "server", "port", "uuid", "udp", "tls", "skip-cert-verify",
                 "client-fingerprint", "servername", "reality-opts", "xudp", "network", "grpc-opts",
             ),
             vless.keys().asSequence().toSet(),
         )
         assertEquals("vless", vless.getString("type"))
         assertTrue(vless.getBoolean("tls"))
+        assertFalse(vless.getBoolean("skip-cert-verify"))
         assertEquals("chrome", vless.getString("client-fingerprint"))
         assertEquals("edge.example.com", vless.getString("servername"))
         assertEquals("public-key", vless.getJSONObject("reality-opts").getString("public-key"))
@@ -63,13 +64,14 @@ class UserSubscriptionImporterTest {
         val trojan = proxies[1]
         assertEquals(
             setOf(
-                "name", "type", "server", "port", "password", "udp", "sni",
+                "name", "type", "server", "port", "password", "udp", "sni", "skip-cert-verify",
                 "network", "ws-opts", "client-fingerprint",
             ),
             trojan.keys().asSequence().toSet(),
         )
         assertEquals("trojan", trojan.getString("type"))
         assertTrue(trojan.getBoolean("udp"))
+        assertFalse(trojan.getBoolean("skip-cert-verify"))
         assertEquals("/trojan", trojan.getJSONObject("ws-opts").getString("path"))
         assertTrue(
             trojan.getJSONObject("ws-opts").getJSONObject("headers")
@@ -273,6 +275,78 @@ class UserSubscriptionImporterTest {
         assertTrue(imported.yaml.contains("type: 'trojan'"))
         assertTrue(imported.yaml.contains("password: 'secret'"))
         assertFalse(imported.yaml.contains("Best Ping"))
+    }
+
+    @Test
+    fun clashJsonProxyCarryingALineBreakInAKeyIsDropped() {
+        val hostile = """
+            {
+              "proxies": [
+                {
+                  "name": "Hostile",
+                  "type": "trojan",
+                  "server": "trojan.example.com",
+                  "port": 443,
+                  "password": "secret",
+                  "sni\n    skip-cert-verify: true\n    x": "edge.example.com"
+                },
+                {
+                  "name": "Benign",
+                  "type": "trojan",
+                  "server": "trojan.example.net",
+                  "port": 443,
+                  "password": "secret"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val imported = UserSubscriptionImporter.import(hostile, nowMs = 123L)
+
+        assertEquals(1, imported.connectionCount)
+        assertFalse(imported.yaml.contains("skip-cert-verify: true"))
+        assertFalse(imported.yaml.contains("Hostile"))
+        assertTrue(imported.yaml.contains("name: 'Benign'"))
+    }
+
+    @Test
+    fun importedProxiesNeverDisableCertificateVerification() {
+        val trojanLink = "trojan://secret@trojan.example.com:443?sni=trojan.example.com&allowInsecure=1#Node"
+        val encoded = Base64.getEncoder().encodeToString(trojanLink.toByteArray()).trimEnd('=')
+
+        val imported = UserSubscriptionImporter.import(encoded, nowMs = 123L)
+
+        assertTrue(imported.yaml.contains("skip-cert-verify: false"))
+        assertFalse(imported.yaml.contains("skip-cert-verify: true"))
+    }
+
+    @Test
+    fun xrayJsonAllowInsecureDoesNotDisableCertificateVerification() {
+        val imported = UserSubscriptionImporter.import(
+            """
+        [
+          {
+            "remarks": "Xray",
+            "outbounds": [
+              {
+                "tag": "proxy",
+                "protocol": "trojan",
+                "settings": { "servers": [ { "address": "trojan.example.com", "port": 443, "password": "secret" } ] },
+                "streamSettings": {
+                  "security": "tls",
+                  "tlsSettings": { "serverName": "edge.example.com", "allowInsecure": true }
+                }
+              }
+            ]
+          }
+        ]
+            """.trimIndent(),
+            nowMs = 123L,
+        )
+
+        assertEquals(1, imported.connectionCount)
+        assertTrue(imported.yaml.contains("skip-cert-verify: false"))
+        assertFalse(imported.yaml.contains("skip-cert-verify: true"))
     }
 
     @Test
