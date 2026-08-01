@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -21,6 +22,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PersistableBundle
 import android.os.Process
 import android.os.SystemClock
 import android.text.Editable
@@ -41,6 +43,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
@@ -679,12 +682,10 @@ class MainActivity : Activity() {
         val filter = IntentFilter().apply {
             addAction(Actions.STATE_CHANGED)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(stateReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(stateReceiver, filter)
-        }
+        // Below API 33 a bare registerReceiver is implicitly exported, which would let any other
+        // app broadcast STATE_CHANGED and paint a false "connected" state over the UI.
+        // ContextCompat guards the pre-33 path with a signature-level permission.
+        ContextCompat.registerReceiver(this, stateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         applyRuntimeState(
             VpnRuntimeStateStore.read(this),
             VpnRuntimeStateStore.readSessionStartedAtElapsedMs(this),
@@ -2576,7 +2577,13 @@ class MainActivity : Activity() {
     private fun copyDiagnosticsToClipboard() {
         val diagnostics = DiagnosticLogger.read(this).ifBlank { "گزارش عیب‌یابی WhiteDNS خالی است." }
         val clipboard = getSystemService(ClipboardManager::class.java)
-        clipboard.setPrimaryClip(ClipData.newPlainText("WhiteDNS diagnostics", diagnostics))
+        val clip = ClipData.newPlainText("WhiteDNS diagnostics", diagnostics).apply {
+            // Keeps the clipboard preview toast from rendering the log on screen (Android 13+).
+            description.extras = PersistableBundle().apply {
+                putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+            }
+        }
+        clipboard.setPrimaryClip(clip)
         Toast.makeText(this, "گزارش عیب‌یابی کپی شد", Toast.LENGTH_SHORT).show()
         DiagnosticLogger.info(this, "diagnostics.copy", "chars=${diagnostics.length}")
     }

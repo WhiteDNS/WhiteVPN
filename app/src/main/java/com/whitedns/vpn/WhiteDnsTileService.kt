@@ -11,6 +11,7 @@ import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
 
 @RequiresApi(Build.VERSION_CODES.N)
 class WhiteDnsTileService : TileService() {
@@ -94,12 +95,8 @@ class WhiteDnsTileService : TileService() {
     private fun registerStateReceiver() {
         if (receiverRegistered) return
         val filter = IntentFilter(Actions.STATE_CHANGED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(stateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(stateReceiver, filter)
-        }
+        // See MainActivity.onStart: keeps the pre-33 registration from being implicitly exported.
+        ContextCompat.registerReceiver(this, stateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiverRegistered = true
     }
 

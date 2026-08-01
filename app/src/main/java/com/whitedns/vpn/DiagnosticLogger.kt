@@ -109,8 +109,34 @@ object DiagnosticLogger {
         return SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
     }
 
+    /**
+     * Debug logs and the mihomo stderr tail are copied to the clipboard by a long-press on the
+     * connect button, so anything that reaches them is likely to end up pasted into a chat. Redact
+     * the credential-bearing fields a Mihomo profile carries rather than a single known token.
+     */
     private fun String.sanitizeForLog(): String {
-        return replace(Regex("YrOTS%3AP8\\*jo_AVgq"), "<subscription-token>")
-            .replace(Regex("YrOTS:P8\\*jo_AVgq"), "<subscription-token>")
+        var sanitized = this
+        SECRET_VALUES.forEach { secret ->
+            if (secret.isNotBlank()) {
+                sanitized = sanitized.replace(secret, "<redacted>")
+            }
+        }
+        return SECRET_FIELD_REGEX.replace(sanitized) { match ->
+            "${match.groupValues[1]}${match.groupValues[2]}<redacted>"
+        }
     }
+
+    private val SECRET_VALUES: List<String>
+        get() = listOf(
+            WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
+            WhiteDnsConfig.ENCRYPTED_IP_LIST_KEY,
+        )
+
+    // Matches `uuid: abc`, `"password":"abc"`, `secret=abc` and friends in YAML, JSON and query
+    // strings, keeping the key and separator so the log stays readable.
+    private val SECRET_FIELD_REGEX = Regex(
+        "(\"?(?:uuid|password|secret|token|psk|auth[_-]?str|private[_-]?key|short[-_]?id)\"?)" +
+            "(\\s*[:=]\\s*\"?)([^\\s,\"}&]+)",
+        RegexOption.IGNORE_CASE,
+    )
 }
