@@ -6,12 +6,36 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.File
 import java.net.SocketTimeoutException
+import java.nio.file.Files
 import java.security.cert.CertPathValidatorException
 import javax.net.ssl.SSLHandshakeException
 import javax.net.ssl.SSLPeerUnverifiedException
 
 class MihomoRuntimeConfigBuilderTest {
+    @Test
+    fun bundledGeoDataIsInstalledOnceBeforeCoreSetup() {
+        val baseDir = Files.createTempDirectory("mihomo-geodata").toFile()
+        val existing = File(baseDir, "GeoSite.dat").apply { writeText("newer-data") }
+
+        val installed = MihomoGeoDataInstaller.install(baseDir) { path ->
+            ByteArrayInputStream("bundled-$path".toByteArray())
+        }
+
+        assertEquals(listOf("GEOIP.metadb", "GEOIP.dat", "ASN.mmdb"), installed)
+        assertEquals("newer-data", existing.readText())
+        MihomoGeoDataInstaller.fileNames.forEach { fileName ->
+            assertTrue(
+                baseDir.listFiles()?.any { candidate ->
+                    candidate.name.equals(fileName, ignoreCase = true) && candidate.length() > 0L
+                } == true,
+            )
+        }
+        assertTrue(MihomoGeoDataInstaller.install(baseDir) { error("already installed") }.isEmpty())
+    }
+
     @Test
     fun tlsIntegrityPolicyUsesPublicFallbacksAndExpiresQuarantine() {
         val endpoint = CleanIpResult("104.16.0.1", 443, 1, 0.0, 1)
@@ -286,11 +310,23 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
-    fun flClashSetupParamsUseHealthUrlAndEmptySelectionMap() {
-        val setup = MihomoRuntimeConfigBuilder.setupParamsJson()
+    fun flClashSetupParamsCarryNativeSelections() {
+        val setup = MihomoRuntimeConfigBuilder.setupParamsJson(
+            mapOf(
+                "WhiteDNS Proxy Select" to "WhiteDNS Auto Select",
+                "WhiteDNS Proxy" to "WhiteDNS Countries",
+            ),
+        )
 
         assertEquals(MihomoRuntimeDefaults.HEALTH_URL, setup.getString("test-url"))
-        assertEquals(0, setup.getJSONObject("selected-map").length())
+        assertEquals(
+            "WhiteDNS Auto Select",
+            setup.getJSONObject("selected-map").getString("WhiteDNS Proxy Select"),
+        )
+        assertEquals(
+            "WhiteDNS Countries",
+            setup.getJSONObject("selected-map").getString("WhiteDNS Proxy"),
+        )
     }
 
     @Test

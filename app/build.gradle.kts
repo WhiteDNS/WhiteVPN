@@ -43,8 +43,8 @@ android {
         applicationId = "com.whitedns.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 75
-        versionName = "1.1.0"
+        versionCode = 76
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

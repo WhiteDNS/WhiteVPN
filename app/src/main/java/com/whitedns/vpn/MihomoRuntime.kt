@@ -5,6 +5,7 @@ import com.follow.clash.core.Core
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -307,6 +308,40 @@ data class MihomoRuntimePaths(
     val controlPort: Int,
 )
 
+internal object MihomoGeoDataInstaller {
+    val fileNames = listOf("GEOIP.metadb", "GEOIP.dat", "GEOSITE.dat", "ASN.mmdb")
+
+    @Synchronized
+    fun install(baseDir: File, openAsset: (String) -> InputStream): List<String> {
+        baseDir.mkdirs()
+        return fileNames.mapNotNull { fileName ->
+            val target = File(baseDir, fileName)
+            val existing = baseDir.listFiles()?.firstOrNull { candidate ->
+                candidate.name.equals(fileName, ignoreCase = true)
+            }
+            if (existing?.isFile == true && existing.length() > 0L) return@mapNotNull null
+
+            val temporary = File(baseDir, ".$fileName.tmp")
+            try {
+                openAsset("data/$fileName").use { input ->
+                    temporary.outputStream().buffered().use { output -> input.copyTo(output) }
+                }
+                listOfNotNull(existing, target.takeIf { it != existing && it.exists() }).forEach { stale ->
+                    if (!stale.delete()) {
+                        throw IOException("Unable to replace Mihomo geodata file ${stale.name}")
+                    }
+                }
+                if (!temporary.renameTo(target)) {
+                    throw IOException("Unable to install Mihomo geodata file $fileName")
+                }
+                fileName
+            } finally {
+                temporary.delete()
+            }
+        }
+    }
+}
+
 class MihomoRuntimeConfigBuilder(private val context: Context) {
     fun write(
         rawYaml: String,
@@ -315,6 +350,7 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
         dohUrl: String = DnsPrivacyPolicy.DEFAULT_DOH_URL,
         dotEndpoint: String = DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
         secret: String = MihomoControllerSecret.generate(),
+        selectedMap: Map<String, String> = emptyMap(),
     ): MihomoRuntimePaths {
         val baseDir = File(context.filesDir, "mihomo").apply { mkdirs() }
         val cacheDir = File(context.cacheDir, "mihomo").apply { mkdirs() }
@@ -344,7 +380,7 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             ),
         )
         patchFinal.writeText(corePatchJson(splitTunnelPlan, secret, controlPort).toString(2))
-        setupParams.writeText(setupParamsJson().toString(2))
+        setupParams.writeText(setupParamsJson(selectedMap).toString(2))
         serviceJson.writeText(
             serviceJson(
                 appName = context.getString(R.string.app_name),

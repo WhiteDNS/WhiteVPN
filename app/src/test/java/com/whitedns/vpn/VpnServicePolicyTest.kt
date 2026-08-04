@@ -16,6 +16,8 @@ class VpnServicePolicyTest {
     fun postConnectRecoveryRequiresConsecutiveFailuresAndCooldown() {
         val lastRecovery = 1_000L
 
+        assertEquals(5_000L, PostConnectHealthPolicy.INITIAL_CHECK_DELAY_MS)
+        assertEquals(5_000L, PostConnectHealthPolicy.FAILURE_RECHECK_DELAY_MS)
         assertFalse(PostConnectHealthPolicy.shouldRecover(1, Long.MAX_VALUE, 0L))
         assertTrue(PostConnectHealthPolicy.shouldRecover(2, 2_000L, 0L))
         assertFalse(PostConnectHealthPolicy.shouldRecover(2, lastRecovery + 1L, lastRecovery))
