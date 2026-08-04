@@ -203,7 +203,8 @@ internal object SubConvConverter {
             .put("password", endpoint.userInfo)
             .put("udp", true)
             .apply {
-                query["allowInsecure"]?.let { put("skip-cert-verify", parseBoolean(it)) }
+                // Ignore allowInsecure — a pasted link must not disable tunnel TLS validation.
+                put("skip-cert-verify", false)
                 query["sni"]?.takeIf(String::isNotBlank)?.let { put("sni", it) }
                 query["alpn"]?.takeIf(String::isNotBlank)?.let { put("alpn", it.split(',')) }
                 val network = query["type"].orEmpty().lowercase()
@@ -413,7 +414,7 @@ internal object SubConvConverter {
                 tls.optString("serverName").takeIf(String::isNotBlank)?.let { output.put("servername", it) }
                 tls.optString("fingerprint").takeIf(String::isNotBlank)?.let { output.put("client-fingerprint", it) }
                 tls.optJSONArray("alpn")?.takeIf { it.length() > 0 }?.let { output.put("alpn", it) }
-                if (tls.optBoolean("allowInsecure")) output.put("skip-cert-verify", true)
+                output.put("skip-cert-verify", false)
             }
             if (security == "reality") settings.optJSONObject("realitySettings")?.let { reality ->
                 reality.optString("publicKey").takeIf(String::isNotBlank)?.let { key ->

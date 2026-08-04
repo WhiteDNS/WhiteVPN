@@ -16,6 +16,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.LinearInterpolator
 import android.view.animation.PathInterpolator
+import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.res.ResourcesCompat
@@ -194,6 +195,8 @@ class SignalArcView(context: Context) : View(context) {
     private var motionPhase = 0f
     private var transitionAnimator: ValueAnimator? = null
     private var motionAnimator: ValueAnimator? = null
+
+    override fun getAccessibilityClassName(): CharSequence = Button::class.java.name
 
     fun setVpnState(state: VpnState) {
         if (this.state == state) return
@@ -524,6 +527,9 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
     fun setValue(value: CharSequence) {
         valueText.text = value
     }
+
+    override fun getAccessibilityClassName(): CharSequence =
+        if (isClickable) Button::class.java.name else super.getAccessibilityClassName()
 
     fun setOnRowClickListener(listener: OnClickListener?) {
         isClickable = listener != null

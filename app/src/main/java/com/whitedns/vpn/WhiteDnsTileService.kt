@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
+import androidx.core.content.ContextCompat
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.VpnService
@@ -100,12 +101,13 @@ class WhiteDnsTileService : TileService() {
     private fun registerStateReceiver() {
         if (receiverRegistered) return
         val filter = IntentFilter(Actions.STATE_CHANGED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(stateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(stateReceiver, filter)
-        }
+        // NOT_EXPORTED on every API level so no other app can spoof the tile's connected state.
+        ContextCompat.registerReceiver(
+            this,
+            stateReceiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         receiverRegistered = true
     }
 

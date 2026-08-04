@@ -5,6 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.URI
 import java.net.URL
 import java.util.UUID
@@ -83,9 +84,22 @@ object JsonSubscriptionImporter {
     private fun clashProxies(config: JSONObject): List<JSONObject> {
         val proxies = config.optJSONArray("proxies") ?: return emptyList()
         return (0 until proxies.length()).mapNotNull { index ->
-            proxies.optJSONObject(index)?.takeIf(::isSupportedMihomoProxy)
+            proxies.optJSONObject(index)
+                ?.takeIf(::isSupportedMihomoProxy)
+                ?.takeIf(::hasNoLineBreak)
+                ?.also { it.put("skip-cert-verify", false) }
         }
     }
+
+    // Clash proxy objects are copied through verbatim, so an attacker-chosen key/value with an
+    // embedded newline would append arbitrary YAML to the generated profile. A YAML scalar may
+    // legally span lines, so quoting is not enough — drop any proxy that carries a line break.
+    private fun hasNoLineBreak(proxy: JSONObject): Boolean =
+        proxy.keys().asSequence().none { key ->
+            key.hasLineBreak() || proxy.get(key).toString().hasLineBreak()
+        }
+
+    private fun String.hasLineBreak(): Boolean = any { it == '\n' || it == '\r' }
 
     private fun xrayProxies(configs: JSONArray): List<JSONObject> {
         return (0 until configs.length()).mapNotNull { index ->
@@ -140,7 +154,8 @@ object JsonSubscriptionImporter {
             proxy.put("tls", true)
             tls.optString("serverName").takeIf(String::isNotBlank)?.let { proxy.put("servername", it) }
             tls.optString("fingerprint").takeIf(String::isNotBlank)?.let { proxy.put("client-fingerprint", it) }
-            if (tls.optBoolean("allowInsecure")) proxy.put("skip-cert-verify", true)
+            // Never let an imported subscription disable TLS validation on the tunnel.
+            proxy.put("skip-cert-verify", false)
             tls.optJSONArray("alpn")?.takeIf { it.length() > 0 }?.let { proxy.put("alpn", it) }
             if (security == "reality") {
                 val reality = JSONObject()
@@ -330,6 +345,7 @@ class UserSubscriptionManager(
         if (!uri.scheme.equals("https", true) || uri.host.isNullOrBlank()) {
             throw IOException("URL سابسکریپشن باید از HTTPS استفاده کند")
         }
+        requirePublicHost(uri.host)
         val connection = URL(input).openConnection() as HttpURLConnection
         connection.connectTimeout = 12_000
         connection.readTimeout = 20_000
@@ -342,6 +358,16 @@ class UserSubscriptionManager(
             bytes.toString(Charsets.UTF_8)
         } finally {
             connection.disconnect()
+        }
+    }
+
+    // Block SSRF: refuse to fetch subscriptions from loopback/link-local/private/any-local hosts,
+    // so a pasted URL can't probe the device's own services or the local network.
+    private fun requirePublicHost(host: String) {
+        val addresses = runCatching { InetAddress.getAllByName(host) }
+            .getOrElse { throw IOException("میزبان سابسکریپشن قابل دسترسی نیست") }
+        if (addresses.any { it.isLoopbackAddress || it.isLinkLocalAddress || it.isSiteLocalAddress || it.isAnyLocalAddress }) {
+            throw IOException("آدرس سابسکریپشن مجاز نیست")
         }
     }
 

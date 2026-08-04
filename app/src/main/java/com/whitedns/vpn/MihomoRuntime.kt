@@ -537,7 +537,7 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                 append("global-client-fingerprint: chrome\n")
                 append("dns:\n")
                 append("  enable: true\n")
-                append("  listen: 0.0.0.0:1053\n")
+                append("  listen: 127.0.0.1:1053\n")
                 append("  ipv6: false\n")
                 append("  respect-rules: ${dnsProxyGroup != null}\n")
                 append("  enhanced-mode: fake-ip\n")
@@ -549,9 +549,13 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                 dnsServers.forEach { server ->
                     append("    - ${yamlSingleQuoted("$server$proxySuffix")}\n")
                 }
+                // Encrypted, IP-addressed resolvers (same privacy mode as `nameserver`) with no proxy
+                // suffix, so proxy-hostname resolution isn't exposed to an on-path operator over
+                // plaintext UDP:53 and doesn't loop back through the proxy it's resolving.
                 append("  proxy-server-nameserver:\n")
-                append("    - 1.1.1.1\n")
-                append("    - 8.8.8.8\n")
+                dnsServers.forEach { server ->
+                    append("    - ${yamlSingleQuoted(server)}\n")
+                }
                 append("tun:\n")
                 append("  enable: false\n")
             }

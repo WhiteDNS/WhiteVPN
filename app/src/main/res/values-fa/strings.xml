@@ -215,5 +215,6 @@
 
     <string name="diagnostics_empty">گزارش عیب‌یابی WhiteVPN خالی است.</string>
     <string name="diagnostics_copied">گزارش عیب‌یابی کپی شد.</string>
+    <string name="action_copy_diagnostics">کپی گزارش عیب‌یابی</string>
     <string name="chevron_forward">‹</string>
 </resources>

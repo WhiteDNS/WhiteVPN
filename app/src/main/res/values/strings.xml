@@ -214,5 +214,6 @@
 
     <string name="diagnostics_empty">The WhiteVPN diagnostics log is empty.</string>
     <string name="diagnostics_copied">Diagnostics copied.</string>
+    <string name="action_copy_diagnostics">Copy diagnostics</string>
     <string name="chevron_forward">›</string>
 </resources>

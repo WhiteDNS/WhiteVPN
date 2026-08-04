@@ -396,6 +396,11 @@ class CleanIpScanner(
                         .createSocket(rawSocket, speedTestHost, candidate.port, true) as SSLSocket
                     sslSocket.use { tlsSocket ->
                         tlsSocket.soTimeout = speedTestTimeoutMs
+                        // A plain SSLSocket validates the chain but not the hostname; without this an
+                        // on-path CA-signed cert could make an attacker's IP win the speed test.
+                        tlsSocket.sslParameters = tlsSocket.sslParameters.apply {
+                            endpointIdentificationAlgorithm = "HTTPS"
+                        }
                         tlsSocket.startHandshake()
                         writeDownloadRequest(tlsSocket)
                         readDownloadBytesPerSecond(tlsSocket)

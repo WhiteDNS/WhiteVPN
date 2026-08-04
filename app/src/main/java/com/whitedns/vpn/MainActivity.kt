@@ -52,7 +52,9 @@ import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.PopupMenu
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.checkbox.MaterialCheckBox
@@ -335,6 +337,7 @@ class MainActivity : Activity() {
                 setTextColor(TEXT_PRIMARY)
                 includeFontPadding = false
                 gravity = Gravity.START
+                ViewCompat.setAccessibilityHeading(this, true)
             })
             addView(
                 TextView(this@MainActivity).apply {
@@ -836,12 +839,14 @@ class MainActivity : Activity() {
             addAction(Actions.STATE_CHANGED)
             addAction(Actions.CONNECTION_DELAY_TEST_CHANGED)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(stateReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(stateReceiver, filter)
-        }
+        // NOT_EXPORTED on every API level (minSdk 26): the sender is in-process, and an implicit
+        // export would let any installed app spoof STATE_CHANGED into a fake "connected" UI.
+        ContextCompat.registerReceiver(
+            this,
+            stateReceiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         applyRuntimeState(
             VpnRuntimeStateStore.read(this),
             VpnRuntimeStateStore.readSessionStartedAtElapsedMs(this),
@@ -978,6 +983,7 @@ class MainActivity : Activity() {
                         includeFontPadding = false
                         gravity = Gravity.START
                         textDirection = View.TEXT_DIRECTION_LTR
+                        ViewCompat.setAccessibilityHeading(this, true)
                     })
                     addView(
                         TextView(this@MainActivity).apply {
@@ -1004,7 +1010,7 @@ class MainActivity : Activity() {
                     contentDescription = getString(R.string.home_menu_content_description)
                     setOnClickListener { showHomeMenu(this) }
                 },
-                LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(8) },
+                LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) },
             )
         }
 
@@ -1016,11 +1022,18 @@ class MainActivity : Activity() {
                 copyDiagnosticsToClipboard()
                 true
             }
+            ViewCompat.replaceAccessibilityAction(
+                this,
+                AccessibilityNodeInfoCompat.AccessibilityActionCompat.ACTION_LONG_CLICK,
+                getString(R.string.action_copy_diagnostics),
+                null,
+            )
         }
         statusText = TextView(this).apply {
             gravity = Gravity.START
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             textDirection = View.TEXT_DIRECTION_LOCALE
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
             textSize = 14f
             typeface = WhiteDnsBodyBoldTypeface
             includeFontPadding = false
@@ -1308,6 +1321,7 @@ class MainActivity : Activity() {
                     typeface = WhiteDnsDisplayTypeface
                     setTextColor(TEXT_PRIMARY)
                     includeFontPadding = false
+                    ViewCompat.setAccessibilityHeading(this, true)
                 },
             )
             addView(
@@ -1851,6 +1865,7 @@ class MainActivity : Activity() {
     private fun advancedSectionLabel(value: String): TextView {
         return TextView(this).apply {
             text = value
+            ViewCompat.setAccessibilityHeading(this, true)
             textSize = 12f
             letterSpacing = 0f
             typeface = WhiteDnsBodyBoldTypeface

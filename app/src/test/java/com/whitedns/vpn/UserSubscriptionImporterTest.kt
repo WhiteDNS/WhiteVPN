@@ -64,7 +64,7 @@ class UserSubscriptionImporterTest {
         assertEquals(
             setOf(
                 "name", "type", "server", "port", "password", "udp", "sni",
-                "network", "ws-opts", "client-fingerprint",
+                "skip-cert-verify", "network", "ws-opts", "client-fingerprint",
             ),
             trojan.keys().asSequence().toSet(),
         )
@@ -203,6 +203,68 @@ class UserSubscriptionImporterTest {
         assertTrue(imported.yaml.contains("network: 'ws'"))
         assertTrue(imported.yaml.contains("ws-opts:"))
         assertEquals(2, snapshot.summary.groups.size)
+    }
+
+    @Test
+    fun clashJsonProxyWithNewlineInKeyIsDropped() {
+        // A newline in an attacker-chosen key would append arbitrary YAML to the profile.
+        val malicious = UserSubscriptionImporter.import(
+            """
+            {
+              "proxies": [
+                {
+                  "name": "Injected",
+                  "type": "trojan",
+                  "server": "evil.example.com",
+                  "port": 443,
+                  "password": "p",
+                  "x\n    skip-cert-verify": true
+                },
+                {
+                  "name": "Clean",
+                  "type": "trojan",
+                  "server": "ok.example.com",
+                  "port": 443,
+                  "password": "p"
+                }
+              ]
+            }
+            """.trimIndent(),
+            nowMs = 123L,
+        )
+        assertFalse(malicious.yaml.contains("skip-cert-verify: true"))
+        assertEquals(1, malicious.connectionCount)
+    }
+
+    @Test
+    fun clashJsonCannotEnableSkipCertVerify() {
+        val imported = UserSubscriptionImporter.import(
+            """
+            {
+              "proxies": [{
+                "name": "Clash Trojan",
+                "type": "trojan",
+                "server": "trojan.example.com",
+                "port": 443,
+                "password": "p",
+                "skip-cert-verify": true
+              }]
+            }
+            """.trimIndent(),
+            nowMs = 123L,
+        )
+        assertTrue(imported.yaml.contains("skip-cert-verify: false"))
+        assertFalse(imported.yaml.contains("skip-cert-verify: true"))
+    }
+
+    @Test
+    fun trojanLinkAllowInsecureDoesNotDisableCertVerification() {
+        val imported = UserSubscriptionImporter.import(
+            "trojan://p@trojan.example.com:443?allowInsecure=1#Trojan",
+            nowMs = 123L,
+        )
+        assertTrue(imported.yaml.contains("skip-cert-verify: false"))
+        assertFalse(imported.yaml.contains("skip-cert-verify: true"))
     }
 
     @Test

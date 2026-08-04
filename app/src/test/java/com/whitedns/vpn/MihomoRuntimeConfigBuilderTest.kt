@@ -220,7 +220,15 @@ class MihomoRuntimeConfigBuilderTest {
         assertTrue(runtimeYaml.contains("- 'tls://1.1.1.1:853#🚀 WhiteDNS Proxy'"))
         assertTrue(runtimeYaml.contains("- 'tls://8.8.8.8:853#🚀 WhiteDNS Proxy'"))
         assertFalse(runtimeYaml.contains("tcp://"))
-        assertTrue(runtimeYaml.contains("proxy-server-nameserver:\n    - 1.1.1.1\n    - 8.8.8.8"))
+        assertTrue(
+            runtimeYaml.contains(
+                "proxy-server-nameserver:\n" +
+                    "    - 'https://1.1.1.1/dns-query'\n" +
+                    "    - 'https://8.8.8.8/dns-query'\n" +
+                    "    - 'tls://1.1.1.1:853'\n" +
+                    "    - 'tls://8.8.8.8:853'",
+            ),
+        )
     }
 
     @Test

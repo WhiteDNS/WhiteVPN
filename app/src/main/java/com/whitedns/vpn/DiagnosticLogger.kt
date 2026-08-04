@@ -109,8 +109,16 @@ object DiagnosticLogger {
         return SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
     }
 
+    // Debug logs (and the mihomo stderr tail) are copied to the clipboard on a long-press, so redact
+    // credential-bearing fields rather than one hardcoded token. Covers YAML `key: value`,
+    // JSON `"key": "value"`, and `key=value` query forms.
+    private val SECRET_FIELD_REGEX = Regex(
+        "(?i)(\"?\\b(?:uuid|password|secret|token|psk|private-key|short-id)\"?\\s*[:=]\\s*)(\"?)([^\\s,\"}]+)",
+    )
+
     private fun String.sanitizeForLog(): String {
-        return replace(Regex("YrOTS%3AP8\\*jo_AVgq"), "<subscription-token>")
-            .replace(Regex("YrOTS:P8\\*jo_AVgq"), "<subscription-token>")
+        return SECRET_FIELD_REGEX.replace(this) { match ->
+            match.groupValues[1] + match.groupValues[2] + "<redacted>"
+        }
     }
 }

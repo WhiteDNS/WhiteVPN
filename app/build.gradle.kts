@@ -119,6 +119,12 @@ android {
     buildFeatures {
         buildConfig = true
     }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
@@ -132,6 +138,7 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.15.1")
 }
 
 val buildFlClashCore = tasks.register<Exec>("buildFlClashCore") {
