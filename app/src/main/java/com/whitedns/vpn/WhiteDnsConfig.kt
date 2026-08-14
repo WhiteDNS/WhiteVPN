@@ -9,7 +9,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 object WhiteDnsConfig {
-    const val SUBSCRIPTION_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1_000L
+    const val SUBSCRIPTION_REFRESH_INTERVAL_MS = 30 * 60 * 1_000L
 
     // Injected at build time from the environment with production defaults; see app/build.gradle.kts.
     val MIHOMO_SUBSCRIPTION_URL: String get() = BuildConfig.MIHOMO_SUBSCRIPTION_URL
@@ -36,6 +36,36 @@ class ConfigRepository(private val context: Context) {
                 "profiles=${snapshot.catalog.profiles.size} groups=${snapshot.summary.groups.size}",
             )
         }
+    }
+
+    suspend fun refreshAllSubscriptions() = withContext(Dispatchers.IO) {
+        var successful = 0
+        var failed = 0
+        fun refresh(label: String, block: () -> Unit) {
+            runCatching(block)
+                .onSuccess { successful += 1 }
+                .onFailure { error ->
+                    failed += 1
+                    DiagnosticLogger.warn(
+                        context,
+                        "subscription.background.refresh.failed",
+                        "subscription=$label",
+                        error,
+                    )
+                }
+        }
+
+        refresh(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
+            fetchAndCacheDefaultMihomoConfig(System.currentTimeMillis())
+        }
+        userSubscriptionManager.list().forEach { subscription ->
+            refresh(subscription.id) { userSubscriptionManager.refresh(subscription.id) }
+        }
+        DiagnosticLogger.info(
+            context,
+            "subscription.background.refresh.done",
+            "successful=$successful failed=$failed",
+        )
     }
 
     suspend fun readCachedMihomoConfigOrNull(): MihomoSubscriptionSnapshot? = withContext(Dispatchers.IO) {

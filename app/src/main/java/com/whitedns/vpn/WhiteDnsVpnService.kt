@@ -363,6 +363,10 @@ class WhiteDnsVpnService : VpnService() {
                 if (profiles.isEmpty()) {
                     throw IOException(getString(R.string.connection_empty))
                 }
+                subscriptionStore.deleteConnectionDelayRecords(
+                    subscriptionId,
+                    profiles.mapTo(mutableSetOf(), ConnectionProfile::fingerprint),
+                )
 
                 val controller = if (
                     state == VpnState.Started &&
@@ -2718,21 +2722,7 @@ class WhiteDnsVpnService : VpnService() {
             while (isActive && state == VpnState.Started) {
                 delay(WhiteDnsConfig.SUBSCRIPTION_REFRESH_INTERVAL_MS)
                 if (!isActive || state != VpnState.Started) break
-                runCatching { configRepository.fetchOrCachedMihomoConfig() }
-                    .onSuccess { snapshot ->
-                        DiagnosticLogger.info(
-                            this@WhiteDnsVpnService,
-                            "subscription.background.refresh.done",
-                            "profiles=${snapshot.catalog.profiles.size} groups=${snapshot.summary.groups.size}",
-                        )
-                    }
-                    .onFailure { error ->
-                        DiagnosticLogger.warn(
-                            this@WhiteDnsVpnService,
-                            "subscription.background.refresh.failed",
-                            error = error,
-                        )
-                    }
+                configRepository.refreshAllSubscriptions()
             }
         }
     }

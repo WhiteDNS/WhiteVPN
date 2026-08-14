@@ -233,7 +233,8 @@ class MainActivity : Activity() {
         renderState(VpnState.Stopped)
         refreshLocationOptions()
         mainHandler.post {
-            showPrivacyPolicyIfNeeded()
+            val checkUpdatesAfterStartup = { if (savedInstanceState == null) checkForUpdates() }
+            if (!showPrivacyPolicyIfNeeded(checkUpdatesAfterStartup)) checkUpdatesAfterStartup()
         }
     }
 
@@ -2460,7 +2461,8 @@ class MainActivity : Activity() {
         } else {
             mutableSetOf<String>()
         }
-        var speedTestEnabled = restoredSession?.speedTestEnabled == true
+        var speedTestEnabled = restoredSession?.speedTestEnabled
+            ?: connectionDelayRecords.values.any { it.speedKbps != null }
         var sortByDelay = connectionSelectionPreferenceStore.readDelaySortEnabled(selectedSubscriptionId)
         if (
             restoredSession?.status == Actions.DELAY_TEST_COMPLETED &&
@@ -2731,8 +2733,15 @@ class MainActivity : Activity() {
 
         fun updateTestControls() {
             testButton.isEnabled =
-                filteredProfiles.isNotEmpty() && !testRunning
+                filteredProfiles.isNotEmpty() && (!testRunning || testPaused)
             testButton.alpha = if (testButton.isEnabled) 1f else 0.55f
+            testButton.setText(
+                if (testPaused || filteredProfiles.any { it.fingerprint in connectionDelayRecords }) {
+                    R.string.connection_test_again
+                } else {
+                    R.string.connection_test_visible
+                },
+            )
             pauseButton.visibility = if (testRunning) View.VISIBLE else View.GONE
             pauseButton.isEnabled = testRunning
             pauseButton.setText(
@@ -2743,12 +2752,14 @@ class MainActivity : Activity() {
             )
             speedTestToggle.isEnabled = !testRunning
             speedTestToggle.alpha = if (speedTestToggle.isEnabled) 1f else 0.55f
-            sortButton.isEnabled = !testRunning && filteredProfiles.any {
+            sortButton.isEnabled = testRunning || filteredProfiles.any {
                 connectionDelayRecords[it.fingerprint]?.status == ConnectionDelayStatus.Success
             }
             sortButton.alpha = if (sortButton.isEnabled) 1f else 0.55f
             sortButton.setText(
-                if (sortByDelay) {
+                if (testRunning) {
+                    R.string.connection_test_stop
+                } else if (sortByDelay) {
                     R.string.connection_sort_subscription
                 } else if (speedTestEnabled) {
                     R.string.connection_sort_fastest
@@ -2756,6 +2767,7 @@ class MainActivity : Activity() {
                     R.string.connection_sort_lowest
                 },
             )
+            if (testRunning) sortButton.icon = null else sortButton.setIconResource(R.drawable.ic_sort_lowest)
             typeFilterButton.isEnabled = !testRunning && availableTypes.isNotEmpty()
             typeFilterButton.alpha = if (typeFilterButton.isEnabled) 1f else 0.55f
             typeFilterButton.text = getString(
@@ -2840,7 +2852,7 @@ class MainActivity : Activity() {
         }
 
         testButton.setOnClickListener {
-            if (testRunning) return@setOnClickListener
+            if (testRunning && !testPaused) return@setOnClickListener
             val targets = filteredProfiles.toList()
             if (targets.isEmpty()) return@setOnClickListener
             testRunning = true
@@ -2854,6 +2866,7 @@ class MainActivity : Activity() {
             connectionSelectionPreferenceStore.saveDelaySortEnabled(selectedSubscriptionId, true)
             delayTestId = SystemClock.elapsedRealtimeNanos().toString()
             val targetFingerprints = targets.map { it.fingerprint }.toSet()
+            connectionDelayRecords = connectionDelayRecords.filterKeys { it !in targetFingerprints }
             testingFingerprints.clear()
             testingFingerprints += targetFingerprints
             ConnectionDelayTestState.replace(
@@ -2903,6 +2916,15 @@ class MainActivity : Activity() {
         }
 
         sortButton.setOnClickListener {
+            if (testRunning) {
+                startService(
+                    Intent(this, WhiteDnsVpnService::class.java)
+                        .setAction(Actions.CANCEL_CONNECTION_DELAY_TEST)
+                        .putExtra(Actions.EXTRA_APP_INITIATED, true)
+                        .putExtra(Actions.EXTRA_DELAY_TEST_ID, delayTestId),
+                )
+                return@setOnClickListener
+            }
             sortByDelay = !sortByDelay
             connectionSelectionPreferenceStore.saveDelaySortEnabled(
                 selectedSubscriptionId,
@@ -4397,13 +4419,37 @@ class MainActivity : Activity() {
         DiagnosticLogger.info(this, "diagnostics.copy", "chars=${diagnostics.length}")
     }
 
-    private fun openFooterLink() {
-        val url = getString(R.string.footer_url)
+    private fun checkForUpdates() {
+        activityScope.launch {
+            val release = runCatching { GitHubReleaseClient.latest() }
+                .onFailure { DiagnosticLogger.warn(this@MainActivity, "update.check.failed", error = it) }
+                .getOrNull()
+                ?: return@launch
+            if (!AppUpdatePolicy.isNewer(release.version, BuildConfig.VERSION_NAME)) return@launch
+
+            MaterialAlertDialogBuilder(this@MainActivity)
+                .setTitle(R.string.update_available_title)
+                .setMessage(
+                    getString(
+                        R.string.update_available_message,
+                        release.version.removePrefix("v"),
+                    ),
+                )
+                .setNegativeButton(R.string.update_later, null)
+                .setPositiveButton(R.string.update_view_release) { _, _ -> openExternalUrl(release.url) }
+                .create()
+                .showWhiteDnsDialog()
+        }
+    }
+
+    private fun openFooterLink() = openExternalUrl(getString(R.string.footer_url))
+
+    private fun openExternalUrl(url: String) {
         runCatching {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         }.onFailure { error ->
             Toast.makeText(this, url, Toast.LENGTH_SHORT).show()
-            DiagnosticLogger.warn(this, "footer.open.failed", "url=$url", error)
+            DiagnosticLogger.warn(this, "external.open.failed", "url=$url", error)
         }
     }
 

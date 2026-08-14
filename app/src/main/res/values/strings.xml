@@ -88,6 +88,10 @@
     </plurals>
 
     <string name="version_label">Version %1$s</string>
+    <string name="update_available_title">Update available</string>
+    <string name="update_available_message">WhiteVPN %1$s is available on GitHub.</string>
+    <string name="update_view_release">View release</string>
+    <string name="update_later">Later</string>
     <string name="output_automatic">🌐  Automatic output</string>
     <string name="metric_connection_time">Connection time</string>
     <string name="metric_download">Download</string>
@@ -104,6 +108,7 @@
     <string name="connection_automatic_types_value">Automatic · %1$s</string>
     <string name="connection_detail">%1$s · %2$s:%3$d</string>
     <string name="connection_test_visible">Test visible connections</string>
+    <string name="connection_test_again">Test again</string>
     <string name="connection_test_explanation">Uses a real HTTPS request through every connection; the VPN tunnel can stay off.</string>
     <string name="connection_test_busy">Wait for the current VPN operation to finish.</string>
     <string name="connection_test_reconnect_required">Reconnect the VPN before testing this subscription.</string>
@@ -115,6 +120,7 @@
     <string name="connection_test_canceled">Connection test stopped.</string>
     <string name="connection_test_pause">Pause</string>
     <string name="connection_test_resume">Resume</string>
+    <string name="connection_test_stop">Stop test</string>
     <string name="connection_speed_test_toggle">Speed test · uses 1 MB per connection</string>
     <string name="connection_sort_lowest">Lowest delay</string>
     <string name="connection_sort_fastest">Fastest speed</string>

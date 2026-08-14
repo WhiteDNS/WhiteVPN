@@ -21,12 +21,11 @@ data class ConnectionDelayTestSession(
 }
 
 object ConnectionDelayTestState {
-    @Volatile
-    private var session: ConnectionDelayTestSession? = null
+    private val sessions = mutableMapOf<String, ConnectionDelayTestSession>()
 
     @Synchronized
     fun replace(value: ConnectionDelayTestSession): ConnectionDelayTestSession {
-        session = value
+        sessions[value.subscriptionId] = value
         return value
     }
 
@@ -35,12 +34,12 @@ object ConnectionDelayTestState {
         testId: String,
         transform: (ConnectionDelayTestSession) -> ConnectionDelayTestSession,
     ): ConnectionDelayTestSession? {
-        val current = session?.takeIf { it.testId == testId } ?: return null
-        return transform(current).also { session = it }
+        val current = sessions.values.firstOrNull { it.testId == testId } ?: return null
+        return transform(current).also { sessions[current.subscriptionId] = it }
     }
 
-    fun snapshot(subscriptionId: String): ConnectionDelayTestSession? =
-        session?.takeIf { it.subscriptionId == subscriptionId }
+    @Synchronized
+    fun snapshot(subscriptionId: String): ConnectionDelayTestSession? = sessions[subscriptionId]
 }
 
 object ConnectionTestResultOrder {
