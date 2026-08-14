@@ -64,3 +64,7 @@ export WHITEDNS_RELEASE_KEY_ALIAS=whitedns
 export WHITEDNS_RELEASE_KEY_PASSWORD=...
 make release
 ```
+
+## License
+
+WhiteVPN is licensed under the GNU General Public License version 3 only (`GPL-3.0-only`). See [LICENSE](LICENSE).
