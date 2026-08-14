@@ -88,8 +88,8 @@ if [[ ! -d "${APK_DIR}" ]]; then
 fi
 
 mkdir -p "${RELEASE_DIR}"
-rm -f "${RELEASE_DIR}"/whitedns-[vV]"${version_name}"-*.apk \
-  "${RELEASE_DIR}"/whitedns-[vV]"${version_name}".aab \
+rm -f "${RELEASE_DIR}"/{whitedns,WhiteVPN}-[vV]"${version_name}"-*.apk \
+  "${RELEASE_DIR}"/{whitedns,WhiteVPN}-[vV]"${version_name}".aab \
   "${RELEASE_DIR}/SHA256SUMS"
 
 copied=()
@@ -106,7 +106,7 @@ for apk in "${APK_DIR}"/*.apk; do
   esac
   [[ -n "${output}" ]] || continue
 
-  dest="${RELEASE_DIR}/whitedns-V${version_name}-${output}.apk"
+  dest="${RELEASE_DIR}/WhiteVPN-V${version_name}-${output}.apk"
   cp "${apk}" "${dest}"
   copied+=("${dest}")
 done
@@ -130,7 +130,7 @@ if [[ ! -f "${bundle}" ]]; then
   echo "Release bundle not found: ${bundle}" >&2
   exit 1
 fi
-bundle_dest="${RELEASE_DIR}/whitedns-V${version_name}.aab"
+bundle_dest="${RELEASE_DIR}/WhiteVPN-V${version_name}.aab"
 cp "${bundle}" "${bundle_dest}"
 
 apksigner_path="$(find_apksigner || true)"
