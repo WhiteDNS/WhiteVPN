@@ -72,13 +72,49 @@ class ConnectionDelayFeaturePolicyTest {
         assertEquals(1, completed?.available)
     }
 
+    @Test
+    fun liveResultsUseSpeedThenDelayOrDelayOnly() {
+        val pending = profile("pending", 1)
+        val delayOnly = profile("delay-only", 2)
+        val fast = profile("fast", 3)
+        val lowDelay = profile("low-delay", 4)
+        val profiles = listOf(pending, delayOnly, fast, lowDelay)
+        val records = listOf(
+            record("sub", pending.fingerprint, 1, ConnectionDelayStatus.Success, 100, 100_000),
+            record("sub", delayOnly.fingerprint, 10, ConnectionDelayStatus.Success, 100),
+            record("sub", fast.fingerprint, 80, ConnectionDelayStatus.Success, 100, 5_000),
+            record("sub", lowDelay.fingerprint, 20, ConnectionDelayStatus.Success, 100, 2_000),
+        ).associateBy(ConnectionDelayRecord::fingerprint)
+
+        assertEquals(
+            listOf("fast", "low-delay", "delay-only", "pending"),
+            ConnectionTestResultOrder.order(
+                profiles,
+                records,
+                speedTestEnabled = true,
+                pendingFingerprints = setOf(pending.fingerprint),
+            ).map(ConnectionProfile::tag),
+        )
+        assertEquals(
+            listOf("delay-only", "low-delay", "fast", "pending"),
+            ConnectionTestResultOrder.order(
+                profiles,
+                records,
+                speedTestEnabled = false,
+                pendingFingerprints = setOf(pending.fingerprint),
+            ).map(ConnectionProfile::tag),
+        )
+        assertEquals(8_000, ConnectionSpeed.kbps(1_000_000, 1_000_000_000))
+    }
+
     private fun record(
         subscriptionId: String,
         fingerprint: String,
         delayMs: Int?,
         status: ConnectionDelayStatus,
         testedAt: Long,
-    ) = ConnectionDelayRecord(subscriptionId, fingerprint, delayMs, status, testedAt)
+        speedKbps: Int? = null,
+    ) = ConnectionDelayRecord(subscriptionId, fingerprint, delayMs, status, testedAt, speedKbps)
 
     private fun profile(tag: String, port: Int) = ConnectionProfile(
         tag = tag,

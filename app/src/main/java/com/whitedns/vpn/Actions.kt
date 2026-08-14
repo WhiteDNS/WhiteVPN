@@ -30,6 +30,7 @@ object Actions {
     const val EXTRA_DELAY_TEST_AVAILABLE = "extra_delay_test_available"
     const val EXTRA_DELAY_TEST_FINISHED = "extra_delay_test_finished"
     const val EXTRA_DELAY_TEST_PAUSED = "extra_delay_test_paused"
+    const val EXTRA_SPEED_TEST_ENABLED = "extra_speed_test_enabled"
     const val EXTRA_DELAY_TEST_ERROR = "extra_delay_test_error"
 
     const val DELAY_TEST_PREPARING = "preparing"

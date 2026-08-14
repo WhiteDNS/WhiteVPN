@@ -88,9 +88,11 @@ class WhiteDnsVpnService : VpnService() {
     private lateinit var encryptedIpListRepository: EncryptedIpListRepository
     private lateinit var frontingIpPreferenceStore: FrontingIpPreferenceStore
     private lateinit var dpiBypassPreferenceStore: DpiBypassPreferenceStore
+    private lateinit var routingModePreferenceStore: RoutingModePreferenceStore
     private lateinit var dnsPrivacyPreferenceStore: DnsPrivacyPreferenceStore
     private lateinit var tlsIntegrityPreferenceStore: TlsIntegrityPreferenceStore
     private lateinit var connectionOptionsPreferenceStore: MihomoConnectionOptionsPreferenceStore
+    private lateinit var lanSharingPreferenceStore: LanSharingPreferenceStore
     private lateinit var connectionSelectionPreferenceStore: ConnectionSelectionPreferenceStore
 
     private var startupJob: Job? = null
@@ -172,9 +174,11 @@ class WhiteDnsVpnService : VpnService() {
         encryptedIpListRepository = EncryptedIpListRepository(this)
         frontingIpPreferenceStore = FrontingIpPreferenceStore(this)
         dpiBypassPreferenceStore = DpiBypassPreferenceStore(this)
+        routingModePreferenceStore = RoutingModePreferenceStore(this)
         dnsPrivacyPreferenceStore = DnsPrivacyPreferenceStore(this)
         tlsIntegrityPreferenceStore = TlsIntegrityPreferenceStore(this)
         connectionOptionsPreferenceStore = MihomoConnectionOptionsPreferenceStore(this)
+        lanSharingPreferenceStore = LanSharingPreferenceStore(this)
         connectionSelectionPreferenceStore = ConnectionSelectionPreferenceStore(this)
         networkMonitor.setDefaultNetworkChangeListener { candidate ->
             handleDefaultNetworkChanged(candidate)
@@ -203,6 +207,7 @@ class WhiteDnsVpnService : VpnService() {
                     ?.getStringArrayListExtra(Actions.EXTRA_CONNECTION_TYPES)
                     .orEmpty()
                     .toSet(),
+                speedTestEnabled = intent?.getBooleanExtra(Actions.EXTRA_SPEED_TEST_ENABLED, false) == true,
             )
             Actions.PAUSE_CONNECTION_DELAY_TEST -> setConnectionDelayTestPaused(
                 testId = intent?.getStringExtra(Actions.EXTRA_DELAY_TEST_ID).orEmpty(),
@@ -312,7 +317,11 @@ class WhiteDnsVpnService : VpnService() {
         )
     }
 
-    private fun startConnectionDelayTest(testId: String, connectionTypes: Set<String>) {
+    private fun startConnectionDelayTest(
+        testId: String,
+        connectionTypes: Set<String>,
+        speedTestEnabled: Boolean,
+    ) {
         if (testId.isBlank()) return
         val subscriptionId = subscriptionStore.readSelectedSubscriptionId()
         val preparingSession = ConnectionDelayTestState.replace(
@@ -320,6 +329,7 @@ class WhiteDnsVpnService : VpnService() {
                 testId = testId,
                 subscriptionId = subscriptionId,
                 connectionTypes = connectionTypes,
+                speedTestEnabled = speedTestEnabled,
             ),
         )
         if (state == VpnState.Starting || state == VpnState.Stopping) {
@@ -381,6 +391,7 @@ class WhiteDnsVpnService : VpnService() {
                     val paths = MihomoRuntimeConfigBuilder(this@WhiteDnsVpnService).write(
                         rawYaml = runtimeYaml,
                         splitTunnelPlan = SplitTunnelRuntimePlan.off(),
+                        routingMode = routingModePreferenceStore.read(),
                         dnsPrivacyMode = dnsPrivacyPreferenceStore.readMode(),
                         dohUrl = dnsPrivacyPreferenceStore.readDohUrl(),
                         dotEndpoint = dnsPrivacyPreferenceStore.readDotEndpoint(),
@@ -405,10 +416,21 @@ class WhiteDnsVpnService : VpnService() {
                 } ?: return@launch
                 publishConnectionDelayTest(startedSession)
 
+                val liveProxies = if (speedTestEnabled) {
+                    withContext(Dispatchers.IO) { controller.getProxies() }
+                } else {
+                    null
+                }
+                val preferredSelectorRoots = listOfNotNull(
+                    MihomoSelectionPolicy.trafficProbeGroup(snapshot.summary)?.name,
+                    MihomoSelectionPolicy.mainSelectorGroup(snapshot.summary)?.name,
+                )
+
                 val nextProfileIndex = AtomicInteger(0)
                 val progressMutex = Mutex()
                 coroutineScope {
-                    repeat(minOf(CONNECTION_DELAY_WORKER_COUNT, profiles.size)) {
+                    val workerCount = if (speedTestEnabled) 1 else CONNECTION_DELAY_WORKER_COUNT
+                    repeat(minOf(workerCount, profiles.size)) {
                         launch(Dispatchers.IO) {
                             while (isActive) {
                                 awaitConnectionDelayTestResumed(testId)
@@ -416,6 +438,17 @@ class WhiteDnsVpnService : VpnService() {
                                 if (index >= profiles.size) break
                                 val profile = profiles[index]
                                 val delayMs = realConnectionDelayMs(controller, profile)
+                                val speedKbps = if (speedTestEnabled && delayMs != null && liveProxies != null) {
+                                    connectionSpeedKbps(
+                                        controller = controller,
+                                        profile = profile,
+                                        liveProxies = liveProxies,
+                                        preferredSelectorRoots = preferredSelectorRoots,
+                                        restoreSelection = !temporaryCore,
+                                    )
+                                } else {
+                                    null
+                                }
                                 subscriptionStore.saveConnectionDelayRecord(
                                     ConnectionDelayRecord(
                                         subscriptionId = subscriptionId,
@@ -427,6 +460,7 @@ class WhiteDnsVpnService : VpnService() {
                                             ConnectionDelayStatus.Failure
                                         },
                                         testedAt = System.currentTimeMillis(),
+                                        speedKbps = speedKbps,
                                     ),
                                 )
                                 val progressSession = progressMutex.withLock {
@@ -506,6 +540,66 @@ class WhiteDnsVpnService : VpnService() {
             connectionDelayTestPaused
         ) {
             delay(CONNECTION_DELAY_PAUSE_POLL_INTERVAL_MS)
+        }
+    }
+
+    private suspend fun connectionSpeedKbps(
+        controller: MihomoControllerClient,
+        profile: ConnectionProfile,
+        liveProxies: JSONObject,
+        preferredSelectorRoots: List<String>,
+        restoreSelection: Boolean,
+    ): Int? {
+        val path = MihomoControllerProxies.selectorPath(
+            response = liveProxies,
+            targetName = profile.tag,
+            preferredRoots = preferredSelectorRoots,
+        )
+        if (path.isEmpty()) return null
+        val proxies = liveProxies.optJSONObject("proxies")
+        val originalSelections = path.mapNotNull { selection ->
+            proxies
+                ?.optJSONObject(selection.selectorGroup)
+                ?.optString("now")
+                ?.takeIf(String::isNotBlank)
+                ?.let { MihomoGroupSelection(selection.selectorGroup, it) }
+        }
+        return try {
+            withContext(Dispatchers.IO) {
+                path.forEach { selection ->
+                    controller.selectProxy(selection.selectorGroup, selection.selectedGroup)
+                }
+            }
+            runInterruptible(Dispatchers.IO) {
+                MihomoRuntimeHealth.downloadSpeedKbpsThroughMixedProxy()
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            DiagnosticLogger.warn(
+                this,
+                "connection.speed.failed",
+                "profile=${profile.tag}",
+                error,
+            )
+            null
+        } finally {
+            if (restoreSelection) {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    originalSelections.forEach { selection ->
+                        runCatching {
+                            controller.selectProxy(selection.selectorGroup, selection.selectedGroup)
+                        }.onFailure { error ->
+                            DiagnosticLogger.warn(
+                                this@WhiteDnsVpnService,
+                                "connection.speed.restore.failed",
+                                "selector=${selection.selectorGroup}",
+                                error,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -590,6 +684,7 @@ class WhiteDnsVpnService : VpnService() {
                 .putExtra(Actions.EXTRA_DELAY_TEST_TOTAL, session.total)
                 .putExtra(Actions.EXTRA_DELAY_TEST_AVAILABLE, session.available)
                 .putExtra(Actions.EXTRA_DELAY_TEST_PAUSED, session.paused)
+                .putExtra(Actions.EXTRA_SPEED_TEST_ENABLED, session.speedTestEnabled)
                 .putStringArrayListExtra(
                     Actions.EXTRA_DELAY_TEST_FINISHED,
                     ArrayList(finishedFingerprints),
@@ -989,6 +1084,7 @@ class WhiteDnsVpnService : VpnService() {
         )
         val connectionOptions = connectionOptionsPreferenceStore.read()
         val optionsYaml = MihomoConnectionOptionsPatcher.patch(frontedYaml, connectionOptions)
+        val routingMode = routingModePreferenceStore.read()
         val dnsPrivacyMode = dnsPrivacyPreferenceStore.readMode()
         val dpiBypassPort = if (dpiBypassEnabled) DpiBypassPort.allocate() else null
         val runtimeYaml = MihomoDpiBypassPatcher.patch(
@@ -1024,6 +1120,8 @@ class WhiteDnsVpnService : VpnService() {
         val paths = MihomoRuntimeConfigBuilder(this).write(
             rawYaml = runtimeYaml,
             splitTunnelPlan = splitTunnelPlan,
+            lanSharing = lanSharingPreferenceStore.read(),
+            routingMode = routingMode,
             dnsPrivacyMode = dnsPrivacyMode,
             dohUrl = dnsPrivacyPreferenceStore.readDohUrl(),
             dotEndpoint = dnsPrivacyPreferenceStore.readDotEndpoint(),
@@ -1039,7 +1137,7 @@ class WhiteDnsVpnService : VpnService() {
         DiagnosticLogger.info(
             this,
             "mihomo.startup.flow",
-            "frontingScanner=${serverOverrideIp != null} nativeAutomatic=$nativeAutomaticStart nativeGroup=${nativeAutomaticGroup?.name.orEmpty()} preselected=${automaticSelections.size} dpiBypass=$dpiBypassEnabled dpiBypassPort=${dpiBypassPort ?: 0} dnsPrivacy=${dnsPrivacyMode.wireName} tlsIntegrity=${tlsIntegrityPreferenceStore.isEnabled()} amneziaNoise=${connectionOptions.amneziaNoiseEnabled} randomController=true encryptedSubscription=true profiles=${snapshot.summary.proxies.size} groups=${snapshot.summary.groups.size}",
+            "frontingScanner=${serverOverrideIp != null} nativeAutomatic=$nativeAutomaticStart nativeGroup=${nativeAutomaticGroup?.name.orEmpty()} preselected=${automaticSelections.size} dpiBypass=$dpiBypassEnabled dpiBypassPort=${dpiBypassPort ?: 0} routing=${routingMode.wireName} dnsPrivacy=${dnsPrivacyMode.wireName} tlsIntegrity=${tlsIntegrityPreferenceStore.isEnabled()} amneziaNoise=${connectionOptions.amneziaNoiseEnabled} randomController=true encryptedSubscription=true profiles=${snapshot.summary.proxies.size} groups=${snapshot.summary.groups.size}",
         )
 
         setupCoreRuntime(paths, dpiBypassPort)
@@ -1257,6 +1355,7 @@ class WhiteDnsVpnService : VpnService() {
                 selectedCountryCode = selectedCountryCode,
                 selection = selection,
                 activeProxyName = activeProxyName,
+                serverOverridePort = serverOverridePort,
                 delayMs = delayMs,
             )
         }
@@ -1695,9 +1794,12 @@ class WhiteDnsVpnService : VpnService() {
         selectedCountryCode: String?,
         selection: MihomoGroupSelection?,
         activeProxyName: String?,
+        serverOverridePort: Int?,
         delayMs: Long,
     ): CleanIpResult {
-        val port = runtimePortForSelection(snapshot, selectedCountryCode, selection, activeProxyName) ?: topEndpoint.port
+        val port = serverOverridePort
+            ?: runtimePortForSelection(snapshot, selectedCountryCode, selection, activeProxyName)
+            ?: topEndpoint.port
         return topEndpoint.copy(
             port = port,
             latencyMs = delayMs.takeIf { it > 0 } ?: topEndpoint.latencyMs,

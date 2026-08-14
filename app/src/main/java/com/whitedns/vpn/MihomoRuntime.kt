@@ -2,6 +2,7 @@ package com.whitedns.vpn
 
 import android.content.Context
 import com.follow.clash.core.Core
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -29,6 +30,8 @@ object MihomoRuntimeDefaults {
     )
     val HEALTH_URL = HEALTH_URLS.first()
     const val EGRESS_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+    const val SPEED_TEST_BYTES = 1_000_000
+    const val SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=1000000"
 }
 
 object TlsIntegrityPolicy {
@@ -149,6 +152,33 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
 }
 
 class TlsIntegrityException(cause: Throwable) : IOException("TLS certificate validation failed", cause)
+
+enum class RoutingMode(val wireName: String, val labelRes: Int, val detailRes: Int) {
+    Subscription("subscription", R.string.routing_mode_subscription, R.string.routing_mode_subscription_detail),
+    IranBypass("iran", R.string.routing_mode_iran, R.string.routing_mode_iran_detail),
+    GlobalProxy("global", R.string.routing_mode_global, R.string.routing_mode_global_detail),
+    ;
+
+    companion object {
+        fun fromWireName(value: String?): RoutingMode {
+            return values().firstOrNull { it.wireName == value } ?: Subscription
+        }
+    }
+}
+
+class RoutingModePreferenceStore(context: Context) {
+    private val prefs = context.getSharedPreferences("white_dns_routing", Context.MODE_PRIVATE)
+
+    fun read(): RoutingMode = RoutingMode.fromWireName(prefs.getString(KEY_MODE, null))
+
+    fun save(mode: RoutingMode) {
+        prefs.edit().putString(KEY_MODE, mode.wireName).apply()
+    }
+
+    private companion object {
+        const val KEY_MODE = "mode"
+    }
+}
 
 enum class DnsPrivacyMode(val wireName: String, val labelRes: Int) {
     Automatic("automatic", R.string.dns_mode_automatic),
@@ -346,6 +376,8 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
     fun write(
         rawYaml: String,
         splitTunnelPlan: SplitTunnelRuntimePlan,
+        lanSharing: LanSharingSettings = LanSharingSettings(),
+        routingMode: RoutingMode = RoutingMode.Subscription,
         dnsPrivacyMode: DnsPrivacyMode = DnsPrivacyMode.Automatic,
         dohUrl: String = DnsPrivacyPolicy.DEFAULT_DOH_URL,
         dotEndpoint: String = DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
@@ -374,12 +406,14 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                 rawYaml = rawYaml,
                 secret = secret,
                 controlPort = controlPort,
+                lanSharing = lanSharing,
+                routingMode = routingMode,
                 dnsPrivacyMode = dnsPrivacyMode,
                 dohUrl = dohUrl,
                 dotEndpoint = dotEndpoint,
             ),
         )
-        patchFinal.writeText(corePatchJson(splitTunnelPlan, secret, controlPort).toString(2))
+        patchFinal.writeText(corePatchJson(splitTunnelPlan, secret, controlPort, lanSharing).toString(2))
         setupParams.writeText(setupParamsJson(selectedMap).toString(2))
         serviceJson.writeText(
             serviceJson(
@@ -418,8 +452,9 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
         splitTunnelPlan: SplitTunnelRuntimePlan,
         secret: String,
         controlPort: Int = MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT,
+        lanSharing: LanSharingSettings = LanSharingSettings(),
     ): JSONObject {
-        return corePatchJson(context.getString(R.string.app_name), splitTunnelPlan, secret, controlPort)
+        return corePatchJson(context.getString(R.string.app_name), splitTunnelPlan, secret, controlPort, lanSharing)
     }
 
     companion object {
@@ -428,6 +463,7 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             splitTunnelPlan: SplitTunnelRuntimePlan,
             secret: String,
             controlPort: Int = MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT,
+            lanSharing: LanSharingSettings = LanSharingSettings(),
         ): JSONObject {
             val tun = JSONObject()
                 .put("enable", false)
@@ -439,7 +475,17 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                     "${MihomoRuntimeDefaults.CONTROLLER_HOST}:$controlPort",
                 )
                 .put("secret", secret)
-                .put("allow-lan", false)
+                .put("allow-lan", lanSharing.enabled)
+                .apply {
+                    if (lanSharing.enabled) {
+                        put("bind-address", "0.0.0.0")
+                        if (lanSharing.passwordRequired) {
+                            put("authentication", JSONArray(listOf("${lanSharing.username}:${lanSharing.password}")))
+                            put("skip-auth-prefixes", JSONArray(listOf("127.0.0.0/8")))
+                        }
+                        put("lan-allowed-ips", JSONArray(LAN_ALLOWED_IPS))
+                    }
+                }
                 .put("mode", "rule")
                 .put("log-level", "warning")
                 .put("ipv6", false)
@@ -506,12 +552,31 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             rawYaml: String,
             secret: String,
             controlPort: Int = MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT,
+            lanSharing: LanSharingSettings = LanSharingSettings(),
+            routingMode: RoutingMode = RoutingMode.Subscription,
             dnsPrivacyMode: DnsPrivacyMode = DnsPrivacyMode.Automatic,
             dohUrl: String = DnsPrivacyPolicy.DEFAULT_DOH_URL,
             dotEndpoint: String = DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
         ): String {
-            val subscriptionYaml = stripTopLevelKeys(rawYaml, FLCLASH_OVERRIDE_KEYS)
-            val dnsProxyGroup = dnsProxyGroup(rawYaml)
+            val routingTarget = routingTarget(rawYaml)
+            val requiredRoutingTarget = if (routingMode == RoutingMode.Subscription) {
+                null
+            } else {
+                requireNotNull(routingTarget) {
+                    "Routing mode '${routingMode.wireName}' requires a usable proxy or proxy group"
+                }
+            }
+            val keysToReplace = if (routingMode == RoutingMode.Subscription) {
+                FLCLASH_OVERRIDE_KEYS
+            } else {
+                FLCLASH_OVERRIDE_KEYS + ROUTING_OVERRIDE_KEYS
+            }
+            val subscriptionYaml = stripTopLevelKeys(rawYaml, keysToReplace)
+            val dnsProxyGroup = if (routingMode == RoutingMode.Subscription) {
+                dnsProxyGroup(rawYaml)
+            } else {
+                requiredRoutingTarget
+            }
             val proxySuffix = dnsProxyGroup?.let { "#$it" }.orEmpty()
             val dnsServers = when (dnsPrivacyMode) {
                 DnsPrivacyMode.Automatic -> DOH_SERVERS + DOT_SERVERS
@@ -525,11 +590,44 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                     append(subscriptionYaml.trimEnd())
                     append("\n\n")
                 }
+                when (routingMode) {
+                    RoutingMode.Subscription -> Unit
+                    RoutingMode.IranBypass -> {
+                        append("rule-providers:\n")
+                        append("  whitedns-iran:\n")
+                        append("    type: http\n")
+                        append("    behavior: classical\n")
+                        append("    format: text\n")
+                        append("    url: $IRAN_RULESET_URL\n")
+                        append("    path: ./ruleset/whitedns-iran.txt\n")
+                        append("    interval: 86400\n")
+                        append("    proxy: ${yamlSingleQuoted(requiredRoutingTarget!!)}\n")
+                        append("    size-limit: 10485760\n")
+                        append("rules:\n")
+                        append("  - 'RULE-SET,whitedns-iran,DIRECT'\n")
+                        append("  - ${yamlSingleQuoted("MATCH,$requiredRoutingTarget")}\n\n")
+                    }
+                    RoutingMode.GlobalProxy -> {
+                        append("rules:\n")
+                        append("  - ${yamlSingleQuoted("MATCH,$requiredRoutingTarget")}\n\n")
+                    }
+                }
                 append("# WhiteDNS Android runtime overrides\n")
                 append("mixed-port: ${MihomoRuntimeDefaults.MIXED_PORT}\n")
                 append("external-controller: ${MihomoRuntimeDefaults.CONTROLLER_HOST}:$controlPort\n")
                 append("secret: \"${secret}\"\n")
-                append("allow-lan: false\n")
+                append("allow-lan: ${lanSharing.enabled}\n")
+                if (lanSharing.enabled) {
+                    append("bind-address: 0.0.0.0\n")
+                    if (lanSharing.passwordRequired) {
+                        append("authentication:\n")
+                        append("  - ${yamlSingleQuoted("${lanSharing.username}:${lanSharing.password}")}\n")
+                        append("skip-auth-prefixes:\n")
+                        append("  - 127.0.0.0/8\n")
+                    }
+                    append("lan-allowed-ips:\n")
+                    LAN_ALLOWED_IPS.forEach { append("  - $it\n") }
+                }
                 append("mode: rule\n")
                 append("log-level: warning\n")
                 append("ipv6: false\n")
@@ -555,6 +653,15 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                 append("tun:\n")
                 append("  enable: false\n")
             }
+        }
+
+        private fun routingTarget(rawYaml: String): String? {
+            return runCatching {
+                val summary = MihomoConfigParser.parseSummary(rawYaml)
+                MihomoSelectionPolicy.trafficProbeGroup(summary)?.name
+                    ?: MihomoSelectionPolicy.mainSelectorGroup(summary)?.name
+                    ?: summary.proxies.firstOrNull()?.name
+            }.getOrNull()
         }
 
         private fun dnsProxyGroup(rawYaml: String): String? {
@@ -601,6 +708,11 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             "external-controller",
             "secret",
             "allow-lan",
+            "bind-address",
+            "authentication",
+            "skip-auth-prefixes",
+            "lan-allowed-ips",
+            "lan-disallowed-ips",
             "mode",
             "log-level",
             "ipv6",
@@ -609,6 +721,9 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             "dns",
             "tun",
         )
+        private val ROUTING_OVERRIDE_KEYS = setOf("rules", "rule-providers", "sub-rules")
+        private const val IRAN_RULESET_URL =
+            "https://github.com/ygbkm/clash-rules-iran/releases/latest/download/rules.txt"
 
         private val DOH_SERVERS = listOf(
             "https://1.1.1.1/dns-query",
@@ -617,6 +732,13 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
         private val DOT_SERVERS = listOf(
             "tls://1.1.1.1:853",
             "tls://8.8.8.8:853",
+        )
+        private val LAN_ALLOWED_IPS = listOf(
+            "127.0.0.0/8",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
         )
     }
 }
@@ -1242,6 +1364,41 @@ object MihomoRuntimeHealth {
         }
     }
 
+    fun downloadSpeedKbpsThroughMixedProxy(
+        url: String = MihomoRuntimeDefaults.SPEED_TEST_URL,
+        timeoutMs: Int = 10_000,
+    ): Int? {
+        val proxy = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress(MihomoRuntimeDefaults.CONTROLLER_HOST, MihomoRuntimeDefaults.MIXED_PORT),
+        )
+        val connection = URL(url).openConnection(proxy) as HttpURLConnection
+        connection.connectTimeout = timeoutMs
+        connection.readTimeout = timeoutMs
+        connection.instanceFollowRedirects = false
+        connection.useCaches = false
+        connection.setRequestProperty("Accept-Encoding", "identity")
+        connection.setRequestProperty("Connection", "close")
+        return connection.use {
+            if (responseCode !in 200..299) return@use null
+            val startedAtNanos = System.nanoTime()
+            var bytesRead = 0L
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            inputStream.use { input ->
+                while (bytesRead < MihomoRuntimeDefaults.SPEED_TEST_BYTES) {
+                    val count = input.read(
+                        buffer,
+                        0,
+                        minOf(buffer.size.toLong(), MihomoRuntimeDefaults.SPEED_TEST_BYTES - bytesRead).toInt(),
+                    )
+                    if (count <= 0) break
+                    bytesRead += count
+                }
+            }
+            ConnectionSpeed.kbps(bytesRead, System.nanoTime() - startedAtNanos)
+        }
+    }
+
     fun countryCodeFromTrace(trace: String): String? {
         return trace.lineSequence()
             .firstOrNull { it.startsWith("loc=") }
@@ -1265,5 +1422,15 @@ object MihomoRuntimeHealth {
         } finally {
             disconnect()
         }
+    }
+}
+
+object ConnectionSpeed {
+    fun kbps(bytes: Long, elapsedNanos: Long): Int? {
+        if (bytes <= 0L || elapsedNanos <= 0L) return null
+        return (bytes * 8_000_000L / elapsedNanos)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+            .takeIf { it > 0 }
     }
 }
