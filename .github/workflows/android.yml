@@ -1,0 +1,123 @@
+name: Android
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.23.x'
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Install Android toolchain
+        run: |
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+
+      - name: Configure Firebase
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [[ -n "$GOOGLE_SERVICES_JSON_BASE64" ]]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+          fi
+
+      - name: Build debug
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        env:
+          WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
+          WHITEDNS_ENCRYPTED_IP_LIST_URL: ${{ vars.WHITEDNS_ENCRYPTED_IP_LIST_URL }}
+        run: ./gradlew testDebugUnitTest assembleDebug
+
+      - name: Configure release signing
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        env:
+          WHITEDNS_RELEASE_KEYSTORE_BASE64: ${{ secrets.WHITEDNS_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          : "${WHITEDNS_RELEASE_KEYSTORE_BASE64:?Missing WHITEDNS_RELEASE_KEYSTORE_BASE64}"
+          printf '%s' "$WHITEDNS_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/whitedns-release.jks"
+
+      - name: Validate release tag
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version_name="$(sed -n 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
+          [[ "$RELEASE_TAG" == "v$version_name" ]] || {
+            echo "Release tag $RELEASE_TAG must match app version v$version_name" >&2
+            exit 1
+          }
+
+      - name: Build signed release
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        env:
+          WHITEDNS_RELEASE_STORE_FILE: ${{ runner.temp }}/whitedns-release.jks
+          WHITEDNS_RELEASE_STORE_PASSWORD: ${{ secrets.WHITEDNS_RELEASE_STORE_PASSWORD }}
+          WHITEDNS_RELEASE_KEY_ALIAS: ${{ secrets.WHITEDNS_RELEASE_KEY_ALIAS }}
+          WHITEDNS_RELEASE_KEY_PASSWORD: ${{ secrets.WHITEDNS_RELEASE_KEY_PASSWORD }}
+          WHITEDNS_MIHOMO_SUBSCRIPTION_KEY: ${{ secrets.WHITEDNS_MIHOMO_SUBSCRIPTION_KEY }}
+          WHITEDNS_ENCRYPTED_IP_LIST_KEY: ${{ secrets.WHITEDNS_ENCRYPTED_IP_LIST_KEY }}
+          WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
+          WHITEDNS_ENCRYPTED_IP_LIST_URL: ${{ vars.WHITEDNS_ENCRYPTED_IP_LIST_URL }}
+        run: ./scripts/release.sh
+
+      - name: Upload debug APKs
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: actions/upload-artifact@v7
+        with:
+          name: whitevpn-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload signed release
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        uses: actions/upload-artifact@v7
+        with:
+          name: whitevpn-release-${{ github.run_id }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: whitevpn-release-${{ github.run_id }}
+          path: release
+
+      - name: Attach builds to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" release/* --clobber

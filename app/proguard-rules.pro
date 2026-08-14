@@ -1,0 +1,3 @@
+-keep class com.follow.clash.core.** { *; }
+-keep class com.whitedns.vpn.ByeDpiProxy { *; }
+-keep class go.** { *; }

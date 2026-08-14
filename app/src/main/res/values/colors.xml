@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Primary colors -->
+    <color name="whitedns_primary">#007E50</color>
+    <color name="whitedns_on_primary">#F4FAF7</color>
+    <color name="whitedns_primary_container">#D6EFE3</color>
+    <color name="whitedns_on_primary_container">#0A1410</color>
+
+    <!-- Secondary colors -->
+    <color name="whitedns_secondary">#D08B00</color>
+
+    <!-- Background and surface -->
+    <color name="whitedns_background">#F1F9F5</color>
+    <color name="whitedns_surface">#F8FDFB</color>
+    <color name="whitedns_surface_variant">#D3E2DB</color>
+
+    <!-- Surface elevations -->
+    <color name="surface_elevated_1">#ECF6F1</color>
+    <color name="surface_elevated_2">#E0EDE7</color>
+    <color name="surface_elevated_3">#D3E2DB</color>
+
+    <!-- On surface colors -->
+    <color name="whitedns_on_surface">#0A1410</color>
+    <color name="whitedns_on_surface_variant">#495650</color>
+
+    <!-- Text hierarchy -->
+    <color name="text_tertiary">#717E78</color>
+    <color name="text_muted">#97AAA1</color>
+
+    <!-- Outline -->
+    <color name="whitedns_outline">#B9C8C1</color>
+
+    <!-- Error -->
+    <color name="whitedns_error">#CF4040</color>
+
+    <!-- State container colors -->
+    <color name="teal_container">#D6EFE3</color>
+    <color name="amber_container">#FCE4C4</color>
+    <color name="red_container">#FFDEDB</color>
+
+    <!-- Gradient colors -->
+    <color name="background_gradient_start">#F1F9F5</color>
+    <color name="background_gradient_end">#F8FDFB</color>
+    <color name="accent_gradient_start">#007E50</color>
+    <color name="accent_gradient_end">#4BAE87</color>
+</resources>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Applies from Android 12 (API 31) up.
+
+    `android:allowBackup="false"` stops cloud backup but does NOT stop device-to-device
+    transfer, so without these rules the app's private files — cached subscription YAML
+    holding proxy UUIDs and passwords, plus the runtime controller secret — would be copied
+    onto a new device during setup. Nothing here is worth restoring, so exclude all of it.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>
