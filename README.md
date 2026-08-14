@@ -1,9 +1,11 @@
 # WhiteDNS VPN Android
 
+[![Latest release](https://img.shields.io/github/v/release/WhiteDNS/WhiteVPN?label=version)](https://github.com/WhiteDNS/WhiteVPN/releases/latest)
+
 Native Android VPN app powered by the Mihomo core through the FlClash Android JNI path.
 
 <p align="center">
-  <img src="docs/screenshots/whitevpn-1.2.0-fa.jpg" alt="WhiteVPN 1.2.0 Persian home screen" width="360">
+  <img src="docs/screenshots/whitevpn-fa.jpg" alt="WhiteVPN Persian home screen" width="360">
 </p>
 
 - `Connect` starts Android `VpnService`, fetches the WhiteDNS Mihomo YAML subscription, initializes Mihomo, and passes the Android TUN fd into the core.
@@ -51,7 +53,7 @@ make release
 
 `make release` runs tests, builds signed release APKs for `armeabi-v7a`, `arm64-v8a`, `x86`, `x86_64`, and `universal`, builds the Play `.aab`, verifies APK signatures when `apksigner` is available, and writes outputs plus `SHA256SUMS` to `release/`.
 
-Publishing a GitHub Release with a tag matching `v<versionName>` builds the same artifacts and attaches them to that release. For version `1.2.0`, use tag `v1.2.0`.
+Publishing a GitHub Release with a tag matching `v<versionName>` builds the same artifacts and attaches them to that release.
 
 You can also pass signing values without a local properties file:
 
