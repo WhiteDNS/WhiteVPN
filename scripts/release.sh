@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GRADLE="${GRADLE:-${ROOT_DIR}/gradlew}"
 RELEASE_DIR="${RELEASE_DIR:-${ROOT_DIR}/release}"
 APK_DIR="${ROOT_DIR}/app/build/outputs/apk/release"
+BUNDLE_DIR="${ROOT_DIR}/app/build/outputs/bundle/release"
 SIGNING_FILE="${ROOT_DIR}/keystore.properties"
 EXPECTED_OUTPUTS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64" "universal")
 
@@ -79,7 +80,7 @@ if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
   "${GRADLE}" test
 fi
 
-"${GRADLE}" :app:assembleRelease
+"${GRADLE}" :app:assembleRelease :app:bundleRelease
 
 if [[ ! -d "${APK_DIR}" ]]; then
   echo "Release APK directory not found: ${APK_DIR}" >&2
@@ -87,7 +88,9 @@ if [[ ! -d "${APK_DIR}" ]]; then
 fi
 
 mkdir -p "${RELEASE_DIR}"
-rm -f "${RELEASE_DIR}"/whitedns-[vV]"${version_name}"-*.apk "${RELEASE_DIR}/SHA256SUMS"
+rm -f "${RELEASE_DIR}"/whitedns-[vV]"${version_name}"-*.apk \
+  "${RELEASE_DIR}"/whitedns-[vV]"${version_name}".aab \
+  "${RELEASE_DIR}/SHA256SUMS"
 
 copied=()
 for apk in "${APK_DIR}"/*.apk; do
@@ -122,6 +125,14 @@ if [[ "${#missing[@]}" -gt 0 ]]; then
   exit 1
 fi
 
+bundle="${BUNDLE_DIR}/app-release.aab"
+if [[ ! -f "${bundle}" ]]; then
+  echo "Release bundle not found: ${bundle}" >&2
+  exit 1
+fi
+bundle_dest="${RELEASE_DIR}/whitedns-V${version_name}.aab"
+cp "${bundle}" "${bundle_dest}"
+
 apksigner_path="$(find_apksigner || true)"
 if [[ -n "${apksigner_path}" ]]; then
   for apk in "${copied[@]}"; do
@@ -131,15 +142,16 @@ else
   echo "Warning: apksigner not found; skipped signature verification." >&2
 fi
 
-for apk in "${copied[@]}"; do
+artifacts=("${copied[@]}" "${bundle_dest}")
+for artifact in "${artifacts[@]}"; do
   (
     cd "${RELEASE_DIR}"
-    shasum -a 256 "$(basename "${apk}")"
+    shasum -a 256 "$(basename "${artifact}")"
   ) >> "${RELEASE_DIR}/SHA256SUMS"
 done
 
 printf 'Release v%s (%s) created:\n' "${version_name}" "${version_code}"
-for apk in "${copied[@]}"; do
-  printf '  %s\n' "${apk}"
+for artifact in "${artifacts[@]}"; do
+  printf '  %s\n' "${artifact}"
 done
 printf '  %s\n' "${RELEASE_DIR}/SHA256SUMS"
