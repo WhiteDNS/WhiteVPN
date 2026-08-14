@@ -85,9 +85,11 @@ class MainActivity : Activity() {
     private lateinit var locationPreferenceStore: ConnectionLocationPreferenceStore
     private lateinit var splitTunnelPreferenceStore: SplitTunnelPreferenceStore
     private lateinit var frontingIpPreferenceStore: FrontingIpPreferenceStore
+    private lateinit var routingModePreferenceStore: RoutingModePreferenceStore
     private lateinit var dnsPrivacyPreferenceStore: DnsPrivacyPreferenceStore
     private lateinit var tlsIntegrityPreferenceStore: TlsIntegrityPreferenceStore
     private lateinit var connectionOptionsPreferenceStore: MihomoConnectionOptionsPreferenceStore
+    private lateinit var lanSharingPreferenceStore: LanSharingPreferenceStore
     private lateinit var connectionSelectionPreferenceStore: ConnectionSelectionPreferenceStore
     private lateinit var installedAppRepository: InstalledAppRepository
     private lateinit var userSubscriptionManager: UserSubscriptionManager
@@ -120,6 +122,13 @@ class MainActivity : Activity() {
     private lateinit var amneziaNoiseMaxSizeInput: EditText
     private lateinit var amneziaNoiseApplyButton: MaterialButton
     private lateinit var amneziaNoiseErrorText: TextView
+    private lateinit var lanSharingCheckbox: MaterialSwitch
+    private lateinit var lanSharingPasswordCheckbox: MaterialSwitch
+    private lateinit var lanSharingDetailsText: TextView
+    private lateinit var lanSharingRegenerateButton: MaterialButton
+    private lateinit var routingModeRow: LinearLayout
+    private lateinit var routingModeValueText: TextView
+    private lateinit var routingModeDetailText: TextView
     private lateinit var dnsPrivacyRow: LinearLayout
     private lateinit var dnsPrivacyValueText: TextView
     private lateinit var dnsPrivacyDetailText: TextView
@@ -207,9 +216,11 @@ class MainActivity : Activity() {
         locationPreferenceStore = ConnectionLocationPreferenceStore(this)
         splitTunnelPreferenceStore = SplitTunnelPreferenceStore(this)
         frontingIpPreferenceStore = FrontingIpPreferenceStore(this)
+        routingModePreferenceStore = RoutingModePreferenceStore(this)
         dnsPrivacyPreferenceStore = DnsPrivacyPreferenceStore(this)
         tlsIntegrityPreferenceStore = TlsIntegrityPreferenceStore(this)
         connectionOptionsPreferenceStore = MihomoConnectionOptionsPreferenceStore(this)
+        lanSharingPreferenceStore = LanSharingPreferenceStore(this)
         connectionSelectionPreferenceStore = ConnectionSelectionPreferenceStore(this)
         installedAppRepository = InstalledAppRepository(this)
         userSubscriptionManager = UserSubscriptionManager(this)
@@ -1590,6 +1601,100 @@ class MainActivity : Activity() {
             },
         )
         advancedBody.addView(
+            advancedSectionLabel(getString(R.string.routing_section)),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = dp(24)
+            },
+        )
+        val routingPanel = advancedSettingsPanel()
+        advancedBody.addView(
+            routingPanel,
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
+        )
+        routingModeDetailText = TextView(this).apply {
+            textSize = 12f
+            typeface = WhiteDnsBodyTypeface
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+            maxLines = 2
+        }
+        val routingText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            addView(
+                TextView(this@MainActivity).apply {
+                    setText(R.string.routing_rules_title)
+                    textSize = 14f
+                    typeface = WhiteDnsBodyBoldTypeface
+                    setTextColor(TEXT_PRIMARY)
+                    includeFontPadding = false
+                },
+            )
+            addView(
+                routingModeDetailText,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = dp(4) },
+            )
+        }
+        routingModeValueText = TextView(this).apply {
+            textSize = 14f
+            typeface = WhiteDnsBodyBoldTypeface
+            setTextColor(TEAL)
+            includeFontPadding = false
+            gravity = Gravity.START
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            textDirection = View.TEXT_DIRECTION_LOCALE
+        }
+        routingModeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            setSelectableBackground()
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { showRoutingModeSelector() }
+            addView(
+                routingText,
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            )
+            addView(
+                routingModeValueText,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { marginStart = dp(16) },
+            )
+            addView(
+                TextView(this@MainActivity).apply {
+                    setText(R.string.chevron_forward)
+                    textSize = 22f
+                    layoutDirection = View.LAYOUT_DIRECTION_LTR
+                    textDirection = View.TEXT_DIRECTION_LTR
+                    typeface = WhiteDnsBodyBoldTypeface
+                    setTextColor(TEAL)
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER
+                },
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { marginStart = dp(8) },
+            )
+        }
+        routingPanel.addView(
+            routingModeRow,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        advancedBody.addView(
             advancedSectionLabel(getString(R.string.dns_privacy_section)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1758,6 +1863,103 @@ class MainActivity : Activity() {
                 marginStart = dp(8)
                 marginEnd = dp(8)
             },
+        )
+        advancedBody.addView(
+            advancedSectionLabel(getString(R.string.lan_sharing_section)),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) },
+        )
+        val lanSharingPanel = advancedSettingsPanel()
+        lanSharingCheckbox = MaterialSwitch(this).apply {
+            contentDescription = getString(R.string.lan_sharing_title)
+            setOnClickListener { saveLanSharingEnabled(isChecked) }
+        }
+        lanSharingPanel.addView(
+            advancedToggleRow(
+                title = getString(R.string.lan_sharing_title),
+                detail = getString(R.string.lan_sharing_description),
+                toggle = lanSharingCheckbox,
+            ),
+            LinearLayout.LayoutParams(-1, -2),
+        )
+        lanSharingPasswordCheckbox = MaterialSwitch(this).apply {
+            contentDescription = getString(R.string.lan_sharing_require_password)
+            setOnClickListener { saveLanSharingPasswordRequired(isChecked) }
+        }
+        lanSharingPanel.addView(
+            advancedToggleRow(
+                title = getString(R.string.lan_sharing_require_password),
+                detail = getString(R.string.lan_sharing_require_password_description),
+                toggle = lanSharingPasswordCheckbox,
+            ),
+            LinearLayout.LayoutParams(-1, -2),
+        )
+        lanSharingPanel.addView(
+            advancedSectionDetail(getString(R.string.lan_sharing_manual_setup)),
+            LinearLayout.LayoutParams(-1, -2).apply {
+                marginStart = dp(16)
+                marginEnd = dp(16)
+                topMargin = dp(8)
+            },
+        )
+        lanSharingDetailsText = TextView(this).apply {
+            textSize = 13f
+            typeface = WhiteDnsDataTypeface
+            setTextColor(TEXT_PRIMARY)
+            setTextIsSelectable(true)
+            includeFontPadding = false
+            setLineSpacing(dp(5).toFloat(), 1f)
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = RippleDrawable(
+                ColorStateList.valueOf(withAlpha(TEAL, 28)),
+                GradientDrawable().apply {
+                    cornerRadius = dp(8).toFloat()
+                    setColor(withAlpha(SURFACE, if (palette.isDark) 232 else 246))
+                    setStroke(dp(1), withAlpha(OUTLINE, 170), dp(5).toFloat(), dp(4).toFloat())
+                },
+                null,
+            )
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { copyLanSharingSettings() }
+        }
+        lanSharingPanel.addView(
+            lanSharingDetailsText,
+            LinearLayout.LayoutParams(-1, -2).apply {
+                marginStart = dp(16)
+                marginEnd = dp(16)
+                topMargin = dp(12)
+            },
+        )
+        lanSharingRegenerateButton = MaterialButton(this).apply {
+            setText(R.string.lan_sharing_regenerate)
+            setAllCaps(false)
+            textSize = 12f
+            typeface = WhiteDnsBodyBoldTypeface
+            minWidth = 0
+            minHeight = dp(44)
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(8)
+            backgroundTintList = ColorStateList.valueOf(SURFACE)
+            strokeWidth = dp(1)
+            strokeColor = ColorStateList.valueOf(OUTLINE)
+            setTextColor(TEAL)
+            setOnClickListener { regenerateLanSharingPassword() }
+        }
+        lanSharingPanel.addView(
+            lanSharingRegenerateButton,
+            LinearLayout.LayoutParams(-1, dp(44)).apply {
+                marginStart = dp(16)
+                marginEnd = dp(16)
+                topMargin = dp(12)
+                bottomMargin = dp(16)
+            },
+        )
+        advancedBody.addView(
+            lanSharingPanel,
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
         advancedBody.addView(
             advancedSectionLabel(getString(R.string.always_on_section)),
@@ -2252,6 +2454,12 @@ class MainActivity : Activity() {
                     .ifEmpty { availableTypes.toSet() }
             }
             .toMutableSet()
+        val testingFingerprints = if (restoredSession?.isRunning == true) {
+            (restoredSession.targetFingerprints - restoredSession.finishedFingerprints).toMutableSet()
+        } else {
+            mutableSetOf<String>()
+        }
+        var speedTestEnabled = restoredSession?.speedTestEnabled == true
         var sortByDelay = connectionSelectionPreferenceStore.readDelaySortEnabled(selectedSubscriptionId)
         if (
             restoredSession?.status == Actions.DELAY_TEST_COMPLETED &&
@@ -2264,9 +2472,6 @@ class MainActivity : Activity() {
                 restoredSession.testId,
             )
         }
-        val subscriptionOrder = connectionProfiles
-            .mapIndexed { index, profile -> profile.fingerprint to index }
-            .toMap()
         fun selectedTypesLabel(): String = when {
             selectedTypes.size == availableTypes.size -> getString(R.string.connection_filter_all_types)
             selectedTypes.size == 1 -> selectedTypes.first().uppercase(Locale.US)
@@ -2278,23 +2483,17 @@ class MainActivity : Activity() {
                 selectedTypes,
             )
             return if (sortByDelay) {
-                matchingType.sortedWith(
-                    compareBy<ConnectionProfile> { profile ->
-                        val record = connectionDelayRecords[profile.fingerprint]
-                        record?.status != ConnectionDelayStatus.Success || record.delayMs == null
-                    }.thenBy { connectionDelayRecords[it.fingerprint]?.delayMs ?: Int.MAX_VALUE }
-                        .thenBy { subscriptionOrder[it.fingerprint] ?: Int.MAX_VALUE },
+                ConnectionTestResultOrder.order(
+                    profiles = matchingType,
+                    records = connectionDelayRecords,
+                    speedTestEnabled = speedTestEnabled,
+                    pendingFingerprints = testingFingerprints,
                 )
             } else {
                 matchingType
             }
         }
         var filteredProfiles = visibleProfiles()
-        val testingFingerprints = if (restoredSession?.isRunning == true) {
-            (restoredSession.targetFingerprints - restoredSession.finishedFingerprints).toMutableSet()
-        } else {
-            mutableSetOf<String>()
-        }
         var testRunning = restoredSession?.isRunning == true
         var testPaused = restoredSession?.paused == true
         var lastTestCompleted = restoredSession?.completed ?: 0
@@ -2360,6 +2559,15 @@ class MainActivity : Activity() {
             R.string.connection_test_visible,
             R.drawable.ic_connection_test,
         )
+        val speedTestToggle = MaterialSwitch(this).apply {
+            setText(R.string.connection_speed_test_toggle)
+            textSize = 13f
+            typeface = WhiteDnsBodyTypeface
+            setTextColor(TEXT_PRIMARY)
+            minHeight = dp(48)
+            gravity = Gravity.CENTER_VERTICAL
+            isChecked = speedTestEnabled
+        }
         val pauseButton = connectionActionButton(
             R.string.connection_test_pause,
             R.drawable.ic_pause,
@@ -2446,7 +2654,7 @@ class MainActivity : Activity() {
                             },
                             LinearLayout.LayoutParams(0, -2, 1f),
                         )
-                        addView(delay, LinearLayout.LayoutParams(dp(82), -2).apply { marginStart = dp(8) })
+                        addView(delay, LinearLayout.LayoutParams(dp(108), -2).apply { marginStart = dp(8) })
                     }
                     holder = ConnectionRowHolder(radio, title, detail, delay)
                     row.tag = holder
@@ -2490,8 +2698,14 @@ class MainActivity : Activity() {
                     } else {
                         null
                     }
+                    val speedKbps = delayRecord?.speedKbps
                     holder.delay.text = when {
                         profile.fingerprint in testingFingerprints -> getString(R.string.connection_delay_testing)
+                        speedTestEnabled && speedKbps != null && delayMs != null -> getString(
+                            R.string.connection_speed_delay_value,
+                            speedKbps / 1_000.0,
+                            delayMs,
+                        )
                         delayMs != null -> getString(R.string.connection_delay_value, delayMs)
                         delayRecord?.status == ConnectionDelayStatus.Failure ->
                             getString(R.string.connection_delay_unavailable)
@@ -2526,6 +2740,8 @@ class MainActivity : Activity() {
             pauseButton.setIconResource(
                 if (testPaused) R.drawable.ic_play else R.drawable.ic_pause,
             )
+            speedTestToggle.isEnabled = !testRunning
+            speedTestToggle.alpha = if (speedTestToggle.isEnabled) 1f else 0.55f
             sortButton.isEnabled = !testRunning && filteredProfiles.any {
                 connectionDelayRecords[it.fingerprint]?.status == ConnectionDelayStatus.Success
             }
@@ -2533,6 +2749,8 @@ class MainActivity : Activity() {
             sortButton.setText(
                 if (sortByDelay) {
                     R.string.connection_sort_subscription
+                } else if (speedTestEnabled) {
+                    R.string.connection_sort_fastest
                 } else {
                     R.string.connection_sort_lowest
                 },
@@ -2613,6 +2831,13 @@ class MainActivity : Activity() {
                 .showWhiteDnsDialog()
         }
 
+        speedTestToggle.setOnCheckedChangeListener { _, isChecked ->
+            speedTestEnabled = isChecked
+            filteredProfiles = visibleProfiles()
+            adapter.notifyDataSetChanged()
+            updateTestControls()
+        }
+
         testButton.setOnClickListener {
             if (testRunning) return@setOnClickListener
             val targets = filteredProfiles.toList()
@@ -2624,6 +2849,8 @@ class MainActivity : Activity() {
             lastTestAvailable = 0
             lastTestStatus = Actions.DELAY_TEST_PREPARING
             lastTestError = ""
+            sortByDelay = true
+            connectionSelectionPreferenceStore.saveDelaySortEnabled(selectedSubscriptionId, true)
             delayTestId = SystemClock.elapsedRealtimeNanos().toString()
             val targetFingerprints = targets.map { it.fingerprint }.toSet()
             testingFingerprints.clear()
@@ -2636,8 +2863,10 @@ class MainActivity : Activity() {
                     targetFingerprints = targets.map(ConnectionProfile::fingerprint),
                     status = Actions.DELAY_TEST_PREPARING,
                     total = targets.size,
+                    speedTestEnabled = speedTestEnabled,
                 ),
             )
+            filteredProfiles = visibleProfiles()
             adapter.notifyDataSetChanged()
             updateTestControls()
             startService(
@@ -2645,6 +2874,7 @@ class MainActivity : Activity() {
                     .setAction(Actions.TEST_CONNECTION_DELAYS)
                     .putExtra(Actions.EXTRA_APP_INITIATED, true)
                     .putExtra(Actions.EXTRA_DELAY_TEST_ID, delayTestId)
+                    .putExtra(Actions.EXTRA_SPEED_TEST_ENABLED, speedTestEnabled)
                     .putStringArrayListExtra(
                         Actions.EXTRA_CONNECTION_TYPES,
                         ArrayList(selectedTypes.sorted()),
@@ -2695,6 +2925,8 @@ class MainActivity : Activity() {
             lastTestStatus = status
             lastTestError = session.error
             testPaused = session.paused
+            speedTestEnabled = session.speedTestEnabled
+            speedTestToggle.isChecked = speedTestEnabled
             testingFingerprints.clear()
             if (session.isRunning) {
                 testingFingerprints += session.targetFingerprints - session.finishedFingerprints
@@ -2759,6 +2991,7 @@ class MainActivity : Activity() {
             testStatus,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
         )
+        content.addView(speedTestToggle, LinearLayout.LayoutParams(-1, dp(48)))
         content.addView(
             testButton,
             LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(10) },
@@ -3024,6 +3257,37 @@ class MainActivity : Activity() {
             }
             .create()
         dialog.showWhiteDnsDialog()
+    }
+
+    private fun showRoutingModeSelector() {
+        if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
+        val modes = RoutingMode.values()
+        val selectedMode = routingModePreferenceStore.read()
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.routing_rules_title)
+            .setSingleChoiceItems(
+                modes.map { getString(it.labelRes) }.toTypedArray(),
+                modes.indexOf(selectedMode),
+            ) { dialog, which ->
+                val mode = modes[which]
+                dialog.dismiss()
+                if (mode == selectedMode) return@setSingleChoiceItems
+                routingModePreferenceStore.save(mode)
+                DiagnosticLogger.info(this, "activity.routing.saved", "mode=${mode.wireName}")
+                renderRoutingModeSelection()
+                reconnectForConnectionOptionChange()
+            }
+            .create()
+        dialog.showWhiteDnsDialog()
+    }
+
+    private fun renderRoutingModeSelection() {
+        if (!::routingModeRow.isInitialized) return
+        val mode = routingModePreferenceStore.read()
+        val modeLabel = getString(mode.labelRes)
+        routingModeValueText.text = modeLabel
+        routingModeDetailText.setText(mode.detailRes)
+        routingModeRow.contentDescription = getString(R.string.routing_content_description, modeLabel)
     }
 
     private fun handleDnsPrivacySelected(mode: DnsPrivacyMode) {
@@ -3637,6 +3901,80 @@ class MainActivity : Activity() {
         reconnectForConnectionOptionChange()
     }
 
+    private fun saveLanSharingEnabled(enabled: Boolean) {
+        if (lanSharingPreferenceStore.read().enabled == enabled) return
+        lanSharingPreferenceStore.saveEnabled(enabled)
+        DiagnosticLogger.info(this, "activity.lanSharing.saved", "enabled=$enabled")
+        renderLanSharingControls(settingsEnabled = true)
+        reconnectForConnectionOptionChange()
+    }
+
+    private fun saveLanSharingPasswordRequired(required: Boolean) {
+        val settings = lanSharingPreferenceStore.read()
+        if (settings.passwordRequired == required) return
+        lanSharingPreferenceStore.savePasswordRequired(required)
+        DiagnosticLogger.info(this, "activity.lanSharing.passwordRequired.saved", "required=$required")
+        renderLanSharingControls(settingsEnabled = true)
+        if (settings.enabled) reconnectForConnectionOptionChange()
+    }
+
+    private fun regenerateLanSharingPassword() {
+        val settings = lanSharingPreferenceStore.read()
+        lanSharingPreferenceStore.regeneratePassword()
+        DiagnosticLogger.info(this, "activity.lanSharing.password.regenerated", "enabled=${settings.enabled}")
+        renderLanSharingControls(settingsEnabled = true)
+        if (settings.enabled && settings.passwordRequired) reconnectForConnectionOptionChange()
+    }
+
+    private fun copyLanSharingSettings() {
+        val settings = lanSharingPreferenceStore.read()
+        val value = lanSharingDetails(settings)
+        getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText("WhiteVPN LAN proxy", value))
+        Toast.makeText(this, R.string.lan_sharing_copied, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun renderLanSharingControls(settingsEnabled: Boolean) {
+        if (!::lanSharingCheckbox.isInitialized) return
+        val settings = lanSharingPreferenceStore.read()
+        lanSharingCheckbox.isChecked = settings.enabled
+        lanSharingCheckbox.isEnabled = settingsEnabled
+        lanSharingPasswordCheckbox.isChecked = settings.passwordRequired
+        lanSharingPasswordCheckbox.isEnabled = settingsEnabled
+        val details = lanSharingDetails(settings)
+        lanSharingDetailsText.text = details
+        lanSharingDetailsText.contentDescription = getString(R.string.lan_sharing_details_accessibility, details)
+        lanSharingDetailsText.isEnabled = settingsEnabled
+        lanSharingDetailsText.alpha = when {
+            !settingsEnabled -> 0.45f
+            settings.enabled -> 1f
+            else -> 0.7f
+        }
+        lanSharingRegenerateButton.visibility = if (settings.passwordRequired) View.VISIBLE else View.GONE
+        lanSharingRegenerateButton.isEnabled = settingsEnabled
+    }
+
+    private fun lanSharingDetails(settings: LanSharingSettings): String {
+        val localEndpoint = getString(
+            R.string.lan_sharing_local_endpoint,
+            MihomoRuntimeDefaults.MIXED_PORT,
+        )
+        val addresses = LanSharingAddresses.reachablePrivateIpv4Addresses()
+        val endpoints = if (addresses.isEmpty()) {
+            getString(R.string.lan_sharing_no_address)
+        } else {
+            addresses.joinToString("\n") { address ->
+                getString(R.string.lan_sharing_endpoint, address, MihomoRuntimeDefaults.MIXED_PORT)
+            }
+        }
+        val lanEndpoints = if (settings.passwordRequired) {
+            getString(R.string.lan_sharing_credentials, endpoints, settings.username, settings.password)
+        } else {
+            getString(R.string.lan_sharing_no_credentials, endpoints)
+        }
+        return getString(R.string.lan_sharing_details, localEndpoint, lanEndpoints)
+    }
+
     private fun saveAmneziaNoiseEnabled(enabled: Boolean) {
         val previous = connectionOptionsPreferenceStore.read()
         val settings = if (enabled) {
@@ -3814,14 +4152,18 @@ class MainActivity : Activity() {
     }
 
     private fun renderAdvancedControls() {
+        val settingsEnabled = buttonModel.state != VpnState.Starting && buttonModel.state != VpnState.Stopping
         if (::tlsIntegrityCheckbox.isInitialized) {
             tlsIntegrityCheckbox.isChecked = tlsIntegrityPreferenceStore.isEnabled()
-            tlsIntegrityCheckbox.isEnabled =
-                buttonModel.state != VpnState.Starting && buttonModel.state != VpnState.Stopping
+            tlsIntegrityCheckbox.isEnabled = settingsEnabled
         }
-        renderConnectionOptionsControls(
-            settingsEnabled = buttonModel.state != VpnState.Starting && buttonModel.state != VpnState.Stopping,
-        )
+        renderConnectionOptionsControls(settingsEnabled)
+        renderLanSharingControls(settingsEnabled)
+        renderRoutingModeSelection()
+        if (::routingModeRow.isInitialized) {
+            routingModeRow.isEnabled = settingsEnabled
+            routingModeRow.alpha = if (settingsEnabled) 1f else 0.45f
+        }
         renderDnsPrivacySelection()
     }
 
@@ -3929,6 +4271,11 @@ class MainActivity : Activity() {
         splitTunnelRow.isEnabled = settingsEnabled
         if (::tlsIntegrityCheckbox.isInitialized) tlsIntegrityCheckbox.isEnabled = settingsEnabled
         renderConnectionOptionsControls(settingsEnabled)
+        renderLanSharingControls(settingsEnabled)
+        if (::routingModeRow.isInitialized) {
+            routingModeRow.isEnabled = settingsEnabled
+            routingModeRow.alpha = if (settingsEnabled) 1f else 0.45f
+        }
         if (::dnsPrivacyRow.isInitialized) {
             dnsPrivacyRow.isEnabled = settingsEnabled
             dnsPrivacyRow.alpha = if (settingsEnabled) 1f else 0.45f
@@ -4100,6 +4447,18 @@ class MainActivity : Activity() {
     private fun AlertDialog.styleWhiteDnsDialog(positiveColor: Int) {
         window?.setBackgroundDrawable(glassSurfaceDrawable(radiusDp = 24))
         findViewById<TextView>(androidx.appcompat.R.id.alertTitle)?.setTextColor(TEXT_PRIMARY)
+        val optionColors = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(TEAL, TEXT_PRIMARY),
+        )
+        listView?.let { options ->
+            repeat(options.childCount) { index ->
+                (options.getChildAt(index) as? TextView)?.apply {
+                    setTextColor(optionColors)
+                    typeface = WhiteDnsBodyTypeface
+                }
+            }
+        }
         getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
             isAllCaps = false
             typeface = WhiteDnsBodyBoldTypeface

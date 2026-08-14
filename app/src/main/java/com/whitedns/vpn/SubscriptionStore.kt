@@ -21,6 +21,7 @@ data class ConnectionDelayRecord(
     val delayMs: Int?,
     val status: ConnectionDelayStatus,
     val testedAt: Long,
+    val speedKbps: Int? = null,
 )
 
 object ConnectionDelayRecordPolicy {
@@ -216,6 +217,7 @@ class SubscriptionStore(private val context: Context) {
             }
             val normalized = record.copy(
                 delayMs = validDelayMs,
+                speedKbps = record.speedKbps?.takeIf { validDelayMs != null && it > 0 },
                 status = if (validDelayMs != null) {
                     ConnectionDelayStatus.Success
                 } else {
@@ -303,6 +305,7 @@ class SubscriptionStore(private val context: Context) {
                             delayMs = delayMs,
                             status = status,
                             testedAt = testedAt,
+                            speedKbps = item.optInt("speedKbps", -1).takeIf { it > 0 },
                         ),
                     )
                 }
@@ -318,6 +321,7 @@ class SubscriptionStore(private val context: Context) {
                     .put("subscriptionId", record.subscriptionId)
                     .put("fingerprint", record.fingerprint)
                     .put("delayMs", record.delayMs ?: JSONObject.NULL)
+                    .put("speedKbps", record.speedKbps ?: JSONObject.NULL)
                     .put("status", record.status.wireName)
                     .put("testedAt", record.testedAt),
             )
