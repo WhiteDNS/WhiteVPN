@@ -10,8 +10,8 @@ class WhiteDnsConfigTest {
     }
 
     @Test
-    fun subscriptionRefreshIntervalIsThreeHours() {
-        assertEquals(3 * 60 * 60 * 1_000L, WhiteDnsConfig.SUBSCRIPTION_REFRESH_INTERVAL_MS)
+    fun subscriptionRefreshIntervalIsThirtyMinutes() {
+        assertEquals(30 * 60 * 1_000L, WhiteDnsConfig.SUBSCRIPTION_REFRESH_INTERVAL_MS)
     }
 
     @Test

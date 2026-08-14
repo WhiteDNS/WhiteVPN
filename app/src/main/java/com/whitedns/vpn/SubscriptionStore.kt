@@ -268,6 +268,17 @@ class SubscriptionStore(private val context: Context) {
         removed
     }
 
+    fun deleteConnectionDelayRecords(subscriptionId: String, fingerprints: Set<String>) {
+        if (fingerprints.isEmpty()) return
+        synchronized(DELAY_RECORDS_LOCK) {
+            val existing = readDelayRecords()
+            val kept = existing.filterNot {
+                it.subscriptionId == subscriptionId && it.fingerprint in fingerprints
+            }
+            if (kept.size != existing.size) writeDelayRecords(kept)
+        }
+    }
+
     private fun deleteConnectionDelayRecords(subscriptionId: String) {
         synchronized(DELAY_RECORDS_LOCK) {
             val existing = readDelayRecords()

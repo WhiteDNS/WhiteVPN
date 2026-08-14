@@ -70,6 +70,17 @@ class ConnectionDelayFeaturePolicyTest {
         assertFalse(completed?.isRunning == true)
         assertEquals(2, completed?.completed)
         assertEquals(1, completed?.available)
+
+        ConnectionDelayTestState.replace(
+            ConnectionDelayTestSession(
+                testId = "other-test",
+                subscriptionId = "other",
+                connectionTypes = setOf("wireguard"),
+            ),
+        )
+
+        assertEquals("test", ConnectionDelayTestState.snapshot("sub")?.testId)
+        assertEquals("other-test", ConnectionDelayTestState.snapshot("other")?.testId)
     }
 
     @Test

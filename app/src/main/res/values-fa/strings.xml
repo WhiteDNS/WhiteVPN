@@ -89,6 +89,10 @@
     </plurals>
 
     <string name="version_label">نسخه %1$s</string>
+    <string name="update_available_title">نسخه جدید آماده است</string>
+    <string name="update_available_message">نسخه %1$s وایت‌وی‌پی‌ان در گیت‌هاب منتشر شده است.</string>
+    <string name="update_view_release">دریافت نسخه</string>
+    <string name="update_later">بعداً</string>
     <string name="output_automatic">🌐  خروجی خودکار</string>
     <string name="metric_connection_time">زمان اتصال</string>
     <string name="metric_download">دریافت</string>
@@ -105,6 +109,7 @@
     <string name="connection_automatic_types_value">خودکار · %1$s</string>
     <string name="connection_detail">%1$s · %2$s:%3$d</string>
     <string name="connection_test_visible">تست اتصال‌های نمایش‌داده‌شده</string>
+    <string name="connection_test_again">تست دوباره</string>
     <string name="connection_test_explanation">برای هر اتصال یک درخواست واقعی HTTPS می‌فرستد؛ تونل وی‌پی‌ان می‌تواند خاموش بماند.</string>
     <string name="connection_test_busy">صبر کنید عملیات فعلی وی‌پی‌ان تمام شود.</string>
     <string name="connection_test_reconnect_required">پیش از تست این سابسکریپشن، وی‌پی‌ان را دوباره متصل کنید.</string>
@@ -116,6 +121,7 @@
     <string name="connection_test_canceled">تست اتصال متوقف شد.</string>
     <string name="connection_test_pause">توقف موقت</string>
     <string name="connection_test_resume">ادامه</string>
+    <string name="connection_test_stop">توقف تست</string>
     <string name="connection_speed_test_toggle">تست سرعت · مصرف ۱ مگابایت برای هر اتصال</string>
     <string name="connection_sort_lowest">کمترین تأخیر</string>
     <string name="connection_sort_fastest">بیشترین سرعت</string>
