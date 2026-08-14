@@ -2,9 +2,11 @@ package com.whitedns.vpn
 
 import android.content.Context
 import com.follow.clash.core.Core
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -29,6 +31,8 @@ object MihomoRuntimeDefaults {
     )
     val HEALTH_URL = HEALTH_URLS.first()
     const val EGRESS_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+    const val SPEED_TEST_BYTES = 1_000_000
+    const val SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=1000000"
 }
 
 object TlsIntegrityPolicy {
@@ -66,12 +70,122 @@ class TlsIntegrityPreferenceStore(context: Context) {
     }
 }
 
+data class MihomoConnectionOptions(
+    val amneziaNoiseEnabled: Boolean = false,
+    val amneziaNoise: AmneziaNoiseSettings = MihomoConnectionOptionsPolicy.DEFAULT_NOISE,
+)
+
+object MihomoConnectionOptionsPolicy {
+    const val MIN_NOISE_COUNT = 1
+    const val MAX_NOISE_COUNT = 20
+    const val MIN_NOISE_SIZE = 1
+    const val MAX_NOISE_SIZE = 1280
+    val DEFAULT_NOISE = AmneziaNoiseSettings(count = 5, minSize = 50, maxSize = 100)
+
+    fun validateNoise(settings: AmneziaNoiseSettings): AmneziaNoiseSettings {
+        require(settings.count in MIN_NOISE_COUNT..MAX_NOISE_COUNT) {
+            "Count must be between $MIN_NOISE_COUNT and $MAX_NOISE_COUNT"
+        }
+        require(settings.minSize in MIN_NOISE_SIZE..MAX_NOISE_SIZE) {
+            "Minimum size must be between $MIN_NOISE_SIZE and $MAX_NOISE_SIZE"
+        }
+        require(settings.maxSize in MIN_NOISE_SIZE..MAX_NOISE_SIZE) {
+            "Maximum size must be between $MIN_NOISE_SIZE and $MAX_NOISE_SIZE"
+        }
+        require(settings.minSize <= settings.maxSize) { "Minimum size cannot exceed maximum size" }
+        return settings
+    }
+
+    fun isValidNoise(settings: AmneziaNoiseSettings): Boolean =
+        runCatching { validateNoise(settings) }.isSuccess
+
+    fun echCapable(type: String, tlsEnabled: Boolean, realityEnabled: Boolean): Boolean {
+        if (realityEnabled) return false
+        return when (type.lowercase()) {
+            "trojan", "anytls", "trusttunnel", "tuic", "hysteria", "hysteria2" -> true
+            "vless", "vmess" -> tlsEnabled
+            else -> false
+        }
+    }
+
+    fun applyTo(profile: ConnectionProfile, options: MihomoConnectionOptions): ConnectionProfile {
+        return profile.copy(
+            amneziaNoise = if (options.amneziaNoiseEnabled && profile.type.equals("wireguard", true)) {
+                options.amneziaNoise
+            } else {
+                profile.amneziaNoise
+            },
+        )
+    }
+}
+
+class MihomoConnectionOptionsPreferenceStore(context: Context) {
+    private val prefs = context.getSharedPreferences("white_dns_connection_options", Context.MODE_PRIVATE)
+
+    fun read(): MihomoConnectionOptions {
+        val noise = AmneziaNoiseSettings(
+            count = prefs.getInt(KEY_NOISE_COUNT, MihomoConnectionOptionsPolicy.DEFAULT_NOISE.count),
+            minSize = prefs.getInt(KEY_NOISE_MIN_SIZE, MihomoConnectionOptionsPolicy.DEFAULT_NOISE.minSize),
+            maxSize = prefs.getInt(KEY_NOISE_MAX_SIZE, MihomoConnectionOptionsPolicy.DEFAULT_NOISE.maxSize),
+        ).takeIf(MihomoConnectionOptionsPolicy::isValidNoise) ?: MihomoConnectionOptionsPolicy.DEFAULT_NOISE
+        return MihomoConnectionOptions(
+            amneziaNoiseEnabled = prefs.getBoolean(KEY_AMNEZIA_NOISE_ENABLED, false),
+            amneziaNoise = noise,
+        )
+    }
+
+    fun saveAmneziaNoise(enabled: Boolean, settings: AmneziaNoiseSettings) {
+        val valid = MihomoConnectionOptionsPolicy.validateNoise(settings)
+        prefs.edit()
+            .putBoolean(KEY_AMNEZIA_NOISE_ENABLED, enabled)
+            .putInt(KEY_NOISE_COUNT, valid.count)
+            .putInt(KEY_NOISE_MIN_SIZE, valid.minSize)
+            .putInt(KEY_NOISE_MAX_SIZE, valid.maxSize)
+            .apply()
+    }
+
+    private companion object {
+        const val KEY_AMNEZIA_NOISE_ENABLED = "amnezia_noise_enabled"
+        const val KEY_NOISE_COUNT = "noise_count"
+        const val KEY_NOISE_MIN_SIZE = "noise_min_size"
+        const val KEY_NOISE_MAX_SIZE = "noise_max_size"
+    }
+}
+
 class TlsIntegrityException(cause: Throwable) : IOException("TLS certificate validation failed", cause)
 
-enum class DnsPrivacyMode(val wireName: String, val label: String) {
-    Automatic("automatic", "خودکار"),
-    DoH("doh", "DoH"),
-    DoT("dot", "DoT");
+enum class RoutingMode(val wireName: String, val labelRes: Int, val detailRes: Int) {
+    Subscription("subscription", R.string.routing_mode_subscription, R.string.routing_mode_subscription_detail),
+    IranBypass("iran", R.string.routing_mode_iran, R.string.routing_mode_iran_detail),
+    GlobalProxy("global", R.string.routing_mode_global, R.string.routing_mode_global_detail),
+    ;
+
+    companion object {
+        fun fromWireName(value: String?): RoutingMode {
+            return values().firstOrNull { it.wireName == value } ?: Subscription
+        }
+    }
+}
+
+class RoutingModePreferenceStore(context: Context) {
+    private val prefs = context.getSharedPreferences("white_dns_routing", Context.MODE_PRIVATE)
+
+    fun read(): RoutingMode = RoutingMode.fromWireName(prefs.getString(KEY_MODE, null))
+
+    fun save(mode: RoutingMode) {
+        prefs.edit().putString(KEY_MODE, mode.wireName).apply()
+    }
+
+    private companion object {
+        const val KEY_MODE = "mode"
+    }
+}
+
+enum class DnsPrivacyMode(val wireName: String, val labelRes: Int) {
+    Automatic("automatic", R.string.dns_mode_automatic),
+    DoH("doh", R.string.dns_mode_doh),
+    DoT("dot", R.string.dns_mode_dot),
+    ;
 
     companion object {
         fun fromWireName(value: String?): DnsPrivacyMode {
@@ -225,14 +339,51 @@ data class MihomoRuntimePaths(
     val controlPort: Int,
 )
 
+internal object MihomoGeoDataInstaller {
+    val fileNames = listOf("GEOIP.metadb", "GEOIP.dat", "GEOSITE.dat", "ASN.mmdb")
+
+    @Synchronized
+    fun install(baseDir: File, openAsset: (String) -> InputStream): List<String> {
+        baseDir.mkdirs()
+        return fileNames.mapNotNull { fileName ->
+            val target = File(baseDir, fileName)
+            val existing = baseDir.listFiles()?.firstOrNull { candidate ->
+                candidate.name.equals(fileName, ignoreCase = true)
+            }
+            if (existing?.isFile == true && existing.length() > 0L) return@mapNotNull null
+
+            val temporary = File(baseDir, ".$fileName.tmp")
+            try {
+                openAsset("data/$fileName").use { input ->
+                    temporary.outputStream().buffered().use { output -> input.copyTo(output) }
+                }
+                listOfNotNull(existing, target.takeIf { it != existing && it.exists() }).forEach { stale ->
+                    if (!stale.delete()) {
+                        throw IOException("Unable to replace Mihomo geodata file ${stale.name}")
+                    }
+                }
+                if (!temporary.renameTo(target)) {
+                    throw IOException("Unable to install Mihomo geodata file $fileName")
+                }
+                fileName
+            } finally {
+                temporary.delete()
+            }
+        }
+    }
+}
+
 class MihomoRuntimeConfigBuilder(private val context: Context) {
     fun write(
         rawYaml: String,
         splitTunnelPlan: SplitTunnelRuntimePlan,
+        lanSharing: LanSharingSettings = LanSharingSettings(),
+        routingMode: RoutingMode = RoutingMode.Subscription,
         dnsPrivacyMode: DnsPrivacyMode = DnsPrivacyMode.Automatic,
         dohUrl: String = DnsPrivacyPolicy.DEFAULT_DOH_URL,
         dotEndpoint: String = DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
         secret: String = MihomoControllerSecret.generate(),
+        selectedMap: Map<String, String> = emptyMap(),
     ): MihomoRuntimePaths {
         val baseDir = File(context.filesDir, "mihomo").apply { mkdirs() }
         val cacheDir = File(context.cacheDir, "mihomo").apply { mkdirs() }
@@ -256,13 +407,15 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                 rawYaml = rawYaml,
                 secret = secret,
                 controlPort = controlPort,
+                lanSharing = lanSharing,
+                routingMode = routingMode,
                 dnsPrivacyMode = dnsPrivacyMode,
                 dohUrl = dohUrl,
                 dotEndpoint = dotEndpoint,
             ),
         )
-        patchFinal.writeText(corePatchJson(splitTunnelPlan, secret, controlPort).toString(2))
-        setupParams.writeText(setupParamsJson().toString(2))
+        patchFinal.writeText(corePatchJson(splitTunnelPlan, secret, controlPort, lanSharing).toString(2))
+        setupParams.writeText(setupParamsJson(selectedMap).toString(2))
         serviceJson.writeText(
             serviceJson(
                 appName = context.getString(R.string.app_name),
@@ -300,8 +453,9 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
         splitTunnelPlan: SplitTunnelRuntimePlan,
         secret: String,
         controlPort: Int = MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT,
+        lanSharing: LanSharingSettings = LanSharingSettings(),
     ): JSONObject {
-        return corePatchJson(context.getString(R.string.app_name), splitTunnelPlan, secret, controlPort)
+        return corePatchJson(context.getString(R.string.app_name), splitTunnelPlan, secret, controlPort, lanSharing)
     }
 
     companion object {
@@ -310,6 +464,7 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             splitTunnelPlan: SplitTunnelRuntimePlan,
             secret: String,
             controlPort: Int = MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT,
+            lanSharing: LanSharingSettings = LanSharingSettings(),
         ): JSONObject {
             val tun = JSONObject()
                 .put("enable", false)
@@ -321,7 +476,17 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                     "${MihomoRuntimeDefaults.CONTROLLER_HOST}:$controlPort",
                 )
                 .put("secret", secret)
-                .put("allow-lan", false)
+                .put("allow-lan", lanSharing.enabled)
+                .apply {
+                    if (lanSharing.enabled) {
+                        put("bind-address", "0.0.0.0")
+                        if (lanSharing.passwordRequired) {
+                            put("authentication", JSONArray(listOf("${lanSharing.username}:${lanSharing.password}")))
+                            put("skip-auth-prefixes", JSONArray(listOf("127.0.0.0/8")))
+                        }
+                        put("lan-allowed-ips", JSONArray(LAN_ALLOWED_IPS))
+                    }
+                }
                 .put("mode", "rule")
                 .put("log-level", "warning")
                 .put("ipv6", false)
@@ -388,12 +553,31 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             rawYaml: String,
             secret: String,
             controlPort: Int = MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT,
+            lanSharing: LanSharingSettings = LanSharingSettings(),
+            routingMode: RoutingMode = RoutingMode.Subscription,
             dnsPrivacyMode: DnsPrivacyMode = DnsPrivacyMode.Automatic,
             dohUrl: String = DnsPrivacyPolicy.DEFAULT_DOH_URL,
             dotEndpoint: String = DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
         ): String {
-            val subscriptionYaml = stripTopLevelKeys(rawYaml, FLCLASH_OVERRIDE_KEYS)
-            val dnsProxyGroup = dnsProxyGroup(rawYaml)
+            val routingTarget = routingTarget(rawYaml)
+            val requiredRoutingTarget = if (routingMode == RoutingMode.Subscription) {
+                null
+            } else {
+                requireNotNull(routingTarget) {
+                    "Routing mode '${routingMode.wireName}' requires a usable proxy or proxy group"
+                }
+            }
+            val keysToReplace = if (routingMode == RoutingMode.Subscription) {
+                FLCLASH_OVERRIDE_KEYS
+            } else {
+                FLCLASH_OVERRIDE_KEYS + ROUTING_OVERRIDE_KEYS
+            }
+            val subscriptionYaml = stripTopLevelKeys(rawYaml, keysToReplace)
+            val dnsProxyGroup = if (routingMode == RoutingMode.Subscription) {
+                dnsProxyGroup(rawYaml)
+            } else {
+                requiredRoutingTarget
+            }
             val proxySuffix = dnsProxyGroup?.let { "#$it" }.orEmpty()
             val dnsServers = when (dnsPrivacyMode) {
                 DnsPrivacyMode.Automatic -> DOH_SERVERS + DOT_SERVERS
@@ -407,11 +591,44 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                     append(subscriptionYaml.trimEnd())
                     append("\n\n")
                 }
+                when (routingMode) {
+                    RoutingMode.Subscription -> Unit
+                    RoutingMode.IranBypass -> {
+                        append("rule-providers:\n")
+                        append("  whitedns-iran:\n")
+                        append("    type: http\n")
+                        append("    behavior: classical\n")
+                        append("    format: text\n")
+                        append("    url: $IRAN_RULESET_URL\n")
+                        append("    path: ./ruleset/whitedns-iran.txt\n")
+                        append("    interval: 86400\n")
+                        append("    proxy: ${yamlSingleQuoted(requiredRoutingTarget!!)}\n")
+                        append("    size-limit: 10485760\n")
+                        append("rules:\n")
+                        append("  - 'RULE-SET,whitedns-iran,DIRECT'\n")
+                        append("  - ${yamlSingleQuoted("MATCH,$requiredRoutingTarget")}\n\n")
+                    }
+                    RoutingMode.GlobalProxy -> {
+                        append("rules:\n")
+                        append("  - ${yamlSingleQuoted("MATCH,$requiredRoutingTarget")}\n\n")
+                    }
+                }
                 append("# WhiteDNS Android runtime overrides\n")
                 append("mixed-port: ${MihomoRuntimeDefaults.MIXED_PORT}\n")
                 append("external-controller: ${MihomoRuntimeDefaults.CONTROLLER_HOST}:$controlPort\n")
                 append("secret: \"${secret}\"\n")
-                append("allow-lan: false\n")
+                append("allow-lan: ${lanSharing.enabled}\n")
+                if (lanSharing.enabled) {
+                    append("bind-address: 0.0.0.0\n")
+                    if (lanSharing.passwordRequired) {
+                        append("authentication:\n")
+                        append("  - ${yamlSingleQuoted("${lanSharing.username}:${lanSharing.password}")}\n")
+                        append("skip-auth-prefixes:\n")
+                        append("  - 127.0.0.0/8\n")
+                    }
+                    append("lan-allowed-ips:\n")
+                    LAN_ALLOWED_IPS.forEach { append("  - $it\n") }
+                }
                 append("mode: rule\n")
                 append("log-level: warning\n")
                 append("ipv6: false\n")
@@ -439,6 +656,15 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
                 append("tun:\n")
                 append("  enable: false\n")
             }
+        }
+
+        private fun routingTarget(rawYaml: String): String? {
+            return runCatching {
+                val summary = MihomoConfigParser.parseSummary(rawYaml)
+                MihomoSelectionPolicy.trafficProbeGroup(summary)?.name
+                    ?: MihomoSelectionPolicy.mainSelectorGroup(summary)?.name
+                    ?: summary.proxies.firstOrNull()?.name
+            }.getOrNull()
         }
 
         private fun dnsProxyGroup(rawYaml: String): String? {
@@ -485,6 +711,11 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             "external-controller",
             "secret",
             "allow-lan",
+            "bind-address",
+            "authentication",
+            "skip-auth-prefixes",
+            "lan-allowed-ips",
+            "lan-disallowed-ips",
             "mode",
             "log-level",
             "ipv6",
@@ -493,6 +724,9 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             "dns",
             "tun",
         )
+        private val ROUTING_OVERRIDE_KEYS = setOf("rules", "rule-providers", "sub-rules")
+        private const val IRAN_RULESET_URL =
+            "https://github.com/ygbkm/clash-rules-iran/releases/latest/download/rules.txt"
 
         private val DOH_SERVERS = listOf(
             "https://1.1.1.1/dns-query",
@@ -501,6 +735,13 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
         private val DOT_SERVERS = listOf(
             "tls://1.1.1.1:853",
             "tls://8.8.8.8:853",
+        )
+        private val LAN_ALLOWED_IPS = listOf(
+            "127.0.0.0/8",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
         )
     }
 }
@@ -608,6 +849,156 @@ object MihomoFrontingPatcher {
     private fun indentation(line: String): Int {
         return line.indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 } ?: line.length
     }
+}
+
+object MihomoConnectionOptionsPatcher {
+    fun patch(rawYaml: String, options: MihomoConnectionOptions): String {
+        if (!options.amneziaNoiseEnabled) return rawYaml
+        val output = mutableListOf<String>()
+        var inProxies = false
+        var currentProxy = mutableListOf<String>()
+
+        fun flushProxy() {
+            if (currentProxy.isEmpty()) return
+            output += patchProxyBlock(currentProxy, options)
+            currentProxy = mutableListOf()
+        }
+
+        rawYaml.replace("\r\n", "\n").replace('\r', '\n').split('\n').forEach { line ->
+            val topLevelKey = topLevelKey(line)
+            if (topLevelKey != null) {
+                if (inProxies) flushProxy()
+                inProxies = topLevelKey == "proxies"
+                output += line
+                return@forEach
+            }
+            if (!inProxies) {
+                output += line
+                return@forEach
+            }
+            if (indentation(line) == 2 && line.trimStart().startsWith("- ")) {
+                flushProxy()
+                currentProxy += line
+            } else if (currentProxy.isNotEmpty()) {
+                currentProxy += line
+            } else {
+                output += line
+            }
+        }
+        if (inProxies) flushProxy()
+        return output.joinToString("\n")
+    }
+
+    private fun patchProxyBlock(
+        lines: List<String>,
+        options: MihomoConnectionOptions,
+    ): List<String> {
+        val type = proxyFieldValue(lines, "type").orEmpty()
+        var patched = lines
+        if (options.amneziaNoiseEnabled && type.equals("wireguard", true)) {
+            val noise = options.amneziaNoise
+            patched = upsertNestedOptions(
+                patched,
+                "amnezia-wg-option",
+                linkedMapOf(
+                    "jc" to noise.count.toString(),
+                    "jmin" to noise.minSize.toString(),
+                    "jmax" to noise.maxSize.toString(),
+                ),
+            )
+        }
+        return patched
+    }
+
+    private fun upsertNestedOptions(
+        lines: List<String>,
+        key: String,
+        fields: Map<String, String>,
+    ): List<String> {
+        if (lines.size == 1 && lines.single().trimStart().startsWith("- {")) {
+            return listOf(upsertInlineMap(lines.single(), key, fields))
+        }
+        val start = lines.indexOfFirst { indentation(it) == 4 && fieldName(it) == key }
+        if (start < 0) {
+            return lines + "    $key:" + fields.map { (field, value) -> "      $field: $value" }
+        }
+        if (lines[start].substringAfter(':').trim().startsWith("{")) {
+            return lines.toMutableList().also { it[start] = upsertInlineMap(it[start], key, fields) }
+        }
+
+        val patched = lines.toMutableList()
+        var end = (start + 1 until patched.size)
+            .firstOrNull { indentation(patched[it]) <= 4 && patched[it].isNotBlank() }
+            ?: patched.size
+        fields.forEach { (field, value) ->
+            val index = (start + 1 until end).firstOrNull {
+                indentation(patched[it]) == 6 && fieldName(patched[it]) == field
+            }
+            if (index == null) {
+                patched.add(end, "      $field: $value")
+                end += 1
+            } else {
+                patched[index] = "      $field: $value"
+            }
+        }
+        return patched
+    }
+
+    private fun upsertInlineMap(line: String, key: String, fields: Map<String, String>): String {
+        val keyPattern = Regex.escape(key)
+        val nestedMap = Regex("""(['\"]?$keyPattern['\"]?\s*:\s*)\{([^}]*)}""")
+        val match = nestedMap.find(line)
+        if (match != null) {
+            val body = patchInlineFields(match.groupValues[2], fields)
+            return line.replaceRange(match.range, "${match.groupValues[1]}{$body}")
+        }
+        val close = line.lastIndexOf('}')
+        if (close < 0) return line
+        val separator = if (line.substring(0, close).trimEnd().endsWith('{')) "" else ", "
+        val body = fields.entries.joinToString(", ") { (field, value) -> "$field: $value" }
+        return line.substring(0, close) + "$separator$key: {$body}" + line.substring(close)
+    }
+
+    private fun patchInlineFields(body: String, fields: Map<String, String>): String {
+        var patched = body.trim()
+        fields.forEach { (field, value) ->
+            val fieldPattern = Regex("""((?:^|,\s*)['\"]?${Regex.escape(field)}['\"]?\s*:\s*)([^,}]+)""")
+            val match = fieldPattern.find(patched)
+            patched = if (match == null) {
+                patched + if (patched.isBlank()) "$field: $value" else ", $field: $value"
+            } else {
+                val valueRange = match.groups[2]?.range ?: return@forEach
+                patched.replaceRange(valueRange, value)
+            }
+        }
+        return patched
+    }
+
+    private fun proxyFieldValue(lines: List<String>, key: String): String? {
+        lines.firstOrNull { indentation(it) == 4 && fieldName(it) == key }?.let { line ->
+            return yamlScalar(line.substringAfter(':'))
+        }
+        val inline = lines.singleOrNull()?.trimStart()?.takeIf { it.startsWith("- {") } ?: return null
+        return Regex("""(?:^|[,{]\s*)['\"]?${Regex.escape(key)}['\"]?\s*:\s*([^,}]+)""")
+            .find(inline)
+            ?.groupValues
+            ?.get(1)
+            ?.let(::yamlScalar)
+    }
+
+    private fun fieldName(line: String): String =
+        line.trimStart().substringBefore(':').trim().removeSurrounding("\"").removeSurrounding("'")
+
+    private fun yamlScalar(value: String): String =
+        value.substringBefore(" #").trim().removeSurrounding("\"").removeSurrounding("'")
+
+    private fun topLevelKey(line: String): String? {
+        if (line.isBlank() || line.first().isWhitespace() || line.trimStart().startsWith("#")) return null
+        return line.substringBefore(':').trim().takeIf { ':' in line && it.isNotBlank() }
+    }
+
+    private fun indentation(line: String): Int =
+        line.indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 } ?: line.length
 }
 
 object MihomoDpiBypassPatcher {
@@ -879,6 +1270,58 @@ object MihomoControllerProxies {
         return name
     }
 
+    fun selectorPath(
+        response: JSONObject,
+        targetName: String,
+        preferredRoots: List<String> = emptyList(),
+    ): List<MihomoGroupSelection> {
+        val proxies = response.optJSONObject("proxies") ?: return emptyList()
+        val selectorNames = proxies.keys().asSequence()
+            .filter { name ->
+                proxies.optJSONObject(name)
+                    ?.optString("type")
+                    .equals("Selector", ignoreCase = true)
+            }
+            .toList()
+        val roots = (preferredRoots + selectorNames).distinct()
+        roots.forEach { root ->
+            val path = selectorPathFrom(
+                proxies = proxies,
+                currentName = root,
+                targetName = targetName,
+                visited = emptySet(),
+            ) ?: return@forEach
+            return path.zipWithNext()
+                .map { (selector, selected) -> MihomoGroupSelection(selector, selected) }
+                .reversed()
+        }
+        return emptyList()
+    }
+
+    private fun selectorPathFrom(
+        proxies: JSONObject,
+        currentName: String,
+        targetName: String,
+        visited: Set<String>,
+    ): List<String>? {
+        if (currentName == targetName) return listOf(targetName)
+        if (currentName in visited || visited.size >= MAX_GROUP_DEPTH) return null
+        val item = proxies.optJSONObject(currentName) ?: return null
+        if (!item.optString("type").equals("Selector", ignoreCase = true)) return null
+        val members = item.optJSONArray("all") ?: return null
+        for (index in 0 until members.length()) {
+            val member = members.optString(index).takeIf(String::isNotBlank) ?: continue
+            val childPath = selectorPathFrom(
+                proxies = proxies,
+                currentName = member,
+                targetName = targetName,
+                visited = visited + currentName,
+            ) ?: continue
+            return listOf(currentName) + childPath
+        }
+        return null
+    }
+
     private const val MAX_GROUP_DEPTH = 8
 }
 
@@ -924,6 +1367,41 @@ object MihomoRuntimeHealth {
         }
     }
 
+    fun downloadSpeedKbpsThroughMixedProxy(
+        url: String = MihomoRuntimeDefaults.SPEED_TEST_URL,
+        timeoutMs: Int = 10_000,
+    ): Int? {
+        val proxy = Proxy(
+            Proxy.Type.HTTP,
+            InetSocketAddress(MihomoRuntimeDefaults.CONTROLLER_HOST, MihomoRuntimeDefaults.MIXED_PORT),
+        )
+        val connection = URL(url).openConnection(proxy) as HttpURLConnection
+        connection.connectTimeout = timeoutMs
+        connection.readTimeout = timeoutMs
+        connection.instanceFollowRedirects = false
+        connection.useCaches = false
+        connection.setRequestProperty("Accept-Encoding", "identity")
+        connection.setRequestProperty("Connection", "close")
+        return connection.use {
+            if (responseCode !in 200..299) return@use null
+            val startedAtNanos = System.nanoTime()
+            var bytesRead = 0L
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            inputStream.use { input ->
+                while (bytesRead < MihomoRuntimeDefaults.SPEED_TEST_BYTES) {
+                    val count = input.read(
+                        buffer,
+                        0,
+                        minOf(buffer.size.toLong(), MihomoRuntimeDefaults.SPEED_TEST_BYTES - bytesRead).toInt(),
+                    )
+                    if (count <= 0) break
+                    bytesRead += count
+                }
+            }
+            ConnectionSpeed.kbps(bytesRead, System.nanoTime() - startedAtNanos)
+        }
+    }
+
     fun countryCodeFromTrace(trace: String): String? {
         return trace.lineSequence()
             .firstOrNull { it.startsWith("loc=") }
@@ -947,5 +1425,15 @@ object MihomoRuntimeHealth {
         } finally {
             disconnect()
         }
+    }
+}
+
+object ConnectionSpeed {
+    fun kbps(bytes: Long, elapsedNanos: Long): Int? {
+        if (bytes <= 0L || elapsedNanos <= 0L) return null
+        return (bytes * 8_000_000L / elapsedNanos)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+            .takeIf { it > 0 }
     }
 }

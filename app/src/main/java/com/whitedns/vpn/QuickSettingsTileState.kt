@@ -1,5 +1,7 @@
 package com.whitedns.vpn
 
+import androidx.annotation.StringRes
+
 enum class QuickSettingsTileVisualState {
     Active,
     Inactive,
@@ -7,41 +9,41 @@ enum class QuickSettingsTileVisualState {
 }
 
 data class QuickSettingsTilePresentation(
-    val label: String,
-    val subtitle: String,
+    @param:StringRes val labelRes: Int,
+    @param:StringRes val subtitleRes: Int,
     val visualState: QuickSettingsTileVisualState,
 )
 
 object QuickSettingsTileStateMapper {
     fun presentationFor(state: VpnState): QuickSettingsTilePresentation = when (state) {
         VpnState.Started -> QuickSettingsTilePresentation(
-            label = "WhiteDNS",
-            subtitle = "متصل",
+            labelRes = R.string.app_name,
+            subtitleRes = R.string.tile_connected,
             visualState = QuickSettingsTileVisualState.Active,
         )
         VpnState.Starting -> QuickSettingsTilePresentation(
-            label = "WhiteDNS",
-            subtitle = "در حال اتصال",
+            labelRes = R.string.app_name,
+            subtitleRes = R.string.tile_connecting,
             visualState = QuickSettingsTileVisualState.Unavailable,
         )
         VpnState.Stopping -> QuickSettingsTilePresentation(
-            label = "WhiteDNS",
-            subtitle = "در حال قطع اتصال",
+            labelRes = R.string.app_name,
+            subtitleRes = R.string.tile_disconnecting,
             visualState = QuickSettingsTileVisualState.Unavailable,
         )
         is VpnState.Error -> QuickSettingsTilePresentation(
-            label = "WhiteDNS",
-            subtitle = "خطا",
+            labelRes = R.string.app_name,
+            subtitleRes = R.string.tile_error,
             visualState = QuickSettingsTileVisualState.Inactive,
         )
         VpnState.DailyLimitReached -> QuickSettingsTilePresentation(
-            label = "WhiteDNS",
-            subtitle = "قطع اتصال",
+            labelRes = R.string.app_name,
+            subtitleRes = R.string.tile_disconnected,
             visualState = QuickSettingsTileVisualState.Inactive,
         )
         VpnState.Stopped -> QuickSettingsTilePresentation(
-            label = "WhiteDNS",
-            subtitle = "قطع اتصال",
+            labelRes = R.string.app_name,
+            subtitleRes = R.string.tile_disconnected,
             visualState = QuickSettingsTileVisualState.Inactive,
         )
     }

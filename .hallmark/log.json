@@ -1,5 +1,29 @@
 [
   {
+    "date": "2026-07-27",
+    "macrostructure": "Workbench",
+    "theme": "custom",
+    "theme_axes": "light and dark / display-condensed-bold / chromatic-green ~165",
+    "vibe": "technical, clear, restrained",
+    "enrichment": "none",
+    "brief": "Clarify subscription selection and show the selected source on Home",
+    "scope": "subscriptions-home",
+    "nav": "N9 adapted three-destination bottom rail",
+    "footer": "none"
+  },
+  {
+    "date": "2026-07-22",
+    "macrostructure": "Workbench",
+    "theme": "custom",
+    "theme_axes": "light and dark / display-condensed-bold / chromatic-green ~165",
+    "vibe": "utilitarian, spacious, everyday",
+    "enrichment": "none",
+    "brief": "Separate Advanced settings into a third native tab",
+    "scope": "advanced-tab",
+    "nav": "N9 adapted three-destination bottom rail",
+    "footer": "none"
+  },
+  {
     "date": "2026-07-17",
     "macrostructure": "Workbench",
     "theme": "custom",

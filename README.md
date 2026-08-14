@@ -13,7 +13,7 @@ https://sub.whitedns.one/sub/mihomo.yaml
 
 ## Build
 
-The app builds the native Mihomo core from the local `FlClash/` source tree. There is no public `libclash.aar` artifact in this flow; `scripts/build-flclash-core.sh` compiles FlClash `core` as `libclash.so` for Android and generates the JNI headers used by CMake.
+The app builds [Mihomo v1.19.29](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.29) from a local FlClash v0.8.94-compatible `FlClash/` source tree. There is no public `libclash.aar` artifact in this flow; `scripts/build-flclash-core.sh` applies the pinned FlClash compatibility patch, compiles `core` as `libclash.so` for Android, and generates the JNI headers used by CMake.
 
 ```bash
 ./scripts/build-flclash-core.sh

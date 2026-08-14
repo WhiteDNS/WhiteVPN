@@ -15,6 +15,10 @@ class MihomoConfigParserTest {
         assertEquals("vless", snapshot.catalog.profiles[0].type)
         assertEquals("203.0.113.1", snapshot.catalog.profiles[0].server)
         assertEquals(443, snapshot.catalog.profiles[0].port)
+        assertEquals(true, snapshot.catalog.profiles[0].echEnabled)
+        assertEquals(true, snapshot.catalog.profiles[0].echCapable)
+        assertEquals(true, snapshot.catalog.profiles[1].echEnabled)
+        assertEquals(true, snapshot.catalog.profiles[1].echCapable)
         assertEquals("US", ConnectionLocationPolicy.countryForProfile(snapshot.catalog.profiles[0])?.code)
         assertEquals(123L, snapshot.catalog.fetchedAt)
     }
@@ -57,10 +61,14 @@ class MihomoConfigParserTest {
                 type: vless
                 server: 203.0.113.1
                 port: 443
+                tls: true
+                ech-opts:
+                  enable: true
               - name: "\U0001F1E9\U0001F1EA | @WhiteDNS | DE1|9MB/s"
                 type: trojan
                 server: de.example.com
                 port: 8443
+                ech-opts: {'enable': true}
             proxy-groups:
               - name: "\U0001F680 Proxy Select"
                 type: select

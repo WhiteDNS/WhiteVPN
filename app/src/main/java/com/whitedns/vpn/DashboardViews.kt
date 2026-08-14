@@ -182,7 +182,7 @@ class SignalArcView(context: Context) : View(context) {
     }
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = WhiteDnsDisplayTypeface
-        textLocale = Locale.forLanguageTag("fa")
+        textLocale = resources.configuration.locales[0]
     }
     private val fieldPath = Path()
     private val markPath = Path()
@@ -245,7 +245,7 @@ class SignalArcView(context: Context) : View(context) {
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         setMeasuredDimension(
             resolveSize(dp(328f).toInt(), widthMeasureSpec),
-            resolveSize(dp(220f).toInt(), heightMeasureSpec),
+            resolveSize(dp(188f).toInt(), heightMeasureSpec),
         )
     }
 
@@ -280,9 +280,19 @@ class SignalArcView(context: Context) : View(context) {
         )
         canvas.drawPath(fieldPath, strokePaint)
 
-        val centerX = width / 2f
-        drawActionNode(canvas, centerX, height / 2f - dp(32f), accent, alpha)
-        drawActionLabel(canvas, centerX, height / 2f + dp(48f), alpha)
+        val isRtl = layoutDirection == View.LAYOUT_DIRECTION_RTL
+        val nodeX = if (isRtl) dp(64f) else width - dp(64f)
+        val labelLeft = if (isRtl) nodeX + dp(56f) else dp(24f)
+        val labelRight = if (isRtl) width - dp(24f) else nodeX - dp(56f)
+        val labelCenterX = (labelLeft + labelRight) / 2f
+        drawActionNode(canvas, nodeX, height / 2f, accent, alpha)
+        drawActionLabel(
+            canvas,
+            labelCenterX,
+            height / 2f,
+            (labelRight - labelLeft).coerceAtLeast(dp(72f)),
+            alpha,
+        )
         canvas.restore()
     }
 
@@ -294,19 +304,24 @@ class SignalArcView(context: Context) : View(context) {
             right,
             bottom,
             floatArrayOf(
-                dp(28f), dp(28f),
-                dp(10f), dp(10f),
-                dp(28f), dp(28f),
-                dp(10f), dp(10f),
+                dp(32f), dp(32f),
+                dp(8f), dp(8f),
+                dp(32f), dp(32f),
+                dp(8f), dp(8f),
             ),
             Path.Direction.CW,
         )
     }
 
-    private fun drawActionLabel(canvas: Canvas, centerX: Float, centerY: Float, alpha: Int) {
+    private fun drawActionLabel(
+        canvas: Canvas,
+        centerX: Float,
+        centerY: Float,
+        maxWidth: Float,
+        alpha: Int,
+    ) {
         val label = actionLabel()
-        val preferredSize = sp(36f)
-        val maxWidth = width - dp(64f)
+        val preferredSize = sp(28f)
         titlePaint.textSize = preferredSize
         val measuredWidth = titlePaint.measureText(label)
         if (measuredWidth > maxWidth) {
@@ -319,7 +334,17 @@ class SignalArcView(context: Context) : View(context) {
         )
         val metrics = titlePaint.fontMetrics
         val baseline = centerY - (metrics.ascent + metrics.descent) / 2f
-        canvas.drawTextRun(label, 0, label.length, 0, label.length, centerX, baseline, true, titlePaint)
+        canvas.drawTextRun(
+            label,
+            0,
+            label.length,
+            0,
+            label.length,
+            centerX,
+            baseline,
+            layoutDirection == View.LAYOUT_DIRECTION_RTL,
+            titlePaint,
+        )
     }
 
     private fun drawActionNode(canvas: Canvas, cx: Float, cy: Float, accent: Int, alpha: Int) {
@@ -404,12 +429,12 @@ class SignalArcView(context: Context) : View(context) {
     }
 
     private fun actionLabel(): String = when (state) {
-        VpnState.Started -> "قطع اتصال"
-        VpnState.Starting -> "در حال اتصال"
-        VpnState.Stopping -> "در حال قطع اتصال"
-        is VpnState.Error -> "تلاش دوباره"
-        VpnState.DailyLimitReached -> "سقف مصرف"
-        VpnState.Stopped -> "اتصال"
+        VpnState.Started -> resources.getString(R.string.connect_action_disconnect)
+        VpnState.Starting -> resources.getString(R.string.connect_action_connecting)
+        VpnState.Stopping -> resources.getString(R.string.connect_action_disconnecting)
+        is VpnState.Error -> resources.getString(R.string.connect_action_retry)
+        VpnState.DailyLimitReached -> resources.getString(R.string.connect_action_usage_limit)
+        VpnState.Stopped -> resources.getString(R.string.connect_action_connect)
     }
 
     private fun markColor(): Int = when (state) {
@@ -434,7 +459,7 @@ class SignalArcView(context: Context) : View(context) {
 class DashboardDataRowView(context: Context) : LinearLayout(context) {
     private val palette = WhiteDnsDesignTokens.forContext(context)
     private val labelText = TextView(context).apply {
-        textSize = 10f
+        textSize = 12f
         typeface = WhiteDnsBodyBoldTypeface
         setTextColor(palette.textSecondary)
         letterSpacing = 0.08f
@@ -453,7 +478,7 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         gravity = Gravity.START
     }
     private val chevronText = TextView(context).apply {
-        text = "‹"
+        setText(R.string.chevron_forward)
         textSize = 22f
         layoutDirection = View.LAYOUT_DIRECTION_LTR
         textDirection = View.TEXT_DIRECTION_LTR
@@ -466,7 +491,7 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
 
     init {
         orientation = HORIZONTAL
-        layoutDirection = View.LAYOUT_DIRECTION_LTR
+        layoutDirection = View.LAYOUT_DIRECTION_LOCALE
         gravity = Gravity.CENTER_VERTICAL
         minimumHeight = dp(72)
         setPadding(dp(16), dp(12), dp(16), dp(12))
@@ -475,19 +500,19 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
             setBackgroundResource(selectableBackground.resourceId)
         }
         addView(
-            chevronText,
-            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
-                marginEnd = dp(12)
-            },
-        )
-        addView(
             LinearLayout(context).apply {
                 orientation = VERTICAL
-                layoutDirection = View.LAYOUT_DIRECTION_RTL
+                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
                 addView(labelText, LayoutParams(-1, -2))
                 addView(valueText, LayoutParams(-1, -2).apply { topMargin = dp(8) })
             },
             LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        addView(
+            chevronText,
+            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                marginStart = dp(12)
+            },
         )
     }
 

@@ -41,6 +41,10 @@ class WhiteDnsTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
+        if (VpnRuntimeStateStore.readAlwaysOn(this)) {
+            openMainActivity()
+            return
+        }
         when (VpnRuntimeStateStore.read(this)) {
             VpnState.Starting,
             VpnState.Started,
@@ -67,7 +71,9 @@ class WhiteDnsTileService : TileService() {
     }
 
     private fun startVpnService(action: String) {
-        val intent = Intent(this, WhiteDnsVpnService::class.java).setAction(action)
+        val intent = Intent(this, WhiteDnsVpnService::class.java)
+            .setAction(action)
+            .putExtra(Actions.EXTRA_APP_INITIATED, true)
         if (action == Actions.CONNECT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
@@ -109,9 +115,9 @@ class WhiteDnsTileService : TileService() {
     private fun updateTile(state: VpnState) {
         val tile = qsTile ?: return
         val presentation = QuickSettingsTileStateMapper.presentationFor(state)
-        tile.label = presentation.label
+        tile.label = getString(presentation.labelRes)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            tile.subtitle = presentation.subtitle
+            tile.subtitle = getString(presentation.subtitleRes)
         }
         tile.state = when (presentation.visualState) {
             QuickSettingsTileVisualState.Active -> Tile.STATE_ACTIVE

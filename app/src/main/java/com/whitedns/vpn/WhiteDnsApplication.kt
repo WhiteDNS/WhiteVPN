@@ -2,10 +2,8 @@ package com.whitedns.vpn
 
 import android.app.Application
 import android.content.Context
-import android.content.res.Configuration
 import java.io.File
 import java.security.SecureRandom
-import java.util.Locale
 
 internal object MihomoControllerSecret {
     fun generate(random: SecureRandom = SecureRandom()): String {
@@ -17,13 +15,7 @@ internal object MihomoControllerSecret {
 
 class WhiteDnsApplication : Application() {
     override fun attachBaseContext(base: Context) {
-        val locale = Locale.forLanguageTag("fa")
-        Locale.setDefault(locale)
-        val configuration = Configuration(base.resources.configuration).apply {
-            setLocale(locale)
-            setLayoutDirection(locale)
-        }
-        super.attachBaseContext(base.createConfigurationContext(configuration))
+        super.attachBaseContext(AppLocale.wrap(AppTheme.wrap(base)))
     }
 
     override fun onCreate() {

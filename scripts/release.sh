@@ -87,7 +87,7 @@ if [[ ! -d "${APK_DIR}" ]]; then
 fi
 
 mkdir -p "${RELEASE_DIR}"
-rm -f "${RELEASE_DIR}"/whitedns-v"${version_name}"-*.apk "${RELEASE_DIR}/SHA256SUMS"
+rm -f "${RELEASE_DIR}"/whitedns-[vV]"${version_name}"-*.apk "${RELEASE_DIR}/SHA256SUMS"
 
 copied=()
 for apk in "${APK_DIR}"/*.apk; do
@@ -103,7 +103,7 @@ for apk in "${APK_DIR}"/*.apk; do
   esac
   [[ -n "${output}" ]] || continue
 
-  dest="${RELEASE_DIR}/whitedns-v${version_name}-${output}.apk"
+  dest="${RELEASE_DIR}/whitedns-V${version_name}-${output}.apk"
   cp "${apk}" "${dest}"
   copied+=("${dest}")
 done

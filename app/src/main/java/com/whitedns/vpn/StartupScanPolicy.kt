@@ -6,6 +6,14 @@ object StartupScanPolicy {
     private val primaryPorts = listOf(443, 8443)
     private val secondaryPorts = listOf(2053, 2083, 2087, 2096)
 
+    fun tcpProbePorts(profiles: List<ConnectionProfile>): List<Int> {
+        return profiles
+            .filterNot { it.type.equals("wireguard", ignoreCase = true) }
+            .map { it.port }
+            .filter { it > 0 }
+            .distinct()
+    }
+
     fun priorityPorts(subscriptionPorts: List<Int>): List<Int> {
         val validPorts = subscriptionPorts.filter { it > 0 }
         val available = validPorts.toSet()

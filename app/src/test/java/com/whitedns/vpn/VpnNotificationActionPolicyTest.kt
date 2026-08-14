@@ -21,6 +21,18 @@ class VpnNotificationActionPolicyTest {
     }
 
     @Test
+    fun alwaysOnNotificationCannotDisconnect() {
+        assertEquals(
+            listOf(Actions.RECONNECT),
+            VpnNotificationActionPolicy.actionsFor(VpnState.Started, disconnectAllowed = false),
+        )
+        assertEquals(
+            emptyList<String>(),
+            VpnNotificationActionPolicy.actionsFor(VpnState.Starting, disconnectAllowed = false),
+        )
+    }
+
+    @Test
     fun inactiveStatesHaveNoForegroundActions() {
         assertEquals(emptyList<String>(), VpnNotificationActionPolicy.actionsFor(VpnState.Stopped))
         assertEquals(emptyList<String>(), VpnNotificationActionPolicy.actionsFor(VpnState.Stopping))

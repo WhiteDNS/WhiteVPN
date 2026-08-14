@@ -9,6 +9,9 @@ object VpnRuntimeStateStore {
     private const val KEY_SESSION_STARTED_AT_ELAPSED_MS = "session_started_at_elapsed_ms"
     private const val KEY_CONNECTION_COUNTRY_FLAG = "connection_country_flag"
     private const val KEY_DEBUG_FRONTING_IP = "debug_fronting_ip"
+    private const val KEY_CONNECTION_DETAILS = "connection_details"
+    private const val KEY_ALWAYS_ON = "always_on"
+    private const val KEY_LOCKDOWN = "lockdown"
 
     fun save(
         context: Context,
@@ -16,6 +19,9 @@ object VpnRuntimeStateStore {
         sessionStartedAtElapsedMs: Long = 0L,
         connectionCountryFlag: String = "",
         debugFrontingIp: String = "",
+        connectionDetails: String = "",
+        alwaysOn: Boolean = false,
+        lockdown: Boolean = false,
     ) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
@@ -27,6 +33,9 @@ object VpnRuntimeStateStore {
             )
             .putString(KEY_CONNECTION_COUNTRY_FLAG, if (state == VpnState.Started) connectionCountryFlag else "")
             .putString(KEY_DEBUG_FRONTING_IP, if (state == VpnState.Started) debugFrontingIp else "")
+            .putString(KEY_CONNECTION_DETAILS, if (state == VpnState.Started) connectionDetails else "")
+            .putBoolean(KEY_ALWAYS_ON, alwaysOn)
+            .putBoolean(KEY_LOCKDOWN, lockdown)
             .apply()
     }
 
@@ -58,5 +67,21 @@ object VpnRuntimeStateStore {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_DEBUG_FRONTING_IP, null)
             .orEmpty()
+    }
+
+    fun readConnectionDetails(context: Context): String {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_CONNECTION_DETAILS, null)
+            .orEmpty()
+    }
+
+    fun readAlwaysOn(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_ALWAYS_ON, false)
+    }
+
+    fun readLockdown(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_LOCKDOWN, false)
     }
 }

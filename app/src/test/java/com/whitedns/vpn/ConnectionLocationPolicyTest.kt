@@ -5,13 +5,16 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Locale
 
 class ConnectionLocationPolicyTest {
+    private val farsi = Locale.forLanguageTag("fa")
+
     @Test
     fun extractsCountryFromScreenshotStyleProfileTags() {
-        val france = ConnectionLocationPolicy.countryForProfile(profile("\uD83C\uDDEB\uD83C\uDDF7 | @WhiteDNS | FR6|5.3MB/s|GPT+-F..."))
-        val netherlands = ConnectionLocationPolicy.countryForProfile(profile("\uD83C\uDDF3\uD83C\uDDF1 | @WhiteDNS | NL1|16.4MB/s|GPT+-N..."))
-        val canada = ConnectionLocationPolicy.countryForProfile(profile("\uD83C\uDDE8\uD83C\uDDE6 | @WhiteDNS | CA2|2.7MB/s|GPT+-C..."))
+        val france = ConnectionLocationPolicy.countryForProfile(profile("\uD83C\uDDEB\uD83C\uDDF7 | @WhiteDNS | FR6|5.3MB/s|GPT+-F..."), farsi)
+        val netherlands = ConnectionLocationPolicy.countryForProfile(profile("\uD83C\uDDF3\uD83C\uDDF1 | @WhiteDNS | NL1|16.4MB/s|GPT+-N..."), farsi)
+        val canada = ConnectionLocationPolicy.countryForProfile(profile("\uD83C\uDDE8\uD83C\uDDE6 | @WhiteDNS | CA2|2.7MB/s|GPT+-C..."), farsi)
 
         assertEquals("FR", france?.code)
         assertEquals("فرانسه", france?.country)
@@ -24,7 +27,7 @@ class ConnectionLocationPolicyTest {
 
     @Test
     fun extractsCountryFromProfileCodeTokenWithoutFlag() {
-        val australia = ConnectionLocationPolicy.countryForProfile(profile("| @WhiteDNS | AU2|1.0MB/s|GPT+-A..."))
+        val australia = ConnectionLocationPolicy.countryForProfile(profile("| @WhiteDNS | AU2|1.0MB/s|GPT+-A..."), farsi)
 
         assertEquals("AU", australia?.code)
         assertEquals("استرالیا", australia?.country)
@@ -40,6 +43,8 @@ class ConnectionLocationPolicyTest {
                 profile("\uD83C\uDDF3\uD83C\uDDF1 | @WhiteDNS | NL1|16.4MB/s|GPT+-N..."),
                 profile("\uD83C\uDDE8\uD83C\uDDE6 | @WhiteDNS | CA2|2.7MB/s|GPT+-C..."),
             ),
+            automaticLabel = "خودکار",
+            displayLocale = farsi,
         )
 
         assertEquals(
@@ -66,9 +71,24 @@ class ConnectionLocationPolicyTest {
         val unknown = profile("@WhiteDNS | Fast|5.3MB/s")
         val profiles = listOf(france, netherlands, unknown)
 
-        val auto = ConnectionLocationPolicy.filterProfiles(profiles, selectedCountryCode = null)
-        val selectedFrance = ConnectionLocationPolicy.filterProfiles(profiles, selectedCountryCode = "FR")
-        val missingAustralia = ConnectionLocationPolicy.filterProfiles(profiles, selectedCountryCode = "AU")
+        val auto = ConnectionLocationPolicy.filterProfiles(
+            profiles,
+            selectedCountryCode = null,
+            automaticLabel = "خودکار",
+            displayLocale = farsi,
+        )
+        val selectedFrance = ConnectionLocationPolicy.filterProfiles(
+            profiles,
+            selectedCountryCode = "FR",
+            automaticLabel = "خودکار",
+            displayLocale = farsi,
+        )
+        val missingAustralia = ConnectionLocationPolicy.filterProfiles(
+            profiles,
+            selectedCountryCode = "AU",
+            automaticLabel = "خودکار",
+            displayLocale = farsi,
+        )
 
         assertEquals(profiles, auto.profiles)
         assertNull(auto.selectedCountryCode)
@@ -79,6 +99,17 @@ class ConnectionLocationPolicyTest {
         assertEquals(profiles, missingAustralia.profiles)
         assertNull(missingAustralia.selectedCountryCode)
         assertTrue(missingAustralia.resetToAuto)
+    }
+
+    @Test
+    fun countryLabelsFollowSelectedLocale() {
+        val france = ConnectionLocationPolicy.countryForProfile(
+            profile("FR1"),
+            Locale.ENGLISH,
+        )
+
+        assertEquals("France", france?.country)
+        assertEquals("\uD83C\uDDEB\uD83C\uDDF7 France", france?.label)
     }
 
     private fun profile(tag: String): ConnectionProfile {

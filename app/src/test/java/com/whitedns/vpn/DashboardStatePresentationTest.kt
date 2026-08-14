@@ -10,7 +10,7 @@ class DashboardStatePresentationTest {
     fun stoppedStateUsesNeutralConnectPresentation() {
         val presentation = DashboardStatePresenter.forState(VpnState.Stopped)
 
-        assertEquals("آماده", presentation.title)
+        assertEquals(R.string.state_ready, presentation.titleRes)
         assertEquals(DashboardTone.Neutral, presentation.tone)
         assertFalse(presentation.showProgress)
     }
@@ -20,10 +20,10 @@ class DashboardStatePresentationTest {
         val starting = DashboardStatePresenter.forState(VpnState.Starting)
         val stopping = DashboardStatePresenter.forState(VpnState.Stopping)
 
-        assertEquals("در حال اتصال…", starting.title)
+        assertEquals(R.string.state_connecting, starting.titleRes)
         assertEquals(DashboardTone.Progress, starting.tone)
         assertTrue(starting.showProgress)
-        assertEquals("در حال قطع اتصال", stopping.title)
+        assertEquals(R.string.state_disconnecting, stopping.titleRes)
         assertEquals(DashboardTone.Progress, stopping.tone)
         assertTrue(stopping.showProgress)
     }
@@ -32,7 +32,7 @@ class DashboardStatePresentationTest {
     fun startedStateUsesConnectedPresentation() {
         val presentation = DashboardStatePresenter.forState(VpnState.Started)
 
-        assertEquals("متصل", presentation.title)
+        assertEquals(R.string.state_connected, presentation.titleRes)
         assertEquals(DashboardTone.Connected, presentation.tone)
         assertFalse(presentation.showProgress)
     }
@@ -41,7 +41,7 @@ class DashboardStatePresentationTest {
     fun errorStateUsesMinimalErrorPresentation() {
         val presentation = DashboardStatePresenter.forState(VpnState.Error("failed"))
 
-        assertEquals("خطای اتصال", presentation.title)
+        assertEquals(R.string.state_connection_error, presentation.titleRes)
         assertEquals(DashboardTone.Error, presentation.tone)
         assertFalse(presentation.showProgress)
     }
@@ -50,8 +50,73 @@ class DashboardStatePresentationTest {
     fun legacyDailyLimitStateUsesStoppedPresentation() {
         val presentation = DashboardStatePresenter.forState(VpnState.DailyLimitReached)
 
-        assertEquals("سقف مصرف روزانه", presentation.title)
+        assertEquals(R.string.state_daily_limit, presentation.titleRes)
         assertEquals(DashboardTone.Neutral, presentation.tone)
         assertFalse(presentation.showProgress)
     }
+
+    @Test
+    fun connectionDetailsDescribeProtocolAndEchTruthfully() {
+        assertEquals(
+            "WireGuard outbound  •  Amnezia 5×50–100 B  •  ECH not applicable",
+            ConnectionDetailsPresenter.forProfile(
+                profile("wireguard", amneziaNoise = AmneziaNoiseSettings(5, 50, 100)),
+            ),
+        )
+        assertEquals(
+            "VLESS outbound  •  ECH enabled",
+            ConnectionDetailsPresenter.forProfile(profile("vless", echEnabled = true, echCapable = true)),
+        )
+        assertEquals(
+            "Mihomo outbound  •  ECH unknown",
+            ConnectionDetailsPresenter.forProfile(profile("mihomo-group")),
+        )
+        assertEquals(
+            "VLESS outbound  •  abcdefghijklmnopqrstuvw…  •  ECH disabled",
+            ConnectionDetailsPresenter.forProfile(
+                profile(
+                    type = "vless",
+                    server = "abcdefghijklmnopqrstuvwxyz.example",
+                    echCapable = true,
+                ),
+                showServer = true,
+            ),
+        )
+    }
+
+    @Test
+    fun dashboardConnectionDetailsKeepTheSelectedSourceVisible() {
+        assertEquals(
+            "Selected · Public source\nVLESS outbound  •  ECH enabled",
+            ConnectionDetailsPresenter.forDashboard(
+                selectedSource = "Public source",
+                runtimeDetails = "VLESS outbound  •  ECH enabled",
+            ),
+        )
+        assertEquals(
+            "Selected · WhiteVPN",
+            ConnectionDetailsPresenter.forDashboard(
+                selectedSource = "WhiteVPN",
+                runtimeDetails = "",
+            ),
+        )
+    }
+
+    private fun profile(
+        type: String,
+        server: String = "example.com",
+        echEnabled: Boolean = false,
+        echCapable: Boolean = false,
+        amneziaNoise: AmneziaNoiseSettings? = null,
+    ) = ConnectionProfile(
+        tag = "Test",
+        type = type,
+        server = server,
+        port = 443,
+        transport = "",
+        validationHost = "example.com",
+        echEnabled = echEnabled,
+        echCapable = echCapable,
+        amneziaNoise = amneziaNoise,
+    )
 }
