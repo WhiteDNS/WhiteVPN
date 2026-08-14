@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FLCLASH_DIR="${FLCLASH_DIR:-${ROOT_DIR}/FlClash}"
 CORE_DIR="${FLCLASH_DIR}/core"
 SUBMODULE_DIR="${CORE_DIR}/Clash.Meta"
+FLCLASH_REPOSITORY="https://github.com/chen08209/FlClash.git"
+FLCLASH_COMMIT="ac2f6b919ec1ad395b61b4bb1e714a39c750babe"
+FLCLASH_PATCH="${ROOT_DIR}/scripts/patches/flclash-v1.19.29.patch"
 OUT_JNI_DIR="${ROOT_DIR}/app/src/main/jniLibs"
 OUT_INCLUDE_DIR="${ROOT_DIR}/app/src/main/cpp/includes"
 VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
@@ -13,8 +16,29 @@ FLCLASH_PATCH_COMMIT="80362fc1895dcf60b79b562896653046e0687413"
 API_LEVEL="${ANDROID_API_LEVEL:-26}"
 ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
 
-if [[ ! -d "${CORE_DIR}" ]]; then
-  echo "FlClash core source not found: ${CORE_DIR}" >&2
+if [[ ! -d "${FLCLASH_DIR}/.git" ]]; then
+  if [[ -e "${FLCLASH_DIR}" && -n "$(find "${FLCLASH_DIR}" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
+    echo "FlClash path exists but is not a git checkout: ${FLCLASH_DIR}" >&2
+    exit 1
+  fi
+  mkdir -p "${FLCLASH_DIR}"
+  git -C "${FLCLASH_DIR}" init
+  git -C "${FLCLASH_DIR}" remote add origin "${FLCLASH_REPOSITORY}"
+  git -C "${FLCLASH_DIR}" fetch --depth 1 origin "${FLCLASH_COMMIT}"
+  git -C "${FLCLASH_DIR}" checkout --detach "${FLCLASH_COMMIT}"
+fi
+
+if [[ "$(git -C "${FLCLASH_DIR}" rev-parse HEAD)" != "${FLCLASH_COMMIT}" ]]; then
+  echo "FlClash checkout must be pinned to ${FLCLASH_COMMIT}: ${FLCLASH_DIR}" >&2
+  exit 1
+fi
+
+if git -C "${FLCLASH_DIR}" apply --unidiff-zero --reverse --check "${FLCLASH_PATCH}" 2>/dev/null; then
+  :
+elif git -C "${FLCLASH_DIR}" apply --unidiff-zero --check "${FLCLASH_PATCH}"; then
+  git -C "${FLCLASH_DIR}" apply --unidiff-zero "${FLCLASH_PATCH}"
+else
+  echo "Unable to apply the pinned FlClash compatibility patch: ${FLCLASH_PATCH}" >&2
   exit 1
 fi
 
@@ -30,7 +54,10 @@ if [[ ! -f "${SUBMODULE_DIR}/go.mod" ]]; then
     "${SUBMODULE_DIR}"
   git -C "${SUBMODULE_DIR}" fetch --depth 2 \
     https://github.com/chen08209/Clash.Meta.git "${FLCLASH_PATCH_COMMIT}"
-  git -c commit.gpgsign=false -C "${SUBMODULE_DIR}" cherry-pick "${FLCLASH_PATCH_COMMIT}"
+  git -c commit.gpgsign=false \
+    -c user.name="WhiteVPN Build" \
+    -c user.email="actions@users.noreply.github.com" \
+    -C "${SUBMODULE_DIR}" cherry-pick "${FLCLASH_PATCH_COMMIT}"
 fi
 
 if ! git -C "${SUBMODULE_DIR}" rev-parse --verify "${MIHOMO_TAG}^{commit}" >/dev/null 2>&1 ||

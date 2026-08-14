@@ -5,11 +5,8 @@ import org.junit.Test
 
 class WhiteDnsConfigTest {
     @Test
-    fun subscriptionUrlIsPinned() {
-        assertEquals(
-            "https://whitedns-sub.whitedns.workers.dev/mihomo/encrypted",
-            WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL,
-        )
+    fun subscriptionUrlComesFromBuildTimeConfiguration() {
+        assertEquals(BuildConfig.MIHOMO_SUBSCRIPTION_URL, WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL)
     }
 
     @Test
@@ -18,11 +15,8 @@ class WhiteDnsConfigTest {
     }
 
     @Test
-    fun encryptedIpListUrlIsPinned() {
-        assertEquals(
-            "https://whitedns-encrypted-ip-list.whitedns.workers.dev/v1/results/ips/encrypted",
-            WhiteDnsConfig.ENCRYPTED_IP_LIST_URL,
-        )
+    fun encryptedIpListUrlComesFromBuildTimeConfiguration() {
+        assertEquals(BuildConfig.ENCRYPTED_IP_LIST_URL, WhiteDnsConfig.ENCRYPTED_IP_LIST_URL)
     }
 
     /**

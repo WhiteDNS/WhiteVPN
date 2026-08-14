@@ -39,6 +39,20 @@ fun payloadSecret(propertyName: String, environmentName: String): String {
         ?: ""
 }
 
+fun httpsBuildUrl(environmentName: String, defaultValue: String): String {
+    return (System.getenv(environmentName)?.takeIf { it.isNotBlank() } ?: defaultValue).also {
+        require(it.startsWith("https://")) { "$environmentName must use HTTPS" }
+    }
+}
+
+val mihomoSubscriptionUrl = httpsBuildUrl(
+    "WHITEDNS_MIHOMO_SUBSCRIPTION_URL",
+    "https://whitedns-sub.whitedns.workers.dev/mihomo/encrypted",
+)
+val encryptedIpListUrl = httpsBuildUrl(
+    "WHITEDNS_ENCRYPTED_IP_LIST_URL",
+    "https://whitedns-encrypted-ip-list.whitedns.workers.dev/v1/results/ips/encrypted",
+)
 val mihomoSubscriptionKey = payloadSecret("mihomoSubscriptionKey", "WHITEDNS_MIHOMO_SUBSCRIPTION_KEY")
 val encryptedIpListKey = payloadSecret("encryptedIpListKey", "WHITEDNS_ENCRYPTED_IP_LIST_KEY")
 val hasPayloadSecrets = mihomoSubscriptionKey.isNotBlank() && encryptedIpListKey.isNotBlank()
@@ -70,6 +84,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        buildConfigField("String", "MIHOMO_SUBSCRIPTION_URL", buildConfigStringLiteral(mihomoSubscriptionUrl))
+        buildConfigField("String", "ENCRYPTED_IP_LIST_URL", buildConfigStringLiteral(encryptedIpListUrl))
         buildConfigField("String", "MIHOMO_SUBSCRIPTION_KEY", buildConfigStringLiteral(mihomoSubscriptionKey))
         buildConfigField("String", "ENCRYPTED_IP_LIST_KEY", buildConfigStringLiteral(encryptedIpListKey))
 

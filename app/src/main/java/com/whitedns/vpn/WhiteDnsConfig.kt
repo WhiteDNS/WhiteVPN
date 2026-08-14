@@ -9,13 +9,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 object WhiteDnsConfig {
-    const val MIHOMO_SUBSCRIPTION_URL = "https://whitedns-sub.whitedns.workers.dev/mihomo/encrypted"
-    const val ENCRYPTED_IP_LIST_URL =
-        "https://whitedns-encrypted-ip-list.whitedns.workers.dev/v1/results/ips/encrypted"
     const val SUBSCRIPTION_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1_000L
 
-    // Injected at build time from secrets.properties or the environment; see app/build.gradle.kts.
-    // Release builds fail when these are unset, debug builds get an empty string.
+    // Injected at build time from the environment with production defaults; see app/build.gradle.kts.
+    val MIHOMO_SUBSCRIPTION_URL: String get() = BuildConfig.MIHOMO_SUBSCRIPTION_URL
+    val ENCRYPTED_IP_LIST_URL: String get() = BuildConfig.ENCRYPTED_IP_LIST_URL
+
+    // Release builds fail when these are unset; debug builds get an empty string.
     val MIHOMO_SUBSCRIPTION_KEY: String get() = BuildConfig.MIHOMO_SUBSCRIPTION_KEY
     val ENCRYPTED_IP_LIST_KEY: String get() = BuildConfig.ENCRYPTED_IP_LIST_KEY
 }

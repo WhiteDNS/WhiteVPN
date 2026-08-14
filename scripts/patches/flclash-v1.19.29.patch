@@ -1,0 +1,127 @@
+diff --git a/core/action.go b/core/action.go
+index 41a3b68..a7d6c8f 100644
+--- a/core/action.go
++++ b/core/action.go
+@@ -131,0 +132 @@ func handleAction(action *Action, result ActionResult) {
++		return
+@@ -133,12 +134,3 @@ func handleAction(action *Action, result ActionResult) {
+-		paramsString := action.Data.(string)
+-		var params = map[string]string{}
+-		err := json.Unmarshal([]byte(paramsString), &params)
+-		if err != nil {
+-			result.success(err.Error())
+-			return
+-		}
+-		geoType := params["geo-type"]
+-		geoName := params["geo-name"]
+-		handleUpdateGeoData(geoType, geoName, func(value string) {
+-			result.success(value)
+-		})
++		geoType := action.Data.(string)
++		handleUpdateGeoData(geoType)
++		result.success("")
+diff --git a/core/common.go b/core/common.go
+index bdde761..2f71417 100644
+--- a/core/common.go
++++ b/core/common.go
+@@ -15,0 +16 @@ import (
++	"github.com/metacubex/mihomo/component/updater"
+@@ -236,0 +238,7 @@ func updateConfig(params *UpdateParams) {
++	if params.GeoAutoUpdate != nil {
++		updater.SetGeoAutoUpdate(*params.GeoAutoUpdate)
++	}
++	if params.GeoUpdateInterval != nil {
++		updater.SetGeoUpdateInterval(*params.GeoUpdateInterval)
++	}
++
+@@ -237,0 +246,3 @@ func updateConfig(params *UpdateParams) {
++	if updater.GeoAutoUpdate() {
++		updater.RegisterGeoUpdaterWithCancel()
++	}
+@@ -252,0 +264,3 @@ func applyConfig(params *SetupParams) error {
++	if updater.GeoAutoUpdate() {
++		updater.RegisterGeoUpdaterWithCancel()
++	}
+diff --git a/core/constant.go b/core/constant.go
+index 5177fe4..ed16fea 100644
+--- a/core/constant.go
++++ b/core/constant.go
+@@ -36,0 +37,2 @@ type UpdateParams struct {
++	GeoAutoUpdate      *bool              `json:"geo-auto-update"`
++	GeoUpdateInterval  *int               `json:"geo-update-interval"`
+@@ -126,4 +128,5 @@ const (
+-	LogMessage     MessageType = "log"
+-	DelayMessage   MessageType = "delay"
+-	RequestMessage MessageType = "request"
+-	LoadedMessage  MessageType = "loaded"
++	LogMessage       MessageType = "log"
++	DelayMessage     MessageType = "delay"
++	RequestMessage   MessageType = "request"
++	LoadedMessage    MessageType = "loaded"
++	GeoUpdateMessage MessageType = "geoUpdate"
+@@ -131,0 +135,7 @@ const (
++type GeoUpdateStatus struct {
++	Type     string `json:"type"`
++	Updating bool   `json:"updating"`
++	Skipped  bool   `json:"skipped,omitempty"`
++	Error    string `json:"error,omitempty"`
++}
++
+diff --git a/core/hub.go b/core/hub.go
+index 1d2894a..aad9208 100644
+--- a/core/hub.go
++++ b/core/hub.go
+@@ -350 +350 @@ func handleGetExternalProvider(externalProviderName string) string {
+-func handleUpdateGeoData(geoType string, geoName string, fn func(value string)) {
++func handleUpdateGeoData(geoType string) {
+@@ -352 +351,0 @@ func handleUpdateGeoData(geoType string, geoName string, fn func(value string))
+-		path := constant.Path.Resolve(geoName)
+@@ -355,5 +354,2 @@ func handleUpdateGeoData(geoType string, geoName string, fn func(value string))
+-			err := updater.UpdateMMDBWithPath(path)
+-			if err != nil {
+-				fn(err.Error())
+-				return
+-			}
++			updater.UpdateMMDB()
++			return
+@@ -361,5 +357,2 @@ func handleUpdateGeoData(geoType string, geoName string, fn func(value string))
+-			err := updater.UpdateASNWithPath(path)
+-			if err != nil {
+-				fn(err.Error())
+-				return
+-			}
++			updater.UpdateASN()
++			return
+@@ -367,5 +360,2 @@ func handleUpdateGeoData(geoType string, geoName string, fn func(value string))
+-			err := updater.UpdateGeoIpWithPath(path)
+-			if err != nil {
+-				fn(err.Error())
+-				return
+-			}
++			updater.UpdateGeoIp()
++			return
+@@ -373,5 +363,2 @@ func handleUpdateGeoData(geoType string, geoName string, fn func(value string))
+-			err := updater.UpdateGeoSiteWithPath(path)
+-			if err != nil {
+-				fn(err.Error())
+-				return
+-			}
++			updater.UpdateGeoSite()
++			return
+@@ -379 +365,0 @@ func handleUpdateGeoData(geoType string, geoName string, fn func(value string))
+-		fn("")
+@@ -570,0 +557,14 @@ func init() {
++	updater.GeoUpdateHook = func(geoType string, updating bool, skipped bool, updateErr error) {
++		status := GeoUpdateStatus{
++			Type:     geoType,
++			Updating: updating,
++			Skipped:  skipped,
++		}
++		if updateErr != nil {
++			status.Error = updateErr.Error()
++		}
++		sendMessage(Message{
++			Type: GeoUpdateMessage,
++			Data: status,
++		})
++	}
