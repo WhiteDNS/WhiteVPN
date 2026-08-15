@@ -20,6 +20,13 @@ object WhiteDnsConfig {
     val ENCRYPTED_IP_LIST_KEY: String get() = BuildConfig.ENCRYPTED_IP_LIST_KEY
 }
 
+internal fun decodeSubscriptionPayload(url: URL, payload: String, key: String): String =
+    if (url.path.contains("encrypted", ignoreCase = true)) {
+        EncryptedPayloadCodec.decryptText(payload, key, label = "encrypted Mihomo subscription")
+    } else {
+        payload
+    }
+
 class ConfigRepository(private val context: Context) {
     private val subscriptionStore = SubscriptionStore(context)
     private val userSubscriptionManager = UserSubscriptionManager(context, subscriptionStore)
@@ -157,7 +164,7 @@ class ConfigRepository(private val context: Context) {
 
     private fun fetchAndCacheDefaultMihomoConfig(nowMs: Long): MihomoSubscriptionSnapshot {
         DiagnosticLogger.info(context, "subscription.fetch.start", "url=${WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL}")
-        val yaml = fetchEncryptedYaml()
+        val yaml = fetchYaml()
         val snapshot = MihomoConfigParser.parse(yaml, nowMs)
         if (snapshot.catalog.profiles.isEmpty()) {
             throw IOException("Mihomo subscription did not contain proxies")
@@ -196,8 +203,9 @@ class ConfigRepository(private val context: Context) {
         throw IOException("Unable to refresh selected subscription", refreshed.exceptionOrNull())
     }
 
-    private fun fetchEncryptedYaml(): String {
-        val connection = URL(WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL)
+    private fun fetchYaml(): String {
+        val subscriptionUrl = URL(WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL)
+        val connection = subscriptionUrl
             .openConnection() as HttpURLConnection
         connection.connectTimeout = 12_000
         connection.readTimeout = 20_000
@@ -209,12 +217,8 @@ class ConfigRepository(private val context: Context) {
             if (responseCode !in 200..299) {
                 throw IOException("Subscription returned HTTP $responseCode")
             }
-            val encryptedPayload = inputStream.bufferedReader().use { it.readText() }
-            EncryptedPayloadCodec.decryptText(
-                encryptedPayload,
-                WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
-                label = "encrypted Mihomo subscription",
-            )
+            val payload = inputStream.bufferedReader().use { it.readText() }
+            decodeSubscriptionPayload(subscriptionUrl, payload, WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY)
         }
     }
 

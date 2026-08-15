@@ -115,11 +115,14 @@ object AutomaticConnectionCandidatePolicy {
         records: List<ConnectionDelayRecord>,
         lastSelectedProfile: ConnectionProfile?,
     ): List<ConnectionProfile> {
+        val failedFingerprints = records
+            .filter { it.status == ConnectionDelayStatus.Failure }
+            .mapTo(mutableSetOf(), ConnectionDelayRecord::fingerprint)
         val delayByFingerprint = records
             .filter { it.status == ConnectionDelayStatus.Success && it.delayMs != null }
             .associate { it.fingerprint to it.delayMs!! }
         val originalOrder = profiles.mapIndexed { index, profile -> profile.fingerprint to index }.toMap()
-        return profiles.sortedWith(
+        return profiles.filterNot { it.fingerprint in failedFingerprints }.sortedWith(
             compareBy<ConnectionProfile> { profile ->
                 when {
                     profile.fingerprint in delayByFingerprint -> 0

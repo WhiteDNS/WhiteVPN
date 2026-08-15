@@ -99,13 +99,19 @@
     <string name="location_label">Location</string>
     <string name="connection_label">Connection</string>
     <string name="connection_selector_title">Select connection</string>
+    <string name="connection_selector_loading">Loading connections…</string>
     <string name="connection_filter_types_title">Connection types</string>
     <string name="connection_filter_all_types">All types</string>
+    <string name="connection_filter_country_title">Test country</string>
+    <string name="connection_filter_all_countries">All countries</string>
     <string name="connection_filter_types_count">%1$d types</string>
     <string name="connection_filter_dropdown">%1$s  ▾</string>
     <string name="connection_automatic_detail">Best available connection from the selected subscription</string>
     <string name="connection_automatic_types_detail">Best available connection from %1$s only</string>
     <string name="connection_automatic_types_value">Automatic · %1$s</string>
+    <string name="connection_automatic_active_detail">%1$s · Active: %2$s</string>
+    <string name="connection_automatic_active_value">Automatic · %1$s</string>
+    <string name="connection_active_value">Active · %1$s</string>
     <string name="connection_detail">%1$s · %2$s:%3$d</string>
     <string name="connection_test_visible">Test visible connections</string>
     <string name="connection_test_again">Test again</string>
@@ -116,6 +122,8 @@
     <string name="connection_test_preparing">Preparing connection test…</string>
     <string name="connection_test_progress">Testing %1$d of %2$d…</string>
     <string name="connection_test_paused">Paused at %1$d of %2$d</string>
+    <string name="connection_speed_test_progress">Speed testing %1$d of %2$d…</string>
+    <string name="connection_speed_test_paused">Speed testing paused at %1$d of %2$d</string>
     <string name="connection_test_complete">Results: %1$d/%2$d</string>
     <string name="connection_test_canceled">Connection test stopped.</string>
     <string name="connection_test_pause">Pause</string>
@@ -128,10 +136,15 @@
     <string name="connection_delay_value">%1$d ms</string>
     <string name="connection_speed_delay_value">%1$.1f Mbps\n%2$d ms</string>
     <string name="connection_delay_testing">Testing…</string>
+    <string name="connection_speed_testing">Speed…\n%1$d ms</string>
     <string name="connection_delay_unavailable">Failed</string>
     <string name="connection_delay_pending">—</string>
     <string name="connection_empty">No compatible connections in this subscription.</string>
     <string name="connection_content_description">Connection: %1$s</string>
+    <string name="connection_switch_busy">Please wait, another operation is in progress.</string>
+    <string name="connection_switch_unavailable">Connection is not available.</string>
+    <string name="connection_switch_failed">Could not switch connection.</string>
+    <string name="connection_switching">Switching connection…</string>
     <string name="split_tunnel_label">Split tunneling</string>
     <string name="value_inactive">Inactive</string>
     <string name="action_reconnect">Reconnect</string>
@@ -192,6 +205,11 @@
     <string name="dns_doh_helper">HTTPS URL</string>
     <string name="dns_dot_helper">Host name with an optional port</string>
     <string name="lan_sharing_section">LAN sharing</string>
+    <string name="connection_mode_label">Connection mode</string>
+    <string name="connection_mode_vpn">VPN</string>
+    <string name="connection_mode_proxy">Proxy</string>
+    <string name="connection_mode_local_ip" translatable="false">IP: %1$s</string>
+    <string name="connection_mode_local_endpoint" translatable="false">IP: %1$s · Port: %2$s</string>
     <string name="lan_sharing_title">Share VPN on LAN</string>
     <string name="lan_sharing_description">Let other devices use WhiteVPN through an HTTP or SOCKS5 proxy.</string>
     <string name="lan_sharing_require_password">Require password</string>
