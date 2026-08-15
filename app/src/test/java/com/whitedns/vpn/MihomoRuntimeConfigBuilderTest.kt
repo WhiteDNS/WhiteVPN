@@ -780,6 +780,72 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
+    fun controllerProxiesUseOnlyPreferredTrafficRootsAndExposeSelectableLeaves() {
+        val response = JSONObject(
+            """
+                {
+                  "proxies": {
+                    "Traffic": {
+                      "type": "Selector",
+                      "now": "Node A",
+                      "all": ["Node A"]
+                    },
+                    "Unused": {
+                      "type": "Selector",
+                      "now": "Node B",
+                      "all": ["Node B"]
+                    },
+                    "Node A": { "type": "Vless" },
+                    "Node B": { "type": "Trojan" }
+                  }
+                }
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            setOf("Node A"),
+            MihomoControllerProxies.selectableTargetNames(
+                response,
+                targetNames = listOf("Node A", "Node B"),
+                preferredRoots = listOf("Traffic"),
+            ),
+        )
+        assertTrue(
+            MihomoControllerProxies.selectorPath(
+                response,
+                targetName = "Node B",
+                preferredRoots = listOf("Traffic"),
+            ).isEmpty(),
+        )
+    }
+
+    @Test
+    fun controllerProxiesCaptureSelectionsForRollback() {
+        val response = JSONObject(
+            """
+                {
+                  "proxies": {
+                    "Traffic": { "type": "Selector", "now": "Manual" },
+                    "Manual": { "type": "Selector", "now": "Node A" }
+                  }
+                }
+            """.trimIndent(),
+        )
+        val path = listOf(
+            MihomoGroupSelection("Manual", "Node B"),
+            MihomoGroupSelection("Traffic", "Manual"),
+        )
+
+        assertEquals(
+            listOf(
+                MihomoGroupSelection("Manual", "Node A"),
+                MihomoGroupSelection("Traffic", "Manual"),
+            ),
+            MihomoControllerProxies.currentSelections(response, path),
+        )
+    }
+
+    @Test
     fun runtimeHealthParsesCloudflareTraceCountry() {
         val trace = """
             ip=203.0.113.1

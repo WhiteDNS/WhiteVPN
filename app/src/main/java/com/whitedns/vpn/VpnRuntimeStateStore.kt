@@ -10,6 +10,11 @@ object VpnRuntimeStateStore {
     private const val KEY_CONNECTION_COUNTRY_FLAG = "connection_country_flag"
     private const val KEY_DEBUG_FRONTING_IP = "debug_fronting_ip"
     private const val KEY_CONNECTION_DETAILS = "connection_details"
+    private const val KEY_ACTIVE_SUBSCRIPTION_ID = "active_subscription_id"
+    private const val KEY_ACTIVE_CONNECTION_TAG = "active_connection_tag"
+    private const val KEY_ACTIVE_CONNECTION_FINGERPRINT = "active_connection_fingerprint"
+    private const val KEY_LIVE_SELECTOR_READY = "live_selector_ready"
+    private const val KEY_SELECTABLE_CONNECTION_FINGERPRINTS = "selectable_connection_fingerprints"
     private const val KEY_ALWAYS_ON = "always_on"
     private const val KEY_LOCKDOWN = "lockdown"
 
@@ -20,6 +25,11 @@ object VpnRuntimeStateStore {
         connectionCountryFlag: String = "",
         debugFrontingIp: String = "",
         connectionDetails: String = "",
+        activeSubscriptionId: String = "",
+        activeConnectionTag: String = "",
+        activeConnectionFingerprint: String = "",
+        liveSelectorReady: Boolean = false,
+        selectableConnectionFingerprints: Set<String> = emptySet(),
         alwaysOn: Boolean = false,
         lockdown: Boolean = false,
     ) {
@@ -34,6 +44,17 @@ object VpnRuntimeStateStore {
             .putString(KEY_CONNECTION_COUNTRY_FLAG, if (state == VpnState.Started) connectionCountryFlag else "")
             .putString(KEY_DEBUG_FRONTING_IP, if (state == VpnState.Started) debugFrontingIp else "")
             .putString(KEY_CONNECTION_DETAILS, if (state == VpnState.Started) connectionDetails else "")
+            .putString(KEY_ACTIVE_SUBSCRIPTION_ID, if (state == VpnState.Started) activeSubscriptionId else "")
+            .putString(KEY_ACTIVE_CONNECTION_TAG, if (state == VpnState.Started) activeConnectionTag else "")
+            .putString(
+                KEY_ACTIVE_CONNECTION_FINGERPRINT,
+                if (state == VpnState.Started) activeConnectionFingerprint else "",
+            )
+            .putBoolean(KEY_LIVE_SELECTOR_READY, state == VpnState.Started && liveSelectorReady)
+            .putStringSet(
+                KEY_SELECTABLE_CONNECTION_FINGERPRINTS,
+                if (state == VpnState.Started) selectableConnectionFingerprints else emptySet(),
+            )
             .putBoolean(KEY_ALWAYS_ON, alwaysOn)
             .putBoolean(KEY_LOCKDOWN, lockdown)
             .apply()
@@ -74,6 +95,31 @@ object VpnRuntimeStateStore {
             .getString(KEY_CONNECTION_DETAILS, null)
             .orEmpty()
     }
+
+    fun readActiveSubscriptionId(context: Context): String =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_ACTIVE_SUBSCRIPTION_ID, null)
+            .orEmpty()
+
+    fun readActiveConnectionTag(context: Context): String =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_ACTIVE_CONNECTION_TAG, null)
+            .orEmpty()
+
+    fun readActiveConnectionFingerprint(context: Context): String =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_ACTIVE_CONNECTION_FINGERPRINT, null)
+            .orEmpty()
+
+    fun readLiveSelectorReady(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_LIVE_SELECTOR_READY, false)
+
+    fun readSelectableConnectionFingerprints(context: Context): Set<String> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getStringSet(KEY_SELECTABLE_CONNECTION_FINGERPRINTS, emptySet())
+            .orEmpty()
+            .toSet()
 
     fun readAlwaysOn(context: Context): Boolean {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

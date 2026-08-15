@@ -45,6 +45,7 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.ProgressBar
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
@@ -58,6 +59,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.checkbox.MaterialCheckBox
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
@@ -92,6 +94,7 @@ class MainActivity : Activity() {
     private lateinit var dnsPrivacyPreferenceStore: DnsPrivacyPreferenceStore
     private lateinit var tlsIntegrityPreferenceStore: TlsIntegrityPreferenceStore
     private lateinit var connectionOptionsPreferenceStore: MihomoConnectionOptionsPreferenceStore
+    private lateinit var connectionModePreferenceStore: ConnectionModePreferenceStore
     private lateinit var lanSharingPreferenceStore: LanSharingPreferenceStore
     private lateinit var connectionSelectionPreferenceStore: ConnectionSelectionPreferenceStore
     private lateinit var installedAppRepository: InstalledAppRepository
@@ -101,21 +104,34 @@ class MainActivity : Activity() {
     private var connectionDelayTestListener: ((Intent) -> Unit)? = null
     private var sessionStartedAtElapsedMs: Long = 0L
     private var connectFlowPending: Boolean = false
+    private var connectFlowAction: String = Actions.CONNECT
     private var disconnectAnalyticsPending: Boolean = false
     private var locationOptions: List<LocationSelectorOption> = emptyList()
     private var connectionProfiles: List<ConnectionProfile> = emptyList()
     private var connectionDelayRecords: Map<String, ConnectionDelayRecord> = emptyMap()
+    private var activeRuntimeSubscriptionId: String = ""
+    private var activeConnectionTag: String = ""
+    private var activeConnectionFingerprint: String = ""
+    private var liveSelectorReady: Boolean = false
+    private var liveSelectableConnectionFingerprints: Set<String> = emptySet()
 
-    private lateinit var signalArc: SignalArcView
+    private lateinit var connectionOrb: ConnectionOrbView
+    private lateinit var statusDot: View
     private lateinit var statusText: TextView
     private lateinit var connectionDetailsText: TextView
     private lateinit var timerText: TextView
     private lateinit var downloadSpeedText: TextView
     private lateinit var uploadSpeedText: TextView
+    private lateinit var downloadArrowIcon: AnimatedArrowIcon
+    private lateinit var uploadArrowIcon: AnimatedArrowIcon
     private lateinit var connectionCountryText: TextView
     private lateinit var locationSelectorRow: DashboardDataRowView
     private lateinit var connectionSelectorRow: DashboardDataRowView
     private lateinit var splitTunnelRow: DashboardDataRowView
+    private lateinit var connectionModeGroup: MaterialButtonToggleGroup
+    private lateinit var vpnModeButton: MaterialButton
+    private lateinit var proxyModeButton: MaterialButton
+    private lateinit var dashboardLocalEndpointText: TextView
     private lateinit var tlsIntegrityCheckbox: MaterialSwitch
     private lateinit var alwaysOnStatusText: TextView
     private lateinit var amneziaNoiseCheckbox: MaterialSwitch
@@ -223,6 +239,7 @@ class MainActivity : Activity() {
         dnsPrivacyPreferenceStore = DnsPrivacyPreferenceStore(this)
         tlsIntegrityPreferenceStore = TlsIntegrityPreferenceStore(this)
         connectionOptionsPreferenceStore = MihomoConnectionOptionsPreferenceStore(this)
+        connectionModePreferenceStore = ConnectionModePreferenceStore(this)
         lanSharingPreferenceStore = LanSharingPreferenceStore(this)
         connectionSelectionPreferenceStore = ConnectionSelectionPreferenceStore(this)
         installedAppRepository = InstalledAppRepository(this)
@@ -257,11 +274,17 @@ class MainActivity : Activity() {
         }
         shell.addView(content, LinearLayout.LayoutParams(-1, 0, 1f))
 
+        // New bottom navigation with pill-shaped container
         val tabs = TabLayout(this).apply {
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            minimumHeight = dp(60)
-            setBackgroundColor(SURFACE)
-            elevation = 0f
+            minimumHeight = dp(72)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(24).toFloat()
+                setColor(withAlpha(SURFACE, 220))
+            }
+            elevation = dp(8).toFloat()
+            setSelectedTabIndicatorHeight(dp(3))
             setSelectedTabIndicatorColor(TEAL)
             setSelectedTabIndicatorGravity(TabLayout.INDICATOR_GRAVITY_BOTTOM)
             setTabIndicatorFullWidth(false)
@@ -273,21 +296,30 @@ class MainActivity : Activity() {
             )
             tabMode = TabLayout.MODE_FIXED
             tabGravity = TabLayout.GRAVITY_FILL
-            addTab(newTab().setText(R.string.tab_subscriptions).setIcon(R.drawable.ic_subscriptions_tab))
-            addTab(newTab().setText(R.string.tab_vpn).setIcon(R.drawable.ic_vpn_tab), true)
+            // Reorder tabs: Settings, VPN (center/active), Subscription
             addTab(newTab().setText(R.string.tab_settings).setIcon(R.drawable.ic_advanced_tab))
+            addTab(newTab().setText(R.string.tab_vpn).setIcon(R.drawable.ic_vpn_tab), true)
+            addTab(newTab().setText(R.string.tab_subscriptions).setIcon(R.drawable.ic_subscriptions_tab))
             post {
                 val tabStrip = getChildAt(0) as? ViewGroup ?: return@post
                 for (index in 0 until tabStrip.childCount) {
-                    val icon = (tabStrip.getChildAt(index) as? ViewGroup)?.getChildAt(0) as? ImageView ?: continue
+                    val tabView = tabStrip.getChildAt(index) as? ViewGroup ?: continue
+                    val icon = tabView.getChildAt(0) as? ImageView ?: continue
                     val params = icon.layoutParams as? ViewGroup.MarginLayoutParams ?: continue
-                    params.bottomMargin = dp(2)
+                    params.bottomMargin = dp(5)
                     icon.layoutParams = params
                 }
             }
             addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
                 override fun onTabSelected(tab: TabLayout.Tab) {
-                    showAppTab(tab.position)
+                    // Map new tab order: 0=Settings, 1=VPN, 2=Subscriptions
+                    val mappedPosition = when (tab.position) {
+                        0 -> 2  // Settings -> position 2
+                        1 -> 1  // VPN -> position 1
+                        2 -> 0  // Subscriptions -> position 0
+                        else -> tab.position
+                    }
+                    showAppTab(mappedPosition)
                 }
 
                 override fun onTabUnselected(tab: TabLayout.Tab) = Unit
@@ -296,17 +328,13 @@ class MainActivity : Activity() {
             })
         }
         val tabsHost = FrameLayout(this).apply {
-            setBackgroundColor(SURFACE)
-            setPadding(0, dp(1), 0, dp(8))
-            addView(
-                View(this@MainActivity).apply { setBackgroundColor(OUTLINE) },
-                FrameLayout.LayoutParams(-1, dp(1), Gravity.TOP),
-            )
-            addView(tabs, FrameLayout.LayoutParams(-1, dp(60)).apply { topMargin = dp(8) })
+            setBackgroundColor(Color.TRANSPARENT)
+            setPadding(dp(18), 0, dp(18), dp(18))
+            addView(tabs, FrameLayout.LayoutParams(-1, dp(72)))
         }
         ViewCompat.setOnApplyWindowInsetsListener(tabsHost) { view, insets ->
             val navigationBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
-            view.setPadding(0, dp(1), 0, navigationBottom + dp(8))
+            view.setPadding(dp(18), 0, dp(18), navigationBottom + dp(18))
             insets
         }
         shell.addView(tabsHost, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -841,12 +869,29 @@ class MainActivity : Activity() {
         connectionDetailsText.visibility = View.VISIBLE
     }
 
+    private fun renderDashboardLocalEndpoint(mode: ConnectionMode) {
+        if (!::dashboardLocalEndpointText.isInitialized) return
+        dashboardLocalEndpointText.text = if (mode == ConnectionMode.Proxy) {
+            getString(
+                R.string.connection_mode_local_endpoint,
+                "127.0.0.1",
+                MihomoRuntimeDefaults.MIXED_PORT.toString(),
+            )
+        } else {
+            ""
+        }
+        dashboardLocalEndpointText.visibility =
+            if (dashboardLocalEndpointText.text.isNotEmpty()) View.VISIBLE else View.GONE
+    }
+
     private fun localizedError(@Suppress("UNUSED_PARAMETER") error: Throwable, @StringRes fallbackRes: Int): String =
         getString(fallbackRes)
 
     override fun onStart() {
         super.onStart()
         DiagnosticLogger.info(this, "activity.onStart")
+        // Resume orb animation when app comes to foreground
+        if (::connectionOrb.isInitialized) connectionOrb.resumeAnimation()
         val filter = IntentFilter().apply {
             addAction(Actions.STATE_CHANGED)
             addAction(Actions.CONNECTION_DELAY_TEST_CHANGED)
@@ -863,6 +908,11 @@ class MainActivity : Activity() {
                 .takeIf { it in frontingIpPreferenceStore.readFrontingIps() }
                 .orEmpty(),
             VpnRuntimeStateStore.readConnectionDetails(this),
+            VpnRuntimeStateStore.readActiveSubscriptionId(this),
+            VpnRuntimeStateStore.readActiveConnectionTag(this),
+            VpnRuntimeStateStore.readActiveConnectionFingerprint(this),
+            VpnRuntimeStateStore.readLiveSelectorReady(this),
+            VpnRuntimeStateStore.readSelectableConnectionFingerprints(this),
             VpnRuntimeStateStore.readAlwaysOn(this),
             VpnRuntimeStateStore.readLockdown(this),
         )
@@ -870,6 +920,8 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         DiagnosticLogger.info(this, "activity.onStop")
+        // Pause orb animation when app goes to background to save battery
+        if (::connectionOrb.isInitialized) connectionOrb.pauseAnimation()
         mainHandler.removeCallbacks(timerRunnable)
         mainHandler.removeCallbacks(disconnectTimeoutRunnable)
         privacyPolicyDialog?.dismiss()
@@ -893,15 +945,23 @@ class MainActivity : Activity() {
             DiagnosticLogger.info(this, "permission.vpn.ignored", "resultCode=$resultCode reason=connect-canceled")
             return
         }
+        val pendingAction = connectFlowAction
         connectFlowPending = false
+        connectFlowAction = Actions.CONNECT
         if (resultCode == RESULT_OK) {
             DiagnosticLogger.info(this, "permission.vpn", "granted")
-            startVpnService(Actions.CONNECT)
+            startVpnService(pendingAction)
         } else {
             DiagnosticLogger.warn(this, "permission.vpn", "denied resultCode=$resultCode")
             AnalyticsEvents.connectionTryFailed(this)
-            buttonModel.onStateChanged(VpnState.Stopped)
-            renderState(VpnState.Stopped)
+            if (pendingAction == Actions.RECONNECT) {
+                connectionModePreferenceStore.save(ConnectionMode.Proxy)
+                buttonModel.onStateChanged(VpnState.Started)
+                renderState(VpnState.Started)
+            } else {
+                buttonModel.onStateChanged(VpnState.Stopped)
+                renderState(VpnState.Stopped)
+            }
         }
     }
 
@@ -930,6 +990,7 @@ class MainActivity : Activity() {
             isFillViewport = true
             setBackgroundColor(withAlpha(BACKGROUND, 0))
             clipToPadding = false
+            clipChildren = false  // Allow particles to extend beyond bounds
         }
         ViewCompat.setOnApplyWindowInsetsListener(scrollView) { view, insets ->
             val topInset = insets.getInsets(
@@ -948,6 +1009,9 @@ class MainActivity : Activity() {
         }
         val viewport = FrameLayout(this).apply {
             setPadding(0, 0, 0, dp(24))
+            // Allow particles to extend beyond this layout's bounds
+            clipChildren = false
+            clipToPadding = false
         }
         scrollView.addView(
             viewport,
@@ -962,6 +1026,9 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, 0, 0, dp(24))
+            // Allow particles to extend beyond this layout's bounds
+            clipChildren = false
+            clipToPadding = false
         }
 
         fun contentParams(topMargin: Int = 0): LinearLayout.LayoutParams {
@@ -975,53 +1042,142 @@ class MainActivity : Activity() {
             }
         }
 
+        // New header with hamburger menu, centered title, and theme toggle
         val headerBlock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             gravity = Gravity.CENTER_VERTICAL
-            addView(
-                LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.VERTICAL
-                    layoutDirection = View.LAYOUT_DIRECTION_LTR
-                    addView(TextView(this@MainActivity).apply {
-                        text = "WhiteVPN"
-                        textSize = 36f
-                        typeface = WhiteDnsDisplayTypeface
-                        setTextColor(TEXT_PRIMARY)
-                        includeFontPadding = false
-                        gravity = Gravity.START
-                        textDirection = View.TEXT_DIRECTION_LTR
-                    })
-                    addView(
-                        TextView(this@MainActivity).apply {
-                            text = getString(R.string.version_label, BuildConfig.VERSION_NAME)
-                            textSize = 12f
-                            typeface = WhiteDnsBodyBoldTypeface
-                            setTextColor(TEXT_SECONDARY)
-                            includeFontPadding = false
-                            layoutDirection = View.LAYOUT_DIRECTION_LTR
-                            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-                        },
-                        LinearLayout.LayoutParams(-2, -2),
-                    )
-                },
-                LinearLayout.LayoutParams(0, -2, 1f),
-            )
+            // Hamburger menu button on left
             addView(
                 ImageButton(this@MainActivity).apply {
                     setImageResource(R.drawable.ic_menu)
                     imageTintList = ColorStateList.valueOf(TEXT_PRIMARY)
                     scaleType = ImageView.ScaleType.CENTER
                     setPadding(dp(10), dp(10), dp(10), dp(10))
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(Color.TRANSPARENT)
+                    }
                     setSelectableBackground()
                     contentDescription = getString(R.string.home_menu_content_description)
                     setOnClickListener { showHomeMenu(this) }
                 },
-                LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(8) },
+                LinearLayout.LayoutParams(dp(40), dp(40)),
+            )
+            // Centered title with version
+            addView(
+                LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutDirection = View.LAYOUT_DIRECTION_LTR
+                    gravity = Gravity.CENTER
+                    setPadding(dp(9), dp(4), dp(9), dp(4))
+                    addView(TextView(this@MainActivity).apply {
+                        text = "WhiteVPN"
+                        textSize = 14.5f
+                        typeface = WhiteDnsDisplayTypeface
+                        setTextColor(TEXT_PRIMARY)
+                        includeFontPadding = false
+                        letterSpacing = -0.01f
+                    })
+                    addView(TextView(this@MainActivity).apply {
+                        text = BuildConfig.VERSION_NAME
+                        textSize = 11.5f
+                        typeface = WhiteDnsBodyTypeface
+                        setTextColor(palette.textTertiary)
+                        includeFontPadding = false
+                    }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(9) })
+                },
+                LinearLayout.LayoutParams(0, -2, 1f).apply {
+                    gravity = Gravity.CENTER
+                },
+            )
+            // Empty spacer on right for balance (theme toggle removed)
+            addView(
+                View(this@MainActivity),
+                LinearLayout.LayoutParams(dp(40), dp(40)),
             )
         }
 
-        signalArc = SignalArcView(this).apply {
+        // New segmented tab switcher with rounded corners
+        val connectionModeButtonColors = arrayOf(
+            intArrayOf(android.R.attr.state_enabled, android.R.attr.state_checked),
+            intArrayOf(android.R.attr.state_enabled, -android.R.attr.state_checked),
+            intArrayOf(-android.R.attr.state_enabled, android.R.attr.state_checked),
+            intArrayOf(-android.R.attr.state_enabled, -android.R.attr.state_checked),
+        )
+        fun connectionModeButton(@StringRes textRes: Int) = MaterialButton(
+            this,
+            null,
+            com.google.android.material.R.attr.materialButtonOutlinedStyle,
+        ).apply {
+            id = View.generateViewId()
+            setText(textRes)
+            setAllCaps(false)
+            textSize = 14f
+            typeface = WhiteDnsBodyBoldTypeface
+            isCheckable = true
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = dp(44)
+            minimumHeight = dp(44)
+            insetTop = 0
+            insetBottom = 0
+            setPadding(0, 0, 0, 0)
+            cornerRadius = dp(12)
+            strokeWidth = 0
+            elevation = 0f
+            stateListAnimator = null
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            backgroundTintList = ColorStateList(
+                connectionModeButtonColors,
+                intArrayOf(TEAL, Color.TRANSPARENT, withAlpha(TEAL, 80), Color.TRANSPARENT),
+            )
+            setTextColor(
+                ColorStateList(
+                    connectionModeButtonColors,
+                    intArrayOf(
+                        palette.onAccent,
+                        TEXT_PRIMARY,
+                        withAlpha(palette.onAccent, 140),
+                        withAlpha(TEXT_PRIMARY, 110),
+                    ),
+                ),
+            )
+            rippleColor = ColorStateList.valueOf(withAlpha(TEAL, 28))
+        }
+        vpnModeButton = connectionModeButton(R.string.connection_mode_vpn)
+        proxyModeButton = connectionModeButton(R.string.connection_mode_proxy)
+        connectionModeGroup = MaterialButtonToggleGroup(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            isSingleSelection = true
+            isSelectionRequired = true
+            // Container with rounded background
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(16).toFloat()
+                setColor(withAlpha(SURFACE, 200))
+            }
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            addView(vpnModeButton, LinearLayout.LayoutParams(0, -1, 1f))
+            addView(proxyModeButton, LinearLayout.LayoutParams(0, -1, 1f))
+            check(
+                if (connectionModePreferenceStore.read() == ConnectionMode.Proxy) {
+                    proxyModeButton.id
+                } else {
+                    vpnModeButton.id
+                },
+            )
+            addOnButtonCheckedListener { _, checkedId, isChecked ->
+                if (isChecked && isEnabled) {
+                    saveConnectionMode(
+                        if (checkedId == proxyModeButton.id) ConnectionMode.Proxy else ConnectionMode.Vpn,
+                    )
+                }
+            }
+        }
+        connectionOrb = ConnectionOrbView(this).apply {
             isClickable = true
             isFocusable = true
             setOnClickListener { handleButtonClick() }
@@ -1030,12 +1186,19 @@ class MainActivity : Activity() {
                 true
             }
         }
+        statusDot = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(palette.neutral)
+            }
+        }
         statusText = TextView(this).apply {
-            gravity = Gravity.START
+            gravity = Gravity.CENTER
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             textDirection = View.TEXT_DIRECTION_LOCALE
-            textSize = 14f
-            typeface = WhiteDnsBodyBoldTypeface
+            textSize = 13f
+            typeface = WhiteDnsBodyTypeface
+            setTextColor(TEXT_SECONDARY)
             includeFontPadding = false
         }
         timerText = TextView(this).apply {
@@ -1043,28 +1206,30 @@ class MainActivity : Activity() {
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             textDirection = View.TEXT_DIRECTION_LTR
             text = "00:00:00"
-            textSize = 16f
-            typeface = WhiteDnsDataTypeface
-            setTextColor(TIMER_MUTED)
+            textSize = 15f
+            letterSpacing = 0.02f
+            typeface = WhiteDnsBodyBoldTypeface // Same as stats
+            setTextColor(TEXT_PRIMARY)
             includeFontPadding = false
+            alpha = 0.25f
         }
         downloadSpeedText = TextView(this).apply {
             text = "0 B/s"
-            gravity = Gravity.CENTER
+            gravity = Gravity.END
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             textDirection = View.TEXT_DIRECTION_LTR
-            textSize = 12f
-            typeface = WhiteDnsDataTypeface
+            textSize = 15f
+            typeface = WhiteDnsBodyBoldTypeface
             setTextColor(TEXT_PRIMARY)
             includeFontPadding = false
         }
         uploadSpeedText = TextView(this).apply {
             text = "0 B/s"
-            gravity = Gravity.CENTER
+            gravity = Gravity.END
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             textDirection = View.TEXT_DIRECTION_LTR
-            textSize = 12f
-            typeface = WhiteDnsDataTypeface
+            textSize = 15f
+            typeface = WhiteDnsBodyBoldTypeface
             setTextColor(TEXT_PRIMARY)
             includeFontPadding = false
         }
@@ -1086,78 +1251,128 @@ class MainActivity : Activity() {
             typeface = WhiteDnsDataTypeface
             setTextColor(TEXT_SECONDARY)
             includeFontPadding = false
-            maxLines = 2
-            setLineSpacing(dp(3).toFloat(), 1f)
+            minWidth = 0
+            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             visibility = View.GONE
         }
-
-        fun metricColumn(label: String, value: TextView): View = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            addView(TextView(this@MainActivity).apply {
-                text = label
-                textSize = 12f
-                letterSpacing = 0f
-                typeface = WhiteDnsDataTypeface
-                setTextColor(TEXT_SECONDARY)
-                includeFontPadding = false
-                gravity = Gravity.CENTER
-            })
-            addView(
-                value,
-                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
-            )
+        dashboardLocalEndpointText = TextView(this).apply {
+            gravity = Gravity.START
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            textDirection = View.TEXT_DIRECTION_LTR
+            textSize = 12f
+            typeface = WhiteDnsDataTypeface
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+            visibility = View.GONE
         }
-        val metricDivider = { View(this).apply { setBackgroundColor(withAlpha(OUTLINE, 180)) } }
-        val metricsRow = LinearLayout(this).apply {
+
+        // Animated arrow icons for download/upload
+        downloadArrowIcon = AnimatedArrowIcon(this, isDownload = true)
+        uploadArrowIcon = AnimatedArrowIcon(this, isDownload = false)
+
+        // Speed stats row with animated arrow icons - matching the design
+        fun speedStatRow(label: String, value: TextView, isDownload: Boolean, arrowIcon: AnimatedArrowIcon): View = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(76)
-            setPadding(dp(8), dp(12), dp(8), dp(12))
-            background = glassSurfaceDrawable(radiusDp = 12)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            // Arrow icon + label on left
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                // Animated arrow icon
+                addView(arrowIcon, LinearLayout.LayoutParams(dp(13), dp(13)))
+                addView(TextView(this@MainActivity).apply {
+                    text = label
+                    textSize = 11.5f
+                    typeface = WhiteDnsBodyTypeface
+                    setTextColor(TEXT_SECONDARY)
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) })
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            // Value on right
+            addView(value, LinearLayout.LayoutParams(-2, -2))
+        }
+        val speedStatsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            gravity = Gravity.CENTER_VERTICAL
             addView(
-                metricColumn(getString(R.string.metric_connection_time), timerText),
-                LinearLayout.LayoutParams(0, -2, 1.25f),
-            )
-            addView(metricDivider(), LinearLayout.LayoutParams(dp(1), dp(34)))
-            addView(
-                metricColumn(getString(R.string.metric_download), downloadSpeedText),
+                speedStatRow(getString(R.string.metric_download), downloadSpeedText, true, downloadArrowIcon),
                 LinearLayout.LayoutParams(0, -2, 1f),
             )
-            addView(metricDivider(), LinearLayout.LayoutParams(dp(1), dp(34)))
             addView(
-                metricColumn(getString(R.string.metric_upload), uploadSpeedText),
+                speedStatRow(getString(R.string.metric_upload), uploadSpeedText, false, uploadArrowIcon),
                 LinearLayout.LayoutParams(0, -2, 1f),
+            )
+        }
+
+        // Reconnect button - initialize before signalSection
+        refreshActionButton = MaterialButton(this).apply {
+            setText(R.string.action_reconnect)
+            textSize = 11f
+            typeface = WhiteDnsBodyBoldTypeface
+            minHeight = dp(32)
+            minimumHeight = dp(32)
+            minWidth = 0
+            minimumWidth = 0
+            insetTop = 0
+            insetBottom = 0
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            cornerRadius = dp(16)
+            strokeWidth = 0
+            elevation = 0f
+            stateListAnimator = null
+            setAllCaps(false)
+            setIconResource(R.drawable.ic_refresh)
+            iconSize = dp(14)
+            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+            iconPadding = dp(4)
+            visibility = View.INVISIBLE  // Use INVISIBLE to preserve space and prevent UI jump
+            setOnClickListener { handleRefreshClick() }
+        }
+
+        // Row with reconnect button on left and timer on right
+        val timerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            // Reconnect button on left
+            addView(
+                refreshActionButton,
+                LinearLayout.LayoutParams(-2, -2),
+            )
+            // Spacer
+            addView(
+                View(this@MainActivity),
+                LinearLayout.LayoutParams(0, 0, 1f),
+            )
+            // Timer on right
+            addView(
+                timerText,
+                LinearLayout.LayoutParams(-2, -2),
             )
         }
 
         val signalSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            // Allow particles to extend beyond this layout's bounds
+            clipChildren = false
+            clipToPadding = false
+            // Connection orb button - centered at top
             addView(
-                LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                    gravity = Gravity.CENTER_VERTICAL
-                    addView(statusText, LinearLayout.LayoutParams(0, -2, 1f))
-                    addView(
-                        connectionCountryText,
-                        LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) },
-                    )
-                },
-                LinearLayout.LayoutParams(-1, -2),
+                connectionOrb,
+                LinearLayout.LayoutParams(-2, -2),
             )
+            // Timer and reconnect button row
             addView(
-                signalArc,
-                LinearLayout.LayoutParams(-1, dp(188)).apply { topMargin = dp(12) },
+                timerRow,
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
             )
+            // Speed stats row
             addView(
-                connectionDetailsText,
-                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) },
-            )
-            addView(
-                metricsRow,
+                speedStatsRow,
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
             )
         }
@@ -1174,45 +1389,31 @@ class MainActivity : Activity() {
             setRow(getString(R.string.split_tunnel_label), getString(R.string.value_inactive))
             setOnRowClickListener { showSplitTunnelSelector() }
         }
+        // Settings card with rounded corners and shadow
         val dataRowsList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = glassSurfaceDrawable(radiusDp = 12)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(22).toFloat()
+                setColor(withAlpha(SURFACE, 200))
+            }
+            elevation = dp(8).toFloat()
             clipToOutline = true
             addView(locationSelectorRow, LinearLayout.LayoutParams(-1, -2))
-            addView(View(this@MainActivity).apply { setBackgroundColor(OUTLINE) },
+            addView(View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
                 LinearLayout.LayoutParams(-1, dp(1)).apply {
-                    marginStart = dp(16)
-                    marginEnd = dp(16)
+                    marginStart = dp(18)
+                    marginEnd = dp(18)
                 })
             addView(connectionSelectorRow, LinearLayout.LayoutParams(-1, -2))
-            addView(View(this@MainActivity).apply { setBackgroundColor(OUTLINE) },
+            addView(View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
                 LinearLayout.LayoutParams(-1, dp(1)).apply {
-                    marginStart = dp(16)
-                    marginEnd = dp(16)
+                    marginStart = dp(18)
+                    marginEnd = dp(18)
                 })
             addView(splitTunnelRow, LinearLayout.LayoutParams(-1, -2))
         }
         val dataRows = dataRowsList
-        refreshActionButton = MaterialButton(this).apply {
-            setText(R.string.action_reconnect)
-            textSize = 12f
-            typeface = WhiteDnsBodyBoldTypeface
-            minHeight = dp(44)
-            minimumHeight = dp(44)
-            insetTop = 0
-            insetBottom = 0
-            cornerRadius = dp(8)
-            strokeWidth = dp(1)
-            strokeColor = ColorStateList.valueOf(OUTLINE)
-            elevation = 0f
-            stateListAnimator = null
-            setAllCaps(false)
-            setIconResource(R.drawable.ic_refresh)
-            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
-            iconPadding = dp(8)
-            visibility = View.GONE
-            setOnClickListener { handleRefreshClick() }
-        }
 
         val footerCopyrightText = TextView(this).apply {
             gravity = Gravity.CENTER
@@ -1261,19 +1462,29 @@ class MainActivity : Activity() {
                 signalSection,
                 contentParams(dp(24)),
             )
+            // VPN/Proxy tab switcher
             addView(
-                dataRows,
-                contentParams(dp(24)),
+                connectionModeGroup,
+                contentParams(dp(16)),
             )
             addView(
-                refreshActionButton,
-                contentParams(dp(20)).apply {
-                    height = dp(44)
+                dataRows,
+                contentParams(dp(16)),
+            )
+            // Connection details row
+            addView(
+                LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(connectionDetailsText, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(dashboardLocalEndpointText, LinearLayout.LayoutParams(-2, -2))
                 },
+                contentParams(dp(4)),
             )
             addView(
                 footer,
-                contentParams(dp(24)),
+                contentParams(dp(16)),
             )
         }
         viewport.addView(
@@ -2295,9 +2506,19 @@ class MainActivity : Activity() {
             intent.getStringExtra(Actions.EXTRA_CONNECTION_COUNTRY_FLAG).orEmpty(),
             intent.getStringExtra(Actions.EXTRA_DEBUG_FRONTING_IP).orEmpty(),
             intent.getStringExtra(Actions.EXTRA_CONNECTION_DETAILS).orEmpty(),
+            intent.getStringExtra(Actions.EXTRA_ACTIVE_SUBSCRIPTION_ID).orEmpty(),
+            intent.getStringExtra(Actions.EXTRA_ACTIVE_CONNECTION_TAG).orEmpty(),
+            intent.getStringExtra(Actions.EXTRA_ACTIVE_CONNECTION_FINGERPRINT).orEmpty(),
+            intent.getBooleanExtra(Actions.EXTRA_LIVE_SELECTOR_READY, false),
+            intent.getStringArrayListExtra(Actions.EXTRA_SELECTABLE_CONNECTION_FINGERPRINTS)
+                .orEmpty()
+                .toSet(),
             intent.getBooleanExtra(Actions.EXTRA_ALWAYS_ON, false),
             intent.getBooleanExtra(Actions.EXTRA_LOCKDOWN, false),
         )
+        intent.getStringExtra(Actions.EXTRA_NOTICE)
+            ?.takeIf(String::isNotBlank)
+            ?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
     }
 
     private fun applyRuntimeState(
@@ -2306,6 +2527,11 @@ class MainActivity : Activity() {
         countryFlag: String = "",
         frontingIp: String = "",
         details: String = "",
+        runtimeSubscriptionId: String = "",
+        runtimeConnectionTag: String = "",
+        runtimeConnectionFingerprint: String = "",
+        selectorReady: Boolean = false,
+        selectableConnectionFingerprints: Set<String> = emptySet(),
         alwaysOn: Boolean = false,
         lockdown: Boolean = false,
     ) {
@@ -2313,21 +2539,38 @@ class MainActivity : Activity() {
         lockdownMode = lockdown
         buttonModel.onStateChanged(state, alwaysOn)
         if (state == VpnState.Started) {
+            activeRuntimeSubscriptionId = runtimeSubscriptionId
+            activeConnectionTag = runtimeConnectionTag
+            activeConnectionFingerprint = runtimeConnectionFingerprint
+            liveSelectorReady = selectorReady
+            liveSelectableConnectionFingerprints = selectableConnectionFingerprints
             connectionCountryFlag = countryFlag
             debugFrontingIp = frontingIp
             connectionDetails = details
             sessionStartedAtElapsedMs = if (startedAt > 0L) startedAt else SystemClock.elapsedRealtime()
             startTimerUpdates()
+            // Enable arrow animations when connected
+            if (::downloadArrowIcon.isInitialized) downloadArrowIcon.isAnimating = true
+            if (::uploadArrowIcon.isInitialized) uploadArrowIcon.isAnimating = true
         } else if (state == VpnState.Stopped || state == VpnState.DailyLimitReached || state is VpnState.Error) {
+            activeRuntimeSubscriptionId = ""
+            activeConnectionTag = ""
+            activeConnectionFingerprint = ""
+            liveSelectorReady = false
+            liveSelectableConnectionFingerprints = emptySet()
             connectionCountryFlag = ""
             debugFrontingIp = ""
             connectionDetails = ""
             sessionStartedAtElapsedMs = 0L
             mainHandler.removeCallbacks(timerRunnable)
             resetTransferSpeeds()
+            // Disable arrow animations when disconnected
+            if (::downloadArrowIcon.isInitialized) downloadArrowIcon.isAnimating = false
+            if (::uploadArrowIcon.isInitialized) uploadArrowIcon.isAnimating = false
         }
         renderAlwaysOnStatus()
         renderState(state)
+        renderConnectionSelection()
     }
 
     private fun handleButtonClick() {
@@ -2437,22 +2680,51 @@ class MainActivity : Activity() {
         if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
         val subscriptionStore = SubscriptionStore(this)
         val selectedSubscriptionId = subscriptionStore.readSelectedSubscriptionId()
+        val usesActiveRuntime = buttonModel.state == VpnState.Started &&
+            activeRuntimeSubscriptionId == selectedSubscriptionId
+        if (usesActiveRuntime && !liveSelectorReady) {
+            Toast.makeText(this, R.string.connection_selector_loading, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val selectorProfiles = if (usesActiveRuntime) {
+            connectionProfiles.filter { it.fingerprint in liveSelectableConnectionFingerprints }
+        } else {
+            connectionProfiles
+        }
         connectionDelayRecords = subscriptionStore
-            .readConnectionDelayRecords(selectedSubscriptionId, connectionProfiles)
+            .readConnectionDelayRecords(selectedSubscriptionId, selectorProfiles)
             .associateBy(ConnectionDelayRecord::fingerprint)
         val selectedProfile = connectionSelectionPreferenceStore.readSelectedProfile(
             selectedSubscriptionId,
-            connectionProfiles,
+            selectorProfiles,
         )
-        val availableTypes = ConnectionTypeSelectionPolicy.availableTypes(connectionProfiles)
+        val displayLocale = resources.configuration.locales[0]
+        val allCountriesLabel = getString(R.string.connection_filter_all_countries)
+        val countryOptions = ConnectionLocationPolicy.selectorOptions(
+            profiles = selectorProfiles,
+            automaticLabel = allCountriesLabel,
+            displayLocale = displayLocale,
+        )
+        val availableTypes = ConnectionTypeSelectionPolicy.availableTypes(selectorProfiles)
         val restoredSession = ConnectionDelayTestState.snapshot(selectedSubscriptionId)
+        val profilesByFingerprint = selectorProfiles.associateBy(ConnectionProfile::fingerprint)
+        var selectedCountryCode = restoredSession
+            ?.takeIf(ConnectionDelayTestSession::isRunning)
+            ?.targetFingerprints
+            ?.map { fingerprint ->
+                profilesByFingerprint[fingerprint]
+                    ?.let { ConnectionLocationPolicy.countryForProfile(it, displayLocale) }
+                    ?.code
+            }
+            ?.distinct()
+            ?.singleOrNull()
         val selectedTypes = restoredSession
             ?.takeIf(ConnectionDelayTestSession::isRunning)
             ?.connectionTypes
             .orEmpty()
             .ifEmpty {
                 connectionSelectionPreferenceStore
-                    .readAutomaticTypes(selectedSubscriptionId, connectionProfiles)
+                    .readAutomaticTypes(selectedSubscriptionId, selectorProfiles)
                     .ifEmpty { availableTypes.toSet() }
             }
             .toMutableSet()
@@ -2461,40 +2733,43 @@ class MainActivity : Activity() {
         } else {
             mutableSetOf<String>()
         }
+        val speedTestingFingerprints = restoredSession
+            ?.takeIf { it.isRunning && it.speedTestEnabled }
+            ?.let { session ->
+                session.finishedFingerprints.filterTo(mutableSetOf()) { fingerprint ->
+                    fingerprint !in session.speedFinishedFingerprints &&
+                        connectionDelayRecords[fingerprint]?.status == ConnectionDelayStatus.Success
+                }
+            }
+            ?: mutableSetOf()
         var speedTestEnabled = restoredSession?.speedTestEnabled
             ?: connectionDelayRecords.values.any { it.speedKbps != null }
-        var sortByDelay = connectionSelectionPreferenceStore.readDelaySortEnabled(selectedSubscriptionId)
-        if (
-            restoredSession?.status == Actions.DELAY_TEST_COMPLETED &&
-            connectionSelectionPreferenceStore.readAutoSortedTestId(selectedSubscriptionId) != restoredSession.testId
-        ) {
-            sortByDelay = true
-            connectionSelectionPreferenceStore.saveDelaySortEnabled(selectedSubscriptionId, true)
-            connectionSelectionPreferenceStore.saveAutoSortedTestId(
-                selectedSubscriptionId,
-                restoredSession.testId,
-            )
-        }
         fun selectedTypesLabel(): String = when {
             selectedTypes.size == availableTypes.size -> getString(R.string.connection_filter_all_types)
             selectedTypes.size == 1 -> selectedTypes.first().uppercase(Locale.US)
             else -> getString(R.string.connection_filter_types_count, selectedTypes.size)
         }
+        fun selectedCountryLabel(): String = countryOptions
+            .firstOrNull { it.countryCode == selectedCountryCode }
+            ?.label
+            ?: allCountriesLabel
         fun visibleProfiles(): List<ConnectionProfile> {
+            val matchingCountry = ConnectionLocationPolicy.filterProfiles(
+                profiles = selectorProfiles,
+                selectedCountryCode = selectedCountryCode,
+                automaticLabel = allCountriesLabel,
+                displayLocale = displayLocale,
+            ).profiles
             val matchingType = ConnectionTypeSelectionPolicy.filterProfiles(
-                connectionProfiles,
+                matchingCountry,
                 selectedTypes,
             )
-            return if (sortByDelay) {
-                ConnectionTestResultOrder.order(
-                    profiles = matchingType,
-                    records = connectionDelayRecords,
-                    speedTestEnabled = speedTestEnabled,
-                    pendingFingerprints = testingFingerprints,
-                )
-            } else {
-                matchingType
-            }
+            return ConnectionTestResultOrder.order(
+                profiles = matchingType,
+                records = connectionDelayRecords,
+                speedTestEnabled = speedTestEnabled,
+                pendingFingerprints = testingFingerprints + speedTestingFingerprints,
+            )
         }
         var filteredProfiles = visibleProfiles()
         var testRunning = restoredSession?.isRunning == true
@@ -2502,101 +2777,165 @@ class MainActivity : Activity() {
         var lastTestCompleted = restoredSession?.completed ?: 0
         var lastTestTotal = restoredSession?.total ?: 0
         var lastTestAvailable = restoredSession?.available ?: 0
+        var lastSpeedCompleted = restoredSession?.speedCompleted ?: 0
+        var lastSpeedTotal = restoredSession?.speedTotal ?: 0
         var lastTestStatus = restoredSession?.status
         var lastTestError = restoredSession?.error.orEmpty()
         var delayTestId: String? = restoredSession?.testId
         lateinit var dialog: AlertDialog
 
         data class ConnectionRowHolder(
-            val radio: RadioButton,
+            val container: LinearLayout,
             val title: TextView,
             val detail: TextView,
-            val delay: TextView,
+            val delayBadge: TextView,
+            val checkIcon: View,
         )
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(4), 0, dp(4), 0)
+            setPadding(dp(16), dp(8), dp(16), 0)
         }
-        val testStatus = TextView(this).apply {
-            textSize = 12f
-            typeface = WhiteDnsBodyTypeface
-            setTextColor(TEXT_SECONDARY)
-            includeFontPadding = false
-            gravity = Gravity.START
+
+        // Filter row - horizontal with chips
+        val filterRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
-        fun connectionActionButton(
-            @StringRes textRes: Int,
-            @DrawableRes iconRes: Int,
-        ) = MaterialButton(this).apply {
-            setText(textRes)
-            setIconResource(iconRes)
-            iconTint = ColorStateList.valueOf(TEAL)
-            iconSize = dp(18)
-            iconPadding = dp(6)
-            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
-            textSize = 12f
-            typeface = WhiteDnsBodyBoldTypeface
-            minWidth = 0
-            minimumWidth = 0
-            minHeight = dp(42)
-            minimumHeight = dp(42)
-            insetTop = 0
-            insetBottom = 0
-            cornerRadius = dp(8)
-            strokeWidth = dp(1)
-            strokeColor = ColorStateList.valueOf(OUTLINE)
-            backgroundTintList = ColorStateList.valueOf(SURFACE)
-            setTextColor(TEAL)
-            setAllCaps(false)
-        }
-        val typeFilterButton = connectionActionButton(
-            R.string.connection_filter_all_types,
-            R.drawable.ic_advanced_tab,
-        ).apply {
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-        }
-        val testButton = connectionActionButton(
-            R.string.connection_test_visible,
-            R.drawable.ic_connection_test,
-        )
-        val speedTestToggle = MaterialSwitch(this).apply {
-            setText(R.string.connection_speed_test_toggle)
+
+        fun filterChip(text: String) = TextView(this).apply {
+            this.text = text
             textSize = 13f
             typeface = WhiteDnsBodyTypeface
             setTextColor(TEXT_PRIMARY)
-            minHeight = dp(48)
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat()
+                setStroke(dp(1), OUTLINE)
+                setColor(SURFACE)
+            }
+        }
+
+        val countryFilterButton = filterChip(allCountriesLabel)
+        val typeFilterButton = filterChip(getString(R.string.connection_filter_all_types))
+
+        filterRow.addView(countryFilterButton, LinearLayout.LayoutParams(-2, -2))
+        filterRow.addView(typeFilterButton, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+
+        // Progress section
+        val progressSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = false
+            max = 100
+            progress = 0
+            progressTintList = ColorStateList.valueOf(TEAL)
+            progressBackgroundTintList = ColorStateList.valueOf(OUTLINE)
+            minimumHeight = dp(4)
+        }
+        val testStatus = TextView(this).apply {
+            textSize = 13f
+            typeface = WhiteDnsBodyTypeface
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+        }
+        progressSection.addView(progressBar, LinearLayout.LayoutParams(-1, dp(4)))
+        progressSection.addView(testStatus, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+
+        // Control buttons
+        val testButton = MaterialButton(this).apply {
+            setText(R.string.connection_test_visible)
+            setIconResource(R.drawable.ic_connection_test)
+            iconTint = ColorStateList.valueOf(BACKGROUND)
+            iconSize = dp(18)
+            iconPadding = dp(8)
+            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+            textSize = 14f
+            typeface = WhiteDnsBodyBoldTypeface
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = dp(44)
+            minimumHeight = dp(44)
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(22)
+            backgroundTintList = ColorStateList.valueOf(TEAL)
+            setTextColor(BACKGROUND)
+            setAllCaps(false)
+        }
+
+        val speedTestToggle = MaterialSwitch(this).apply {
+            setText(R.string.connection_speed_test_toggle)
+            textSize = 12f
+            typeface = WhiteDnsBodyTypeface
+            setTextColor(TEXT_SECONDARY)
+            minHeight = dp(40)
             gravity = Gravity.CENTER_VERTICAL
             isChecked = speedTestEnabled
         }
-        val pauseButton = connectionActionButton(
-            R.string.connection_test_pause,
-            R.drawable.ic_pause,
-        ).apply {
-            visibility = View.GONE
-        }
-        val sortButton = connectionActionButton(
-            R.string.connection_sort_lowest,
-            R.drawable.ic_sort_lowest,
-        )
-        val delayActions = LinearLayout(this).apply {
+
+        val controlRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(
-                pauseButton,
-                LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(4) },
-            )
-            addView(
-                sortButton,
-                LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(4) },
-            )
         }
+
+        val pauseButton = MaterialButton(this).apply {
+            setIconResource(R.drawable.ic_pause)
+            iconTint = ColorStateList.valueOf(TEAL)
+            iconSize = dp(20)
+            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+            iconPadding = 0
+            text = ""
+            minWidth = dp(44)
+            minimumWidth = dp(44)
+            minHeight = dp(44)
+            minimumHeight = dp(44)
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(22)
+            strokeWidth = dp(1)
+            strokeColor = ColorStateList.valueOf(OUTLINE)
+            backgroundTintList = ColorStateList.valueOf(SURFACE)
+            visibility = View.GONE
+            setPadding(0, 0, 0, 0)
+        }
+
+        val stopButton = MaterialButton(this).apply {
+            setText(R.string.connection_test_stop)
+            textSize = 13f
+            typeface = WhiteDnsBodyBoldTypeface
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = dp(44)
+            minimumHeight = dp(44)
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(22)
+            strokeWidth = dp(1)
+            strokeColor = ColorStateList.valueOf(ERROR)
+            backgroundTintList = ColorStateList.valueOf(SURFACE)
+            setTextColor(ERROR)
+            setAllCaps(false)
+            visibility = View.GONE
+        }
+
+        stopButton.setPadding(dp(20), 0, dp(20), 0)
+        controlRow.addView(testButton, LinearLayout.LayoutParams(0, dp(44), 1f))
+        controlRow.addView(pauseButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(8) })
+        controlRow.addView(stopButton, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(8) })
+
+        // Server list with better styling
         val list = ListView(this).apply {
-            divider = ColorDrawable(OUTLINE)
-            dividerHeight = dp(1)
+            divider = ColorDrawable(Color.TRANSPARENT)
+            dividerHeight = dp(8)
             isVerticalScrollBarEnabled = true
+            clipToPadding = false
+            setPadding(0, dp(4), 0, dp(4))
         }
 
         val adapter = object : BaseAdapter() {
@@ -2611,9 +2950,10 @@ class MainActivity : Activity() {
                 val row: LinearLayout
                 val holder: ConnectionRowHolder
                 if (convertView == null) {
-                    val radio = RadioButton(this@MainActivity).apply {
-                        isClickable = false
-                        isFocusable = false
+                    val container = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                        gravity = Gravity.CENTER_VERTICAL
                     }
                     val title = TextView(this@MainActivity).apply {
                         textSize = 14f
@@ -2622,7 +2962,6 @@ class MainActivity : Activity() {
                         includeFontPadding = false
                         maxLines = 1
                         ellipsize = TextUtils.TruncateAt.END
-                        gravity = Gravity.START
                     }
                     val detail = TextView(this@MainActivity).apply {
                         textSize = 12f
@@ -2631,35 +2970,44 @@ class MainActivity : Activity() {
                         includeFontPadding = false
                         maxLines = 1
                         ellipsize = TextUtils.TruncateAt.END
-                        gravity = Gravity.START
                     }
-                    val delay = TextView(this@MainActivity).apply {
-                        textSize = 12f
+                    val delayBadge = TextView(this@MainActivity).apply {
+                        textSize = 11f
                         typeface = WhiteDnsDataTypeface
                         includeFontPadding = false
                         gravity = Gravity.CENTER
-                        minWidth = dp(74)
+                        setPadding(dp(10), dp(6), dp(10), dp(6))
+                        minWidth = dp(70)
                     }
-                    row = LinearLayout(this@MainActivity).apply {
-                        orientation = LinearLayout.HORIZONTAL
+                    // Selection indicator (small dot)
+                    val checkIcon = View(this@MainActivity).apply {
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(TEAL)
+                        }
+                        visibility = View.INVISIBLE
+                    }
+                    val textColumn = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
                         layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                        gravity = Gravity.CENTER_VERTICAL
-                        minimumHeight = dp(68)
-                        setPadding(dp(4), dp(8), dp(4), dp(8))
-                        setSelectableBackground()
-                        addView(radio, LinearLayout.LayoutParams(dp(42), dp(48)))
-                        addView(
-                            LinearLayout(this@MainActivity).apply {
-                                orientation = LinearLayout.VERTICAL
-                                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                                addView(title, LinearLayout.LayoutParams(-1, -2))
-                                addView(detail, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(5) })
-                            },
-                            LinearLayout.LayoutParams(0, -2, 1f),
-                        )
-                        addView(delay, LinearLayout.LayoutParams(dp(108), -2).apply { marginStart = dp(8) })
+                        addView(title, LinearLayout.LayoutParams(-1, -2))
+                        addView(detail, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(3) })
                     }
-                    holder = ConnectionRowHolder(radio, title, detail, delay)
+                    container.addView(checkIcon, LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(10) })
+                    container.addView(textColumn, LinearLayout.LayoutParams(0, -2, 1f))
+                    container.addView(delayBadge, LinearLayout.LayoutParams(dp(108), -2).apply { marginStart = dp(8) })
+
+                    row = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(12), dp(10), dp(12), dp(10))
+                        addView(container, LinearLayout.LayoutParams(-1, -2))
+                    }
+                    // Card-like background
+                    row.background = GradientDrawable().apply {
+                        cornerRadius = dp(12).toFloat()
+                        setColor(SURFACE)
+                    }
+                    holder = ConnectionRowHolder(container, title, detail, delayBadge, checkIcon)
                     row.tag = holder
                 } else {
                     row = convertView as LinearLayout
@@ -2667,20 +3015,35 @@ class MainActivity : Activity() {
                 }
 
                 val profile = getItem(position) as? ConnectionProfile
-                holder.radio.isChecked = if (profile == null) {
+                val isSelected = if (profile == null) {
                     selectedProfile == null
                 } else {
                     selectedProfile?.fingerprint == profile.fingerprint
                 }
+
+                // Update selection state
+                holder.checkIcon.visibility = if (isSelected) View.VISIBLE else View.INVISIBLE
+                (row.background as? GradientDrawable)?.setColor(
+                    if (isSelected) ((TEAL and 0x00FFFFFF) or (0x18 shl 24)) else SURFACE
+                )
+                (row.background as? GradientDrawable)?.setStroke(
+                    dp(1),
+                    if (isSelected) TEAL else OUTLINE
+                )
+
                 if (profile == null) {
                     holder.title.setText(R.string.option_automatic)
-                    holder.detail.text = if (selectedTypes.size == availableTypes.size) {
+                    val automaticDetail = if (selectedTypes.size == availableTypes.size) {
                         getString(R.string.connection_automatic_detail)
                     } else {
                         getString(R.string.connection_automatic_types_detail, selectedTypesLabel())
                     }
-                    holder.delay.text = ""
-                    holder.delay.setTextColor(TEXT_SECONDARY)
+                    holder.detail.text = activeConnectionTag
+                        .takeIf { usesActiveRuntime && it.isNotBlank() }
+                        ?.let { getString(R.string.connection_automatic_active_detail, automaticDetail, it) }
+                        ?: automaticDetail
+                    holder.delayBadge.text = ""
+                    holder.delayBadge.background = null
                 } else {
                     holder.title.text = profile.tag
                     holder.detail.text = if (
@@ -2702,8 +3065,12 @@ class MainActivity : Activity() {
                         null
                     }
                     val speedKbps = delayRecord?.speedKbps
-                    holder.delay.text = when {
-                        profile.fingerprint in testingFingerprints -> getString(R.string.connection_delay_testing)
+                    val isTesting = profile.fingerprint in testingFingerprints
+                    val isSpeedTesting = profile.fingerprint in speedTestingFingerprints
+
+                    holder.delayBadge.text = when {
+                        isTesting -> getString(R.string.connection_delay_testing)
+                        isSpeedTesting && delayMs != null -> getString(R.string.connection_speed_testing, delayMs)
                         speedTestEnabled && speedKbps != null && delayMs != null -> getString(
                             R.string.connection_speed_delay_value,
                             speedKbps / 1_000.0,
@@ -2712,16 +3079,27 @@ class MainActivity : Activity() {
                         delayMs != null -> getString(R.string.connection_delay_value, delayMs)
                         delayRecord?.status == ConnectionDelayStatus.Failure ->
                             getString(R.string.connection_delay_unavailable)
-                        else -> getString(R.string.connection_delay_pending)
+                        else -> ""
                     }
-                    holder.delay.setTextColor(
-                        when {
-                            delayMs != null -> TEAL
-                            delayRecord?.status == ConnectionDelayStatus.Failure -> ERROR
-                            else -> TEXT_SECONDARY
-                        },
-                    )
+
+                    // Badge background based on state
+                    val badgeColor = when {
+                        isTesting || isSpeedTesting -> AMBER
+                        delayMs != null -> TEAL
+                        delayRecord?.status == ConnectionDelayStatus.Failure -> ERROR
+                        else -> TEXT_SECONDARY
+                    }
+                    if (holder.delayBadge.text.isNotEmpty()) {
+                        holder.delayBadge.setTextColor(badgeColor)
+                        holder.delayBadge.background = GradientDrawable().apply {
+                            cornerRadius = dp(12).toFloat()
+                            setColor((badgeColor and 0x00FFFFFF) or (0x20 shl 24))
+                        }
+                    } else {
+                        holder.delayBadge.background = null
+                    }
                 }
+
                 row.setOnClickListener {
                     handleConnectionSelected(profile, selectedTypes)
                     dialog.dismiss()
@@ -2732,53 +3110,72 @@ class MainActivity : Activity() {
         list.adapter = adapter
 
         fun updateTestControls() {
-            testButton.isEnabled =
-                filteredProfiles.isNotEmpty() && (!testRunning || testPaused)
-            testButton.alpha = if (testButton.isEnabled) 1f else 0.55f
+            // Test button state
+            testButton.isEnabled = filteredProfiles.isNotEmpty() && (!testRunning || testPaused)
+            testButton.alpha = if (testButton.isEnabled) 1f else 0.5f
+            val hasResults = filteredProfiles.any { it.fingerprint in connectionDelayRecords }
             testButton.setText(
-                if (testPaused || filteredProfiles.any { it.fingerprint in connectionDelayRecords }) {
-                    R.string.connection_test_again
-                } else {
-                    R.string.connection_test_visible
-                },
+                if (testPaused || hasResults) R.string.connection_test_again else R.string.connection_test_visible
             )
+            // Show/hide test button based on state
+            testButton.visibility = if (testRunning && !testPaused) View.GONE else View.VISIBLE
+
+            // Pause button
             pauseButton.visibility = if (testRunning) View.VISIBLE else View.GONE
-            pauseButton.isEnabled = testRunning
-            pauseButton.setText(
-                if (testPaused) R.string.connection_test_resume else R.string.connection_test_pause,
-            )
-            pauseButton.setIconResource(
-                if (testPaused) R.drawable.ic_play else R.drawable.ic_pause,
-            )
-            speedTestToggle.isEnabled = !testRunning
-            speedTestToggle.alpha = if (speedTestToggle.isEnabled) 1f else 0.55f
-            sortButton.isEnabled = testRunning || filteredProfiles.any {
-                connectionDelayRecords[it.fingerprint]?.status == ConnectionDelayStatus.Success
-            }
-            sortButton.alpha = if (sortButton.isEnabled) 1f else 0.55f
-            sortButton.setText(
-                if (testRunning) {
-                    R.string.connection_test_stop
-                } else if (sortByDelay) {
-                    R.string.connection_sort_subscription
-                } else if (speedTestEnabled) {
-                    R.string.connection_sort_fastest
-                } else {
-                    R.string.connection_sort_lowest
-                },
-            )
-            if (testRunning) sortButton.icon = null else sortButton.setIconResource(R.drawable.ic_sort_lowest)
+            pauseButton.setIconResource(if (testPaused) R.drawable.ic_play else R.drawable.ic_pause)
+
+            // Stop button
+            stopButton.visibility = if (testRunning) View.VISIBLE else View.GONE
+
+            // Filter chips
             typeFilterButton.isEnabled = !testRunning && availableTypes.isNotEmpty()
-            typeFilterButton.alpha = if (typeFilterButton.isEnabled) 1f else 0.55f
-            typeFilterButton.text = getString(
-                R.string.connection_filter_dropdown,
-                selectedTypesLabel(),
+            typeFilterButton.alpha = if (typeFilterButton.isEnabled) 1f else 0.5f
+            typeFilterButton.text = selectedTypesLabel()
+            (typeFilterButton.background as? GradientDrawable)?.setStroke(
+                dp(1), if (selectedTypes.size < availableTypes.size) TEAL else OUTLINE
             )
+
+            countryFilterButton.isEnabled = !testRunning && countryOptions.size > 1
+            countryFilterButton.alpha = if (countryFilterButton.isEnabled) 1f else 0.5f
+            countryFilterButton.text = selectedCountryLabel()
+            (countryFilterButton.background as? GradientDrawable)?.setStroke(
+                dp(1), if (selectedCountryCode != null) TEAL else OUTLINE
+            )
+
+            // Speed test toggle
+            speedTestToggle.isEnabled = !testRunning
+            speedTestToggle.alpha = if (speedTestToggle.isEnabled) 1f else 0.5f
+
+            // Progress section
             val failed = lastTestStatus == Actions.DELAY_TEST_FAILED
+            val speedPhase = testRunning && lastSpeedTotal > 0 && lastTestCompleted >= lastTestTotal
+
+            progressSection.visibility = if (testRunning || lastTestStatus != null) View.VISIBLE else View.GONE
+
+            // Update progress bar
+            val progressPercent = when {
+                speedPhase && lastSpeedTotal > 0 -> (lastSpeedCompleted * 100) / lastSpeedTotal
+                lastTestTotal > 0 -> (lastTestCompleted * 100) / lastTestTotal
+                else -> 0
+            }
+            progressBar.progress = progressPercent
+            progressBar.progressTintList = ColorStateList.valueOf(
+                when {
+                    failed -> ERROR
+                    testPaused -> AMBER
+                    else -> TEAL
+                }
+            )
+
+            // Status text
             testStatus.setTextColor(if (failed) ERROR else TEXT_SECONDARY)
             testStatus.text = when {
-                connectionProfiles.isEmpty() -> getString(R.string.connection_empty)
+                selectorProfiles.isEmpty() -> getString(R.string.connection_empty)
                 testRunning && lastTestTotal == 0 -> getString(R.string.connection_test_preparing)
+                speedPhase && testPaused ->
+                    getString(R.string.connection_speed_test_paused, lastSpeedCompleted, lastSpeedTotal)
+                speedPhase ->
+                    getString(R.string.connection_speed_test_progress, lastSpeedCompleted, lastSpeedTotal)
                 testRunning && testPaused ->
                     getString(R.string.connection_test_paused, lastTestCompleted, lastTestTotal)
                 testRunning ->
@@ -2788,7 +3185,7 @@ class MainActivity : Activity() {
                 failed -> lastTestError.ifBlank { getString(R.string.connection_test_failed) }
                 lastTestStatus == Actions.DELAY_TEST_CANCELED ->
                     getString(R.string.connection_test_canceled)
-                else -> getString(R.string.connection_test_explanation)
+                else -> ""
             }
         }
 
@@ -2844,6 +3241,23 @@ class MainActivity : Activity() {
                 .showWhiteDnsDialog()
         }
 
+        countryFilterButton.setOnClickListener {
+            val labels = countryOptions.map(LocationSelectorOption::label).toTypedArray()
+            val selectedIndex = countryOptions.indexOfFirst { it.countryCode == selectedCountryCode }
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.connection_filter_country_title)
+                .setSingleChoiceItems(labels, selectedIndex) { choiceDialog, which ->
+                    selectedCountryCode = countryOptions[which].countryCode
+                    filteredProfiles = visibleProfiles()
+                    adapter.notifyDataSetChanged()
+                    updateTestControls()
+                    choiceDialog.dismiss()
+                }
+                .setNegativeButton(R.string.split_tunnel_cancel, null)
+                .create()
+                .showWhiteDnsDialog()
+        }
+
         speedTestToggle.setOnCheckedChangeListener { _, isChecked ->
             speedTestEnabled = isChecked
             filteredProfiles = visibleProfiles()
@@ -2860,15 +3274,16 @@ class MainActivity : Activity() {
             lastTestCompleted = 0
             lastTestTotal = targets.size
             lastTestAvailable = 0
+            lastSpeedCompleted = 0
+            lastSpeedTotal = 0
             lastTestStatus = Actions.DELAY_TEST_PREPARING
             lastTestError = ""
-            sortByDelay = true
-            connectionSelectionPreferenceStore.saveDelaySortEnabled(selectedSubscriptionId, true)
             delayTestId = SystemClock.elapsedRealtimeNanos().toString()
             val targetFingerprints = targets.map { it.fingerprint }.toSet()
             connectionDelayRecords = connectionDelayRecords.filterKeys { it !in targetFingerprints }
             testingFingerprints.clear()
             testingFingerprints += targetFingerprints
+            speedTestingFingerprints.clear()
             ConnectionDelayTestState.replace(
                 ConnectionDelayTestSession(
                     testId = delayTestId.orEmpty(),
@@ -2892,6 +3307,10 @@ class MainActivity : Activity() {
                     .putStringArrayListExtra(
                         Actions.EXTRA_CONNECTION_TYPES,
                         ArrayList(selectedTypes.sorted()),
+                    )
+                    .putStringArrayListExtra(
+                        Actions.EXTRA_CONNECTION_FINGERPRINTS,
+                        ArrayList(targets.map(ConnectionProfile::fingerprint)),
                     ),
             )
         }
@@ -2915,24 +3334,14 @@ class MainActivity : Activity() {
             )
         }
 
-        sortButton.setOnClickListener {
-            if (testRunning) {
-                startService(
-                    Intent(this, WhiteDnsVpnService::class.java)
-                        .setAction(Actions.CANCEL_CONNECTION_DELAY_TEST)
-                        .putExtra(Actions.EXTRA_APP_INITIATED, true)
-                        .putExtra(Actions.EXTRA_DELAY_TEST_ID, delayTestId),
-                )
-                return@setOnClickListener
-            }
-            sortByDelay = !sortByDelay
-            connectionSelectionPreferenceStore.saveDelaySortEnabled(
-                selectedSubscriptionId,
-                sortByDelay,
+        stopButton.setOnClickListener {
+            if (!testRunning) return@setOnClickListener
+            startService(
+                Intent(this, WhiteDnsVpnService::class.java)
+                    .setAction(Actions.CANCEL_CONNECTION_DELAY_TEST)
+                    .putExtra(Actions.EXTRA_APP_INITIATED, true)
+                    .putExtra(Actions.EXTRA_DELAY_TEST_ID, delayTestId),
             )
-            filteredProfiles = visibleProfiles()
-            adapter.notifyDataSetChanged()
-            updateTestControls()
         }
 
         connectionDelayTestListener = listener@{ intent ->
@@ -2945,24 +3354,34 @@ class MainActivity : Activity() {
             lastTestCompleted = session.completed
             lastTestTotal = session.total
             lastTestAvailable = session.available
+            lastSpeedCompleted = session.speedCompleted
+            lastSpeedTotal = session.speedTotal
             lastTestStatus = status
             lastTestError = session.error
             testPaused = session.paused
             speedTestEnabled = session.speedTestEnabled
             speedTestToggle.isChecked = speedTestEnabled
-            testingFingerprints.clear()
-            if (session.isRunning) {
-                testingFingerprints += session.targetFingerprints - session.finishedFingerprints
-            }
             if (status == Actions.DELAY_TEST_PROGRESS || status == Actions.DELAY_TEST_COMPLETED) {
                 connectionDelayRecords = subscriptionStore
                     .readConnectionDelayRecords(
                         subscriptionId = selectedSubscriptionId,
-                        profiles = connectionProfiles,
+                        profiles = selectorProfiles,
                     )
                     .associateBy(ConnectionDelayRecord::fingerprint)
+            }
+            testingFingerprints.clear()
+            speedTestingFingerprints.clear()
+            if (session.isRunning) {
+                testingFingerprints += session.targetFingerprints - session.finishedFingerprints
+                if (session.speedTestEnabled) {
+                    speedTestingFingerprints += session.finishedFingerprints.filter { fingerprint ->
+                        fingerprint !in session.speedFinishedFingerprints &&
+                            connectionDelayRecords[fingerprint]?.status == ConnectionDelayStatus.Success
+                    }
+                }
+            }
+            if (status == Actions.DELAY_TEST_PROGRESS || status == Actions.DELAY_TEST_COMPLETED) {
                 filteredProfiles = visibleProfiles()
-                adapter.notifyDataSetChanged()
             }
             when (status) {
                 Actions.DELAY_TEST_STARTED,
@@ -2977,15 +3396,7 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    sortByDelay = true
-                    connectionSelectionPreferenceStore.saveDelaySortEnabled(
-                        selectedSubscriptionId,
-                        true,
-                    )
-                    connectionSelectionPreferenceStore.saveAutoSortedTestId(
-                        selectedSubscriptionId,
-                        delayTestId.orEmpty(),
-                    )
+                    speedTestingFingerprints.clear()
                     filteredProfiles = visibleProfiles()
                     adapter.notifyDataSetChanged()
                     updateTestControls()
@@ -2995,6 +3406,7 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
+                    speedTestingFingerprints.clear()
                     adapter.notifyDataSetChanged()
                     updateTestControls()
                 }
@@ -3003,30 +3415,31 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
+                    speedTestingFingerprints.clear()
                     adapter.notifyDataSetChanged()
                     updateTestControls()
                 }
             }
         }
 
-        content.addView(typeFilterButton, LinearLayout.LayoutParams(-1, dp(42)))
+        // Assemble layout
+        content.addView(filterRow, LinearLayout.LayoutParams(-1, -2))
         content.addView(
-            testStatus,
-            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
-        )
-        content.addView(speedTestToggle, LinearLayout.LayoutParams(-1, dp(48)))
-        content.addView(
-            testButton,
-            LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(10) },
+            progressSection,
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
         content.addView(
-            delayActions,
-            LinearLayout.LayoutParams(-1, dp(42)).apply { topMargin = dp(8) },
+            speedTestToggle,
+            LinearLayout.LayoutParams(-1, dp(40)).apply { topMargin = dp(8) },
+        )
+        content.addView(
+            controlRow,
+            LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(12) },
         )
         content.addView(
             list,
-            LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.48f).toInt()).apply {
-                topMargin = dp(8)
+            LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.45f).toInt()).apply {
+                topMargin = dp(12)
             },
         )
 
@@ -3068,6 +3481,28 @@ class MainActivity : Activity() {
             selectedTypes,
             connectionProfiles,
         )
+        val usesActiveRuntime = buttonModel.state == VpnState.Started &&
+            activeRuntimeSubscriptionId == selectedSubscriptionId
+        if (
+            profile != null &&
+            usesActiveRuntime &&
+            (!liveSelectorReady || profile.fingerprint !in liveSelectableConnectionFingerprints)
+        ) {
+            Toast.makeText(this, R.string.connection_switch_unavailable, Toast.LENGTH_LONG).show()
+            return
+        }
+        val activeSelectionChanged = profile != null &&
+            activeConnectionFingerprint != profile.fingerprint
+        if (profile != null && usesActiveRuntime && (selectionChanged || activeSelectionChanged)) {
+            DiagnosticLogger.info(
+                this,
+                "activity.connection.switch.requested",
+                "profile=${profile.tag}",
+            )
+            requestActiveConnectionSwitch(selectedSubscriptionId, profile.fingerprint)
+            Toast.makeText(this, R.string.connection_switching, Toast.LENGTH_SHORT).show()
+            return
+        }
         if (!selectionChanged) return
         connectionSelectionPreferenceStore.saveSelectedProfile(selectedSubscriptionId, profile)
         DiagnosticLogger.info(
@@ -3096,7 +3531,7 @@ class MainActivity : Activity() {
             selectedSubscriptionId,
             connectionProfiles,
         )
-        val value = profile?.tag ?: if (automaticTypes.isEmpty()) {
+        val configuredValue = profile?.tag ?: if (automaticTypes.isEmpty()) {
             getString(R.string.option_automatic)
         } else {
             getString(
@@ -3108,6 +3543,16 @@ class MainActivity : Activity() {
                 },
             )
         }
+        val value = activeConnectionTag.takeIf {
+            buttonModel.state == VpnState.Started && it.isNotBlank()
+        }?.let { activeTag ->
+            when {
+                activeRuntimeSubscriptionId != selectedSubscriptionId ->
+                    getString(R.string.connection_active_value, activeTag)
+                profile == null -> getString(R.string.connection_automatic_active_value, activeTag)
+                else -> activeTag
+            }
+        } ?: configuredValue
         connectionSelectorRow.setValue(value)
         connectionSelectorRow.contentDescription = getString(R.string.connection_content_description, value)
     }
@@ -3932,6 +4377,21 @@ class MainActivity : Activity() {
         reconnectForConnectionOptionChange()
     }
 
+    private fun saveConnectionMode(mode: ConnectionMode) {
+        if (connectionModePreferenceStore.read() == mode) return
+        connectionModePreferenceStore.save(mode)
+        DiagnosticLogger.info(this, "activity.connectionMode.saved", "mode=${mode.wireName}")
+        renderLanSharingControls(settingsEnabled = true)
+        if (buttonModel.state != VpnState.Started) return
+        if (mode == ConnectionMode.Vpn) {
+            beginConnectFlow(Actions.RECONNECT)
+        } else {
+            buttonModel.onStateChanged(VpnState.Starting)
+            renderState(VpnState.Starting)
+            startVpnService(Actions.RECONNECT)
+        }
+    }
+
     private fun saveLanSharingPasswordRequired(required: Boolean) {
         val settings = lanSharingPreferenceStore.read()
         if (settings.passwordRequired == required) return
@@ -3958,23 +4418,37 @@ class MainActivity : Activity() {
     }
 
     private fun renderLanSharingControls(settingsEnabled: Boolean) {
-        if (!::lanSharingCheckbox.isInitialized) return
         val settings = lanSharingPreferenceStore.read()
-        lanSharingCheckbox.isChecked = settings.enabled
-        lanSharingCheckbox.isEnabled = settingsEnabled
-        lanSharingPasswordCheckbox.isChecked = settings.passwordRequired
-        lanSharingPasswordCheckbox.isEnabled = settingsEnabled
-        val details = lanSharingDetails(settings)
-        lanSharingDetailsText.text = details
-        lanSharingDetailsText.contentDescription = getString(R.string.lan_sharing_details_accessibility, details)
-        lanSharingDetailsText.isEnabled = settingsEnabled
-        lanSharingDetailsText.alpha = when {
-            !settingsEnabled -> 0.45f
-            settings.enabled -> 1f
-            else -> 0.7f
+        val selectedMode = connectionModePreferenceStore.read()
+        val usesVpnTunnel = ConnectionModePolicy.shouldStartTun(selectedMode, alwaysOnMode, lockdownMode)
+        if (::connectionModeGroup.isInitialized) {
+            val modeSelectionEnabled = settingsEnabled && !alwaysOnMode && !lockdownMode
+            connectionModeGroup.isEnabled = modeSelectionEnabled
+            vpnModeButton.isEnabled = modeSelectionEnabled
+            proxyModeButton.isEnabled = modeSelectionEnabled
+            val selectedId = if (usesVpnTunnel) vpnModeButton.id else proxyModeButton.id
+            if (connectionModeGroup.checkedButtonId != selectedId) connectionModeGroup.check(selectedId)
         }
-        lanSharingRegenerateButton.visibility = if (settings.passwordRequired) View.VISIBLE else View.GONE
-        lanSharingRegenerateButton.isEnabled = settingsEnabled
+        renderDashboardLocalEndpoint(if (usesVpnTunnel) ConnectionMode.Vpn else ConnectionMode.Proxy)
+        if (::lanSharingCheckbox.isInitialized) {
+            val details = lanSharingDetails(settings)
+            lanSharingCheckbox.isChecked = settings.enabled
+            lanSharingCheckbox.isEnabled = settingsEnabled
+            lanSharingPasswordCheckbox.isChecked = settings.passwordRequired
+            lanSharingPasswordCheckbox.isEnabled = settingsEnabled
+            lanSharingDetailsText.text = details
+            lanSharingDetailsText.contentDescription =
+                getString(R.string.lan_sharing_details_accessibility, details)
+            lanSharingDetailsText.isEnabled = settingsEnabled
+            lanSharingDetailsText.alpha = when {
+                !settingsEnabled -> 0.45f
+                settings.enabled -> 1f
+                else -> 0.7f
+            }
+            lanSharingRegenerateButton.visibility =
+                if (settings.passwordRequired) View.VISIBLE else View.GONE
+            lanSharingRegenerateButton.isEnabled = settingsEnabled
+        }
     }
 
     private fun lanSharingDetails(settings: LanSharingSettings): String {
@@ -4190,8 +4664,9 @@ class MainActivity : Activity() {
         renderDnsPrivacySelection()
     }
 
-    private fun beginConnectFlow() {
+    private fun beginConnectFlow(action: String = Actions.CONNECT) {
         connectFlowPending = true
+        connectFlowAction = action
         buttonModel.onStateChanged(VpnState.Starting)
         renderState(VpnState.Starting)
         requestNotificationPermissionIfNeeded()
@@ -4222,6 +4697,16 @@ class MainActivity : Activity() {
             DiagnosticLogger.info(this, "permission.vpn.skip", "reason=connect-canceled")
             return
         }
+        if (!ConnectionModePolicy.shouldStartTun(
+                connectionModePreferenceStore.read(),
+                alwaysOnMode,
+                lockdownMode,
+            )
+        ) {
+            DiagnosticLogger.info(this, "permission.vpn", "skipped mode=proxy")
+            startPendingConnectAction()
+            return
+        }
         val intent = VpnService.prepare(this)
         if (intent != null) {
             DiagnosticLogger.info(this, "permission.vpn", "requesting")
@@ -4229,9 +4714,15 @@ class MainActivity : Activity() {
             startActivityForResult(intent, REQUEST_VPN_PERMISSION)
         } else {
             DiagnosticLogger.info(this, "permission.vpn", "already granted")
-            connectFlowPending = false
-            startVpnService(Actions.CONNECT)
+            startPendingConnectAction()
         }
+    }
+
+    private fun startPendingConnectAction() {
+        val action = connectFlowAction
+        connectFlowPending = false
+        connectFlowAction = Actions.CONNECT
+        startVpnService(action)
     }
 
     private fun startVpnService(action: String) {
@@ -4244,6 +4735,16 @@ class MainActivity : Activity() {
         } else {
             startService(intent)
         }
+    }
+
+    private fun requestActiveConnectionSwitch(subscriptionId: String, fingerprint: String) {
+        startService(
+            Intent(this, WhiteDnsVpnService::class.java)
+                .setAction(Actions.SWITCH_CONNECTION)
+                .putExtra(Actions.EXTRA_APP_INITIATED, true)
+                .putExtra(Actions.EXTRA_SUBSCRIPTION_ID, subscriptionId)
+                .putExtra(Actions.EXTRA_CONNECTION_FINGERPRINT, fingerprint),
+        )
     }
 
     private fun renderAlwaysOnStatus() {
@@ -4262,12 +4763,22 @@ class MainActivity : Activity() {
         scheduleDisconnectTimeout(state)
         val presentation = DashboardStatePresenter.forState(state)
         val accent = accentFor(presentation.tone)
-        signalArc.setVpnState(state)
-        signalArc.isEnabled = buttonModel.isEnabled()
-        signalArc.contentDescription = getString(buttonModel.labelRes())
-        statusText.setTextColor(accent)
-        statusText.text = getString(R.string.status_with_indicator, getString(presentation.titleRes))
-        statusText.background = null
+        connectionOrb.setVpnState(state)
+        connectionOrb.isEnabled = buttonModel.isEnabled()
+        connectionOrb.contentDescription = getString(buttonModel.labelRes())
+        // Update status dot color based on state
+        (statusDot.background as? GradientDrawable)?.setColor(
+            when (state) {
+                VpnState.Started -> TEAL
+                VpnState.Starting, VpnState.Stopping -> AMBER
+                is VpnState.Error, VpnState.DailyLimitReached -> ERROR
+                VpnState.Stopped -> palette.neutral
+            }
+        )
+        statusText.text = getString(presentation.titleRes)
+        statusText.setTextColor(TEXT_SECONDARY)
+        // Update timer opacity based on connection state
+        timerText.alpha = if (state == VpnState.Started) 1f else 0.25f
         connectionCountryText.text = when {
             state == VpnState.Started && connectionCountryFlag.isNotBlank() ->
                 getString(R.string.route_location, connectionCountryFlag)
@@ -4280,12 +4791,14 @@ class MainActivity : Activity() {
         }
         connectionCountryText.setTextColor(if (state == VpnState.Started) accent else TEXT_SECONDARY)
         renderConnectionDetails(state)
-        refreshActionButton.visibility = if (state == VpnState.Started) View.VISIBLE else View.GONE
+        refreshActionButton.visibility = if (state == VpnState.Started) View.VISIBLE else View.INVISIBLE
         refreshActionButton.isEnabled = state == VpnState.Started
         refreshActionButton.contentDescription = getString(R.string.action_reconnect)
-        refreshActionButton.backgroundTintList = ColorStateList.valueOf(SURFACE)
-        refreshActionButton.strokeColor = ColorStateList.valueOf(OUTLINE)
-        refreshActionButton.rippleColor = ColorStateList.valueOf(withAlpha(TEAL, 24))
+        // Light green background with dark green text
+        val lightGreenBg = if (palette.isDark) withAlpha(0x3FBE90, 40) else withAlpha(0x007E50, 30)
+        refreshActionButton.backgroundTintList = ColorStateList.valueOf(lightGreenBg)
+        refreshActionButton.strokeColor = ColorStateList.valueOf(Color.TRANSPARENT)
+        refreshActionButton.rippleColor = ColorStateList.valueOf(withAlpha(TEAL, 50))
         refreshActionButton.setTextColor(ColorStateList.valueOf(TEAL))
         refreshActionButton.iconTint = ColorStateList.valueOf(TEAL)
         val settingsEnabled = state != VpnState.Starting && state != VpnState.Stopping
@@ -4347,14 +4860,17 @@ class MainActivity : Activity() {
     }
 
     private fun setTimerText(elapsedMs: Long) {
-        timerText.setTextColor(
-            if (buttonModel.state == VpnState.Started && sessionStartedAtElapsedMs > 0L) {
-                TEXT_PRIMARY
-            } else {
-                TIMER_MUTED
-            },
-        )
+        val isActive = buttonModel.state == VpnState.Started && sessionStartedAtElapsedMs > 0L
+        timerText.setTextColor(TEXT_PRIMARY)
+        timerText.alpha = if (isActive) 1f else 0.25f
         timerText.text = formatDuration(elapsedMs)
+    }
+
+    private fun toggleAppTheme() {
+        val currentTheme = appThemePreferenceStore.read()
+        val newTheme = if (currentTheme == AppThemeMode.Dark) AppThemeMode.Light else AppThemeMode.Dark
+        appThemePreferenceStore.save(newTheme)
+        recreate()
     }
 
     private fun updateTransferSpeeds() {

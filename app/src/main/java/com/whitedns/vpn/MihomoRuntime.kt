@@ -1283,7 +1283,11 @@ object MihomoControllerProxies {
                     .equals("Selector", ignoreCase = true)
             }
             .toList()
-        val roots = (preferredRoots + selectorNames).distinct()
+        val roots = preferredRoots
+            .takeIf(List<String>::isNotEmpty)
+            ?.filter { it in selectorNames }
+            ?.distinct()
+            ?: selectorNames
         roots.forEach { root ->
             val path = selectorPathFrom(
                 proxies = proxies,
@@ -1296,6 +1300,27 @@ object MihomoControllerProxies {
                 .reversed()
         }
         return emptyList()
+    }
+
+    fun selectableTargetNames(
+        response: JSONObject,
+        targetNames: Collection<String>,
+        preferredRoots: List<String> = emptyList(),
+    ): Set<String> = targetNames.filterTo(linkedSetOf()) { targetName ->
+        selectorPath(response, targetName, preferredRoots).isNotEmpty()
+    }
+
+    fun currentSelections(
+        response: JSONObject,
+        path: List<MihomoGroupSelection>,
+    ): List<MihomoGroupSelection> {
+        val proxies = response.optJSONObject("proxies") ?: return emptyList()
+        return path.mapNotNull { selection ->
+            proxies.optJSONObject(selection.selectorGroup)
+                ?.optString("now")
+                ?.takeIf(String::isNotBlank)
+                ?.let { MihomoGroupSelection(selection.selectorGroup, it) }
+        }
     }
 
     private fun selectorPathFrom(
@@ -1370,6 +1395,7 @@ object MihomoRuntimeHealth {
     fun downloadSpeedKbpsThroughMixedProxy(
         url: String = MihomoRuntimeDefaults.SPEED_TEST_URL,
         timeoutMs: Int = 10_000,
+        onResponseReady: () -> Unit = {},
     ): Int? {
         val proxy = Proxy(
             Proxy.Type.HTTP,
@@ -1384,6 +1410,7 @@ object MihomoRuntimeHealth {
         connection.setRequestProperty("Connection", "close")
         return connection.use {
             if (responseCode !in 200..299) return@use null
+            onResponseReady()
             val startedAtNanos = System.nanoTime()
             var bytesRead = 0L
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)

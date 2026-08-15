@@ -23,12 +23,14 @@ class ConnectionDelayFeaturePolicyTest {
     }
 
     @Test
-    fun automaticCandidatesUseFreshDelayThenLastSelectionThenSubscriptionOrder() {
+    fun automaticCandidatesUseSuccessfulResultsThenUntestedAndExcludeFailures() {
         val first = profile("first", 1)
         val lastSelected = profile("last", 2)
-        val slow = profile("slow", 3)
-        val fast = profile("fast", 4)
+        val failed = profile("failed", 3)
+        val slow = profile("slow", 4)
+        val fast = profile("fast", 5)
         val records = listOf(
+            record("sub", failed.fingerprint, null, ConnectionDelayStatus.Failure, 100),
             record("sub", slow.fingerprint, 200, ConnectionDelayStatus.Success, 100),
             record("sub", fast.fingerprint, 50, ConnectionDelayStatus.Success, 100),
         )
@@ -36,10 +38,17 @@ class ConnectionDelayFeaturePolicyTest {
         assertEquals(
             listOf("fast", "slow", "last", "first"),
             AutomaticConnectionCandidatePolicy.order(
-                profiles = listOf(first, lastSelected, slow, fast),
+                profiles = listOf(first, lastSelected, failed, slow, fast),
                 records = records,
                 lastSelectedProfile = lastSelected,
             ).map(ConnectionProfile::tag),
+        )
+        assertTrue(
+            AutomaticConnectionCandidatePolicy.order(
+                profiles = listOf(failed),
+                records = records,
+                lastSelectedProfile = failed,
+            ).isEmpty(),
         )
     }
 
@@ -63,6 +72,9 @@ class ConnectionDelayFeaturePolicyTest {
                 status = Actions.DELAY_TEST_COMPLETED,
                 completed = 2,
                 available = 1,
+                speedCompleted = 1,
+                speedTotal = 1,
+                speedFinishedFingerprints = setOf("profile"),
             )
         }
 
@@ -70,6 +82,8 @@ class ConnectionDelayFeaturePolicyTest {
         assertFalse(completed?.isRunning == true)
         assertEquals(2, completed?.completed)
         assertEquals(1, completed?.available)
+        assertEquals(1, completed?.speedCompleted)
+        assertEquals(setOf("profile"), completed?.speedFinishedFingerprints)
 
         ConnectionDelayTestState.replace(
             ConnectionDelayTestSession(
@@ -98,12 +112,12 @@ class ConnectionDelayFeaturePolicyTest {
         ).associateBy(ConnectionDelayRecord::fingerprint)
 
         assertEquals(
-            listOf("fast", "low-delay", "delay-only", "pending"),
+            listOf("fast", "low-delay", "pending", "delay-only"),
             ConnectionTestResultOrder.order(
                 profiles,
                 records,
                 speedTestEnabled = true,
-                pendingFingerprints = setOf(pending.fingerprint),
+                pendingFingerprints = setOf(pending.fingerprint, delayOnly.fingerprint),
             ).map(ConnectionProfile::tag),
         )
         assertEquals(

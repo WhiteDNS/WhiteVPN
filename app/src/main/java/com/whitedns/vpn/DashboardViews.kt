@@ -5,6 +5,7 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -460,9 +461,8 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
     private val palette = WhiteDnsDesignTokens.forContext(context)
     private val labelText = TextView(context).apply {
         textSize = 12f
-        typeface = WhiteDnsBodyBoldTypeface
+        typeface = WhiteDnsBodyTypeface
         setTextColor(palette.textSecondary)
-        letterSpacing = 0.08f
         includeFontPadding = false
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
@@ -475,15 +475,15 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         includeFontPadding = false
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
-        gravity = Gravity.START
+        gravity = Gravity.END
     }
     private val chevronText = TextView(context).apply {
-        setText(R.string.chevron_forward)
-        textSize = 22f
+        text = "‹"  // Left-pointing chevron for RTL-friendly design
+        textSize = 16f
         layoutDirection = View.LAYOUT_DIRECTION_LTR
         textDirection = View.TEXT_DIRECTION_LTR
-        typeface = WhiteDnsBodyBoldTypeface
-        setTextColor(palette.teal)
+        typeface = WhiteDnsBodyTypeface
+        setTextColor(palette.textTertiary)
         includeFontPadding = false
         isSingleLine = true
         gravity = Gravity.CENTER
@@ -493,26 +493,35 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         orientation = HORIZONTAL
         layoutDirection = View.LAYOUT_DIRECTION_LOCALE
         gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = dp(72)
+        minimumHeight = dp(48)
         setPadding(dp(16), dp(12), dp(16), dp(12))
-        val selectableBackground = TypedValue()
-        if (context.theme.resolveAttribute(android.R.attr.selectableItemBackground, selectableBackground, true)) {
-            setBackgroundResource(selectableBackground.resourceId)
+        // Rounded ripple effect to match container
+        val rippleMask = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = dp(22).toFloat()
+            setColor(android.graphics.Color.WHITE)
         }
-        addView(
-            LinearLayout(context).apply {
-                orientation = VERTICAL
-                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                addView(labelText, LayoutParams(-1, -2))
-                addView(valueText, LayoutParams(-1, -2).apply { topMargin = dp(8) })
-            },
-            LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        val rippleColor = android.content.res.ColorStateList.valueOf(
+            (palette.teal and 0x00FFFFFF) or (0x20 shl 24)  // 12% opacity
         )
+        background = android.graphics.drawable.RippleDrawable(rippleColor, null, rippleMask)
+        // Label on left
+        addView(
+            labelText,
+            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+        )
+        // Value on right (takes remaining space)
+        addView(
+            valueText,
+            LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(12)
+                marginEnd = dp(8)
+            },
+        )
+        // Chevron
         addView(
             chevronText,
-            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
-                marginStart = dp(12)
-            },
+            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
     }
 
@@ -599,6 +608,113 @@ class StatusIndicatorView(context: Context) : View(context) {
             markPath.lineTo(w * 0.7f, h * 0.38f)
             canvas.drawPath(markPath, markPaint)
         }
+    }
+
+    private fun dp(value: Float): Float = value * resources.displayMetrics.density
+}
+
+/**
+ * Animated arrow icon that pulses between muted and accent colors.
+ * Used for download/upload indicators.
+ */
+class AnimatedArrowIcon(context: Context, private val isDownload: Boolean) : View(context) {
+    private val palette = WhiteDnsDesignTokens.forContext(context)
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(2f)
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val path = Path()
+
+    private var colorAnimator: ValueAnimator? = null
+    private var currentColor = palette.textSecondary
+    private val evaluator = ArgbEvaluator()
+
+    private val iconSize = dp(13f)
+
+    var isAnimating: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (value) startAnimation() else stopAnimation()
+        }
+
+    init {
+        setLayerType(LAYER_TYPE_HARDWARE, null)
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val size = iconSize.toInt()
+        setMeasuredDimension(size, size)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val cx = w / 2f
+        val strokeW = dp(2f)
+
+        paint.color = currentColor
+        path.reset()
+
+        if (isDownload) {
+            // Down arrow: vertical line from top to bottom, then V shape at bottom
+            val top = strokeW
+            val bottom = h - strokeW
+            val arrowSize = w * 0.35f
+
+            path.moveTo(cx, top)
+            path.lineTo(cx, bottom)
+            path.moveTo(cx - arrowSize, bottom - arrowSize)
+            path.lineTo(cx, bottom)
+            path.lineTo(cx + arrowSize, bottom - arrowSize)
+        } else {
+            // Up arrow: vertical line from bottom to top, then V shape at top
+            val top = strokeW
+            val bottom = h - strokeW
+            val arrowSize = w * 0.35f
+
+            path.moveTo(cx, bottom)
+            path.lineTo(cx, top)
+            path.moveTo(cx - arrowSize, top + arrowSize)
+            path.lineTo(cx, top)
+            path.lineTo(cx + arrowSize, top + arrowSize)
+        }
+
+        canvas.drawPath(path, paint)
+    }
+
+    private fun startAnimation() {
+        stopAnimation()
+        colorAnimator = ValueAnimator.ofFloat(0f, 1f, 0f).apply {
+            duration = 1500L
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = LinearInterpolator()
+            addUpdateListener { animator ->
+                val fraction = animator.animatedValue as Float
+                currentColor = evaluator.evaluate(fraction, palette.textSecondary, palette.teal) as Int
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    private fun stopAnimation() {
+        colorAnimator?.cancel()
+        colorAnimator = null
+        currentColor = palette.textSecondary
+        invalidate()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (isAnimating) startAnimation()
+    }
+
+    override fun onDetachedFromWindow() {
+        stopAnimation()
+        super.onDetachedFromWindow()
     }
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density

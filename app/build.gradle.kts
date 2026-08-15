@@ -47,7 +47,7 @@ fun httpsBuildUrl(environmentName: String, defaultValue: String): String {
 
 val mihomoSubscriptionUrl = httpsBuildUrl(
     "WHITEDNS_MIHOMO_SUBSCRIPTION_URL",
-    "https://whitedns-sub.whitedns.workers.dev/mihomo/encrypted",
+    "https://raw.githubusercontent.com/iampedii/whitedns-sub/refs/heads/main/mihomo.yaml",
 )
 val encryptedIpListUrl = httpsBuildUrl(
     "WHITEDNS_ENCRYPTED_IP_LIST_URL",
@@ -80,7 +80,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 78
-        versionName = "1.3.1"
+        versionName = "1.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
