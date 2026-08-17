@@ -275,6 +275,73 @@ class UserSubscriptionImporterTest {
     }
 
     @Test
+    fun importerNormalizesXrayWireGuardAndChains() {
+        val imported = UserSubscriptionImporter.import(
+            """
+            [
+              {
+                "remarks": "WARP",
+                "outbounds": [{
+                  "tag": "proxy",
+                  "protocol": "wireguard",
+                  "settings": {
+                    "secretKey": "private-one",
+                    "address": ["172.16.0.2/32", "2606:4700:110:8765::2/128"],
+                    "mtu": 1280,
+                    "reserved": [1, 2, 3],
+                    "peers": [{
+                      "endpoint": "engage.example.com:2408",
+                      "publicKey": "public-one",
+                      "keepAlive": 25
+                    }]
+                  }
+                }]
+              },
+              {
+                "remarks": "WoW",
+                "outbounds": [
+                  {
+                    "tag": "chain",
+                    "protocol": "wireguard",
+                    "settings": {
+                      "secretKey": "private-chain",
+                      "address": ["172.16.0.3/32"],
+                      "peers": [{"endpoint": "162.159.192.1:2408", "publicKey": "public-chain"}]
+                    },
+                    "streamSettings": {"sockopt": {"dialerProxy": "proxy"}}
+                  },
+                  {
+                    "tag": "proxy",
+                    "protocol": "wireguard",
+                    "settings": {
+                      "secretKey": "private-base",
+                      "address": ["172.16.0.4/32"],
+                      "peers": [{"endpoint": "engage.example.net:2408", "publicKey": "public-base"}]
+                    }
+                  }
+                ]
+              }
+            ]
+            """.trimIndent(),
+            nowMs = 123L,
+        )
+        val snapshot = MihomoConfigParser.parse(imported.yaml, 123L)
+
+        assertEquals(UserSubscriptionFormat.Links, imported.format)
+        assertEquals(3, imported.connectionCount)
+        assertTrue(snapshot.catalog.profiles.all { it.type == "wireguard" })
+        assertTrue(imported.yaml.contains("private-key: 'private-one'"))
+        assertTrue(imported.yaml.contains("ip: '172.16.0.2'"))
+        assertTrue(imported.yaml.contains("ipv6: '2606:4700:110:8765::2'"))
+        assertTrue(imported.yaml.contains("ip-version: 'ipv4-prefer'"))
+        assertTrue(imported.yaml.contains("ip-version: 'ipv4'"))
+        assertTrue(imported.yaml.contains("allowed-ips: ['0.0.0.0/0', '::/0']"))
+        assertTrue(imported.yaml.contains("reserved: [1, 2, 3]"))
+        assertTrue(imported.yaml.contains("persistent-keepalive: 25"))
+        assertTrue(imported.yaml.contains("dialer-proxy: 'WoW (proxy)'"))
+    }
+
+    @Test
     fun importerSupportsXrayTrojanAndSkipsAggregateConfigs() {
         val imported = UserSubscriptionImporter.import(
             """

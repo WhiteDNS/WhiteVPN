@@ -11,7 +11,7 @@ import java.util.UUID
 
 enum class UserSubscriptionFormat(val wireName: String, val label: String) {
     Mihomo("mihomo", "Mihomo YAML"),
-    Links("links", "VLESS / VMess / Trojan / SS");
+    Links("links", "VLESS / VMess / Trojan / SS / WireGuard");
 
     companion object {
         fun fromWireName(value: String?): UserSubscriptionFormat =
@@ -88,9 +88,93 @@ object JsonSubscriptionImporter {
     }
 
     private fun xrayProxies(configs: JSONArray): List<JSONObject> {
-        return (0 until configs.length()).mapNotNull { index ->
-            configs.optJSONObject(index)?.let { xrayProxy(it, index) }
+        return (0 until configs.length()).flatMap { index ->
+            val config = configs.optJSONObject(index) ?: return@flatMap emptyList()
+            xrayWireGuardProxies(config, index).ifEmpty { listOfNotNull(xrayProxy(config, index)) }
         }
+    }
+
+    private fun xrayWireGuardProxies(config: JSONObject, index: Int): List<JSONObject> {
+        val outbounds = config.optJSONArray("outbounds") ?: return emptyList()
+        val wireGuard = (0 until outbounds.length())
+            .mapNotNull(outbounds::optJSONObject)
+            .filter { it.optString("protocol") == "wireguard" }
+        if (wireGuard.isEmpty()) return emptyList()
+
+        val baseName = config.optString("remarks").ifBlank { "Xray ${index + 1}" }
+        val names = wireGuard.mapIndexed { position, outbound ->
+            if (position == 0) baseName else "$baseName (${outbound.optString("tag").ifBlank { "WireGuard ${position + 1}" }})"
+        }
+        val converted = wireGuard.mapIndexedNotNull { position, outbound ->
+            xrayWireGuardProxy(outbound, names[position])?.let { outbound to it }
+        }
+        val namesByTag = converted.mapNotNull { (outbound, proxy) ->
+            outbound.optString("tag").takeIf(String::isNotBlank)?.let { it to proxy.getString("name") }
+        }.toMap()
+
+        return converted.mapNotNull { (outbound, proxy) ->
+            val dialerTag = outbound.optJSONObject("streamSettings")
+                ?.optJSONObject("sockopt")
+                ?.optString("dialerProxy")
+                .orEmpty()
+            if (dialerTag.isBlank()) return@mapNotNull proxy
+            val dialerName = namesByTag[dialerTag] ?: return@mapNotNull null
+            proxy.put("dialer-proxy", dialerName)
+        }
+    }
+
+    private fun xrayWireGuardProxy(outbound: JSONObject, name: String): JSONObject? {
+        val settings = outbound.optJSONObject("settings") ?: return null
+        val peers = settings.optJSONArray("peers") ?: return null
+        // ponytail: current Xray WARP feeds use one peer; add Mihomo full `peers` syntax if a real multi-peer feed appears.
+        if (peers.length() != 1) return null
+        val peer = peers.optJSONObject(0) ?: return null
+        val (server, port) = wireGuardEndpoint(peer.optString("endpoint")) ?: return null
+        val privateKey = settings.optString("secretKey").takeIf(String::isNotBlank) ?: return null
+        val publicKey = peer.optString("publicKey").takeIf(String::isNotBlank) ?: return null
+        val addresses = settings.optJSONArray("address") ?: return null
+        val localAddresses = (0 until addresses.length())
+            .mapNotNull { addresses.opt(it) as? String }
+            .map { it.substringBefore('/').trim() }
+            .filter(String::isNotBlank)
+        val ipv4 = localAddresses.firstOrNull { ':' !in it } ?: return null
+        val ipv6 = localAddresses.firstOrNull { ':' in it }
+
+        return JSONObject()
+            .put("name", name)
+            .put("type", "wireguard")
+            .put("server", server)
+            .put("port", port)
+            .put("ip", ipv4)
+            .put("ip-version", if (ipv6 == null) "ipv4" else "ipv4-prefer")
+            .put("private-key", privateKey)
+            .put("public-key", publicKey)
+            .put("allowed-ips", peer.optJSONArray("allowedIPs") ?: JSONArray(listOf("0.0.0.0/0", "::/0")))
+            .put("udp", true)
+            .apply {
+                ipv6?.let { put("ipv6", it) }
+                settings.optJSONArray("reserved")?.let { put("reserved", wireGuardReserved(it) ?: return null) }
+                settings.optInt("mtu").takeIf { it > 0 }?.let { put("mtu", it) }
+                peer.optString("preSharedKey").takeIf(String::isNotBlank)?.let { put("pre-shared-key", it) }
+                peer.optInt("keepAlive").takeIf { it > 0 }?.let { put("persistent-keepalive", it) }
+            }
+    }
+
+    private fun wireGuardEndpoint(value: String): Pair<String, Int>? {
+        val endpoint = runCatching { URI("wg://$value") }.getOrNull() ?: return null
+        val server = endpoint.host?.removePrefix("[")?.removeSuffix("]")?.takeIf(String::isNotBlank) ?: return null
+        val port = endpoint.port.takeIf { it in 1..65535 } ?: return null
+        return server to port
+    }
+
+    private fun wireGuardReserved(source: JSONArray): JSONArray? {
+        if (source.length() != 3) return null
+        val values = mutableListOf<Int>()
+        for (index in 0 until source.length()) {
+            val value = (source.opt(index) as? Number)?.toInt()?.takeIf { it in 0..255 } ?: return null
+            values += value
+        }
+        return JSONArray(values)
     }
 
     private fun xrayProxy(config: JSONObject, index: Int): JSONObject? {
