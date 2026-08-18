@@ -579,7 +579,8 @@ class MihomoRuntimeConfigBuilderTest {
             ),
         )
 
-        assertEquals(MihomoRuntimeDefaults.HEALTH_URL, setup.getString("test-url"))
+        assertEquals("https://www.gstatic.com/generate_204", MihomoRuntimeDefaults.DELAY_TEST_URL)
+        assertEquals(MihomoRuntimeDefaults.DELAY_TEST_URL, setup.getString("test-url"))
         assertEquals(
             "WhiteDNS Auto Select",
             setup.getJSONObject("selected-map").getString("WhiteDNS Proxy Select"),
