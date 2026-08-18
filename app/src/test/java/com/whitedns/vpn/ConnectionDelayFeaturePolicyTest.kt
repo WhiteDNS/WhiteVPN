@@ -72,9 +72,6 @@ class ConnectionDelayFeaturePolicyTest {
                 status = Actions.DELAY_TEST_COMPLETED,
                 completed = 2,
                 available = 1,
-                speedCompleted = 1,
-                speedTotal = 1,
-                speedFinishedFingerprints = setOf("profile"),
             )
         }
 
@@ -82,8 +79,6 @@ class ConnectionDelayFeaturePolicyTest {
         assertFalse(completed?.isRunning == true)
         assertEquals(2, completed?.completed)
         assertEquals(1, completed?.available)
-        assertEquals(1, completed?.speedCompleted)
-        assertEquals(setOf("profile"), completed?.speedFinishedFingerprints)
 
         ConnectionDelayTestState.replace(
             ConnectionDelayTestSession(
@@ -98,7 +93,39 @@ class ConnectionDelayFeaturePolicyTest {
     }
 
     @Test
-    fun liveResultsUseSpeedThenDelayOrDelayOnly() {
+    fun manualSpeedSessionCanBeReattachedWithoutChangingDelayState() {
+        ConnectionDelayTestState.replace(
+            ConnectionDelayTestSession(
+                testId = "delay-test",
+                subscriptionId = "speed-sub",
+                connectionTypes = setOf("vless"),
+                status = Actions.DELAY_TEST_COMPLETED,
+            ),
+        )
+        ConnectionSpeedTestState.replace(
+            ConnectionSpeedTestSession(
+                testId = "speed-test",
+                subscriptionId = "speed-sub",
+                fingerprint = "profile",
+                status = Actions.SPEED_TEST_STARTED,
+            ),
+        )
+
+        assertTrue(ConnectionSpeedTestState.snapshot("speed-sub")?.isRunning == true)
+        assertTrue(ConnectionSpeedTestState.isAnyRunning())
+        assertNull(ConnectionSpeedTestState.snapshot("other-speed-sub"))
+
+        ConnectionSpeedTestState.update("speed-test") {
+            it.copy(status = Actions.SPEED_TEST_COMPLETED)
+        }
+
+        assertFalse(ConnectionSpeedTestState.snapshot("speed-sub")?.isRunning == true)
+        assertFalse(ConnectionSpeedTestState.isAnyRunning())
+        assertEquals("delay-test", ConnectionDelayTestState.snapshot("speed-sub")?.testId)
+    }
+
+    @Test
+    fun liveResultsAlwaysUseDelayOrderAndIgnoreMeasuredSpeed() {
         val pending = profile("pending", 1)
         val delayOnly = profile("delay-only", 2)
         val fast = profile("fast", 3)
@@ -112,24 +139,22 @@ class ConnectionDelayFeaturePolicyTest {
         ).associateBy(ConnectionDelayRecord::fingerprint)
 
         assertEquals(
-            listOf("fast", "low-delay", "pending", "delay-only"),
-            ConnectionTestResultOrder.order(
-                profiles,
-                records,
-                speedTestEnabled = true,
-                pendingFingerprints = setOf(pending.fingerprint, delayOnly.fingerprint),
-            ).map(ConnectionProfile::tag),
-        )
-        assertEquals(
             listOf("delay-only", "low-delay", "fast", "pending"),
             ConnectionTestResultOrder.order(
                 profiles,
                 records,
-                speedTestEnabled = false,
                 pendingFingerprints = setOf(pending.fingerprint),
             ).map(ConnectionProfile::tag),
         )
         assertEquals(8_000, ConnectionSpeed.kbps(1_000_000, 1_000_000_000))
+    }
+
+    @Test
+    fun connectionTestSettingsUseExpectedDefaultsAndClampInvalidValues() {
+        assertEquals(ConnectionTestSettings(15, 10, 1), ConnectionTestSettings())
+        assertEquals(ConnectionTestSettings(1, 100, 1), ConnectionTestSettings(-1, 999, 0).normalized())
+        assertEquals(ConnectionTestSettings(30, 1, 100), ConnectionTestSettings(99, 0, 999).normalized())
+        assertEquals(5_000_000L, ConnectionTestSettings(speedTestMegabytes = 5).speedTestBytes)
     }
 
     private fun record(

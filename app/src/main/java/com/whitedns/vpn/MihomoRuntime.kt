@@ -24,6 +24,7 @@ object MihomoRuntimeDefaults {
     const val FALLBACK_CONTROL_PORT = 9090
     const val CONTROLLER_HOST = "127.0.0.1"
     const val DNS_LISTEN_PORT = 1053
+    const val DELAY_TEST_URL = "https://www.gstatic.com/generate_204"
     val HEALTH_URLS = listOf(
         "https://valid-isrgrootx1.letsencrypt.org/",
         "https://connectivitycheck.gstatic.com/generate_204",
@@ -31,8 +32,8 @@ object MihomoRuntimeDefaults {
     )
     val HEALTH_URL = HEALTH_URLS.first()
     const val EGRESS_TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
-    const val SPEED_TEST_BYTES = 1_000_000
-    const val SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=1000000"
+    const val SPEED_TEST_BYTES = 1_000_000L
+    const val SPEED_TEST_URL_PREFIX = "https://speed.cloudflare.com/__down?bytes="
 }
 
 object TlsIntegrityPolicy {
@@ -542,7 +543,7 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
 
         fun setupParamsJson(
             selectedMap: Map<String, String> = emptyMap(),
-            testUrl: String = MihomoRuntimeDefaults.HEALTH_URL,
+            testUrl: String = MihomoRuntimeDefaults.DELAY_TEST_URL,
         ): JSONObject {
             return JSONObject()
                 .put("selected-map", JSONObject(selectedMap))
@@ -1207,7 +1208,7 @@ class MihomoControllerClient(
     fun delay(
         name: String,
         timeoutMs: Int = 5_000,
-        url: String = MihomoRuntimeDefaults.HEALTH_URL,
+        url: String = MihomoRuntimeDefaults.DELAY_TEST_URL,
     ): Int? {
         val payload = invokeAction(
             method = "asyncTestDelay",
@@ -1393,15 +1394,18 @@ object MihomoRuntimeHealth {
     }
 
     fun downloadSpeedKbpsThroughMixedProxy(
-        url: String = MihomoRuntimeDefaults.SPEED_TEST_URL,
+        downloadBytes: Long = MihomoRuntimeDefaults.SPEED_TEST_BYTES,
         timeoutMs: Int = 10_000,
         onResponseReady: () -> Unit = {},
     ): Int? {
+        val targetBytes = downloadBytes.coerceAtLeast(1L)
         val proxy = Proxy(
             Proxy.Type.HTTP,
             InetSocketAddress(MihomoRuntimeDefaults.CONTROLLER_HOST, MihomoRuntimeDefaults.MIXED_PORT),
         )
-        val connection = URL(url).openConnection(proxy) as HttpURLConnection
+        val connection = URL(
+            "${MihomoRuntimeDefaults.SPEED_TEST_URL_PREFIX}$targetBytes",
+        ).openConnection(proxy) as HttpURLConnection
         connection.connectTimeout = timeoutMs
         connection.readTimeout = timeoutMs
         connection.instanceFollowRedirects = false
@@ -1415,11 +1419,11 @@ object MihomoRuntimeHealth {
             var bytesRead = 0L
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             inputStream.use { input ->
-                while (bytesRead < MihomoRuntimeDefaults.SPEED_TEST_BYTES) {
+                while (bytesRead < targetBytes) {
                     val count = input.read(
                         buffer,
                         0,
-                        minOf(buffer.size.toLong(), MihomoRuntimeDefaults.SPEED_TEST_BYTES - bytesRead).toInt(),
+                        minOf(buffer.size.toLong(), targetBytes - bytesRead).toInt(),
                     )
                     if (count <= 0) break
                     bytesRead += count

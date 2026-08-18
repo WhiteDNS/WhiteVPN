@@ -84,24 +84,6 @@ class DashboardStatePresentationTest {
         )
     }
 
-    @Test
-    fun dashboardConnectionDetailsKeepTheSelectedSourceVisible() {
-        assertEquals(
-            "Selected · Public source\nVLESS outbound  •  ECH enabled",
-            ConnectionDetailsPresenter.forDashboard(
-                selectedSource = "Public source",
-                runtimeDetails = "VLESS outbound  •  ECH enabled",
-            ),
-        )
-        assertEquals(
-            "Selected · WhiteVPN",
-            ConnectionDetailsPresenter.forDashboard(
-                selectedSource = "WhiteVPN",
-                runtimeDetails = "",
-            ),
-        )
-    }
-
     private fun profile(
         type: String,
         server: String = "example.com",

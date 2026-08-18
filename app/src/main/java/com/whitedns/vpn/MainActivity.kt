@@ -1,6 +1,7 @@
 package com.whitedns.vpn
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.ClipData
@@ -28,6 +29,7 @@ import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
 import android.text.Editable
+import android.text.InputFilter
 import android.text.InputType
 import android.text.TextUtils
 import android.text.TextWatcher
@@ -36,6 +38,7 @@ import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.PathInterpolator
 import android.view.inputmethod.EditorInfo
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
@@ -97,11 +100,15 @@ class MainActivity : Activity() {
     private lateinit var connectionModePreferenceStore: ConnectionModePreferenceStore
     private lateinit var lanSharingPreferenceStore: LanSharingPreferenceStore
     private lateinit var connectionSelectionPreferenceStore: ConnectionSelectionPreferenceStore
+    private lateinit var connectionTestSettingsPreferenceStore: ConnectionTestSettingsPreferenceStore
     private lateinit var installedAppRepository: InstalledAppRepository
     private lateinit var userSubscriptionManager: UserSubscriptionManager
     private var privacyPolicyDialog: AlertDialog? = null
-    private var connectionSelectorDialog: AlertDialog? = null
     private var connectionDelayTestListener: ((Intent) -> Unit)? = null
+    private lateinit var appShellView: View
+    private lateinit var connectionTestingPageHost: ConnectionTestingPage
+    private var connectionTestingPageVisible: Boolean = false
+    private var advancedSettingsBackAction: (() -> Unit)? = null
     private var sessionStartedAtElapsedMs: Long = 0L
     private var connectFlowPending: Boolean = false
     private var connectFlowAction: String = Actions.CONNECT
@@ -127,11 +134,13 @@ class MainActivity : Activity() {
     private lateinit var connectionCountryText: TextView
     private lateinit var locationSelectorRow: DashboardDataRowView
     private lateinit var connectionSelectorRow: DashboardDataRowView
-    private lateinit var splitTunnelRow: DashboardDataRowView
+    private lateinit var homeSubscriptionSelectorRow: DashboardDataRowView
+    private var updateSplitTunnelControlsEnabled: ((Boolean) -> Unit)? = null
     private lateinit var connectionModeGroup: MaterialButtonToggleGroup
     private lateinit var vpnModeButton: MaterialButton
     private lateinit var proxyModeButton: MaterialButton
     private lateinit var dashboardLocalEndpointText: TextView
+    private lateinit var dashboardConnectionMetadataSection: View
     private lateinit var tlsIntegrityCheckbox: MaterialSwitch
     private lateinit var alwaysOnStatusText: TextView
     private lateinit var amneziaNoiseCheckbox: MaterialSwitch
@@ -220,6 +229,7 @@ class MainActivity : Activity() {
             when (intent.action) {
                 Actions.STATE_CHANGED -> handleStateChanged(context, intent)
                 Actions.CONNECTION_DELAY_TEST_CHANGED -> connectionDelayTestListener?.invoke(intent)
+                Actions.CONNECTION_SPEED_TEST_CHANGED -> connectionDelayTestListener?.invoke(intent)
             }
         }
     }
@@ -242,6 +252,7 @@ class MainActivity : Activity() {
         connectionModePreferenceStore = ConnectionModePreferenceStore(this)
         lanSharingPreferenceStore = LanSharingPreferenceStore(this)
         connectionSelectionPreferenceStore = ConnectionSelectionPreferenceStore(this)
+        connectionTestSettingsPreferenceStore = ConnectionTestSettingsPreferenceStore(this)
         installedAppRepository = InstalledAppRepository(this)
         userSubscriptionManager = UserSubscriptionManager(this)
         DiagnosticLogger.info(this, "activity.onCreate")
@@ -249,6 +260,9 @@ class MainActivity : Activity() {
         setContentView(buildAppShell())
         renderState(VpnState.Stopped)
         refreshLocationOptions()
+        if (savedInstanceState?.getBoolean(STATE_CONNECTION_TESTING_PAGE) == true) {
+            mainHandler.post { showConnectionTestingPage(animate = false) }
+        }
         mainHandler.post {
             val checkUpdatesAfterStartup = { if (savedInstanceState == null) checkForUpdates() }
             if (!showPrivacyPolicyIfNeeded(checkUpdatesAfterStartup)) checkUpdatesAfterStartup()
@@ -264,6 +278,7 @@ class MainActivity : Activity() {
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
+        appShellView = shell
         vpnTabContent = buildDashboard()
         subscriptionsTabContent = buildSubscriptionsScreen().apply { visibility = View.GONE }
         advancedTabContent = buildAdvancedScreen().apply { visibility = View.GONE }
@@ -283,7 +298,7 @@ class MainActivity : Activity() {
                 cornerRadius = dp(24).toFloat()
                 setColor(withAlpha(SURFACE, 220))
             }
-            elevation = dp(8).toFloat()
+            elevation = 0f
             setSelectedTabIndicatorHeight(dp(3))
             setSelectedTabIndicatorColor(TEAL)
             setSelectedTabIndicatorGravity(TabLayout.INDICATOR_GRAVITY_BOTTOM)
@@ -339,10 +354,84 @@ class MainActivity : Activity() {
         }
         shell.addView(tabsHost, LinearLayout.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(shell, FrameLayout.LayoutParams(-1, -1))
+        connectionTestingPageHost = ConnectionTestingPage(this).apply {
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            setBackgroundColor(BACKGROUND)
+            visibility = View.GONE
+            onSwipeRight = { closeConnectionTestingPage() }
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(connectionTestingPageHost) { view, insets ->
+            val systemBars = insets.getInsets(
+                WindowInsetsCompat.Type.statusBars() or
+                    WindowInsetsCompat.Type.navigationBars() or
+                    WindowInsetsCompat.Type.displayCutout(),
+            )
+            view.setPadding(0, systemBars.top, 0, systemBars.bottom)
+            insets
+        }
+        root.addView(connectionTestingPageHost, FrameLayout.LayoutParams(-1, -1))
         return root
     }
 
+    private fun setConnectionTestingPageVisible(visible: Boolean, animate: Boolean) {
+        connectionTestingPageVisible = visible
+        connectionTestingPageHost.animate().cancel()
+        appShellView.animate().cancel()
+        val shouldAnimate = animate && ValueAnimator.areAnimatorsEnabled()
+        if (visible) {
+            connectionTestingPageHost.visibility = View.VISIBLE
+            ViewCompat.requestApplyInsets(connectionTestingPageHost)
+            if (!shouldAnimate) {
+                connectionTestingPageHost.translationX = 0f
+                appShellView.translationX = 0f
+                return
+            }
+            connectionTestingPageHost.translationX = resources.displayMetrics.widthPixels.toFloat()
+            connectionTestingPageHost.animate()
+                .translationX(0f)
+                .setDuration(CONNECTION_TESTING_PAGE_ANIMATION_MS)
+                .setInterpolator(PathInterpolator(0.16f, 1f, 0.3f, 1f))
+                .start()
+            appShellView.animate()
+                .translationX(-dp(20).toFloat())
+                .setDuration(CONNECTION_TESTING_PAGE_ANIMATION_MS)
+                .setInterpolator(PathInterpolator(0.16f, 1f, 0.3f, 1f))
+                .start()
+            return
+        }
+
+        connectionDelayTestListener = null
+        appShellView.animate()
+            .translationX(0f)
+            .setDuration(CONNECTION_TESTING_PAGE_ANIMATION_MS)
+            .setInterpolator(PathInterpolator(0.16f, 1f, 0.3f, 1f))
+            .start()
+        if (!shouldAnimate) {
+            connectionTestingPageHost.translationX = 0f
+            connectionTestingPageHost.visibility = View.GONE
+            connectionTestingPageHost.removeAllViews()
+            return
+        }
+        connectionTestingPageHost.animate()
+            .translationX(resources.displayMetrics.widthPixels.toFloat())
+            .setDuration(CONNECTION_TESTING_PAGE_ANIMATION_MS)
+            .setInterpolator(PathInterpolator(0.16f, 1f, 0.3f, 1f))
+            .withEndAction {
+                if (!connectionTestingPageVisible) {
+                    connectionTestingPageHost.visibility = View.GONE
+                    connectionTestingPageHost.removeAllViews()
+                }
+            }
+            .start()
+    }
+
+    private fun closeConnectionTestingPage(animate: Boolean = true) {
+        if (!connectionTestingPageVisible) return
+        setConnectionTestingPageVisible(visible = false, animate = animate)
+    }
+
     private fun showAppTab(position: Int) {
+        if (position != 2) advancedSettingsBackAction?.invoke()
         vpnTabContent.visibility = if (position == 1) View.VISIBLE else View.GONE
         subscriptionsTabContent.visibility = if (position == 0) View.VISIBLE else View.GONE
         advancedTabContent.visibility = if (position == 2) View.VISIBLE else View.GONE
@@ -450,6 +539,10 @@ class MainActivity : Activity() {
         subscriptionsList.removeAllViews()
         val store = SubscriptionStore(this)
         val selectedId = store.readSelectedSubscriptionId()
+        val selectedName = selectedSubscriptionName()
+        homeSubscriptionSelectorRow.setValue(selectedName)
+        homeSubscriptionSelectorRow.contentDescription =
+            getString(R.string.home_menu_subscription, selectedName)
         val whiteDnsCount = store.readCatalog()?.profiles?.size ?: 0
         subscriptionsList.addView(
             subscriptionCard(
@@ -457,6 +550,9 @@ class MainActivity : Activity() {
                 detail = getString(R.string.subscription_builtin_detail, connectionCountLabel(whiteDnsCount)),
                 selected = selectedId == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID,
                 error = "",
+                onTestConnections = {
+                    openSubscriptionConnectionTesting(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID)
+                },
                 actions = listOf(
                     R.string.subscription_action_select to {
                         userSubscriptionManager.select(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID)
@@ -470,7 +566,6 @@ class MainActivity : Activity() {
             val updated = item.updatedAt.takeIf { it > 0 }?.let {
                 DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(it)
             } ?: getString(R.string.subscription_never_updated)
-            subscriptionsList.addView(subscriptionDivider())
             subscriptionsList.addView(
                 subscriptionCard(
                     title = item.name,
@@ -482,42 +577,38 @@ class MainActivity : Activity() {
                     ),
                     selected = selectedId == item.id,
                     error = localizedSubscriptionError(item.lastError),
+                    onTestConnections = { openSubscriptionConnectionTesting(item.id) },
                     actions = listOf(
                         R.string.subscription_action_select to {
                             userSubscriptionManager.select(item.id)
                             onSubscriptionSelected()
                         },
                         R.string.subscription_action_edit to { showEditSubscriptionDialog(item) },
-                        R.string.subscription_action_test to { testSubscription(item) },
+                        R.string.subscription_action_validate_source to { testSubscription(item) },
                         R.string.subscription_action_refresh to { refreshSubscription(item) },
                         R.string.subscription_action_delete to { confirmDeleteSubscription(item) },
                     ),
                 ),
-                LinearLayout.LayoutParams(-1, -2),
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
             )
         }
     }
 
-    private fun subscriptionDivider(): View = View(this).apply {
-        setBackgroundColor(OUTLINE)
-        layoutParams = LinearLayout.LayoutParams(-1, dp(1)).apply {
-            marginStart = dp(16)
-            marginEnd = dp(16)
-        }
-    }
-
+    /* Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4 */
+    /* Hallmark · component: subscription card · genre: modern-minimal · design-system: design.md · designed-as-app */
     private fun subscriptionCard(
         title: String,
         detail: String,
         selected: Boolean,
         error: String,
+        onTestConnections: () -> Unit,
         actions: List<Pair<Int, () -> Unit>>,
     ): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
+        orientation = LinearLayout.VERTICAL
         layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-        gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = dp(88)
-        setPadding(dp(16), dp(12), dp(16), dp(12))
+        gravity = Gravity.START
+        minimumHeight = dp(112)
+        setPaddingRelative(dp(16), dp(12), dp(16), dp(12))
         elevation = 0f
         val selectAction = actions.firstOrNull { it.first == R.string.subscription_action_select }
         val overflowActions = actions.filterNot { it.first == R.string.subscription_action_select }
@@ -525,7 +616,7 @@ class MainActivity : Activity() {
         isClickable = canSelect
         isFocusable = canSelect
         contentDescription = "$title, ${getString(
-            if (selected) R.string.subscription_active else R.string.subscription_action_select,
+            if (selected) R.string.subscription_selected_badge else R.string.subscription_action_select,
         )}"
         background = if (selected) {
             glassSurfaceDrawable(radiusDp = 12, highlighted = true)
@@ -543,106 +634,154 @@ class MainActivity : Activity() {
 
         addView(
             LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
+                orientation = LinearLayout.HORIZONTAL
                 layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                gravity = Gravity.CENTER_VERTICAL
                 addView(
-                    LinearLayout(this@MainActivity).apply {
-                        orientation = LinearLayout.HORIZONTAL
+                    TextView(this@MainActivity).apply {
+                        text = title
+                        textSize = 16f
+                        typeface = WhiteDnsBodyBoldTypeface
+                        setTextColor(TEXT_PRIMARY)
+                        includeFontPadding = false
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
                         layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                        gravity = Gravity.CENTER_VERTICAL
-                        addView(
-                            TextView(this@MainActivity).apply {
-                                text = title
-                                textSize = 16f
-                                typeface = WhiteDnsBodyBoldTypeface
-                                setTextColor(TEXT_PRIMARY)
-                                includeFontPadding = false
-                                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                                textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-                                gravity = Gravity.START
-                            },
-                            LinearLayout.LayoutParams(0, -2, 1f),
-                        )
-                        if (selected) addView(
-                            LinearLayout(this@MainActivity).apply {
-                                orientation = LinearLayout.HORIZONTAL
-                                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                                gravity = Gravity.CENTER_VERTICAL
-                                addView(
-                                    View(this@MainActivity).apply {
-                                        background = GradientDrawable().apply {
-                                            shape = GradientDrawable.OVAL
-                                            setColor(TEAL)
-                                        }
-                                    },
-                                    LinearLayout.LayoutParams(dp(7), dp(7)).apply { marginEnd = dp(8) },
-                                )
-                                addView(TextView(this@MainActivity).apply {
-                                    setText(R.string.subscription_active)
-                                    textSize = 12f
-                                    typeface = WhiteDnsBodyBoldTypeface
-                                    setTextColor(TEAL)
-                                    includeFontPadding = false
-                                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                                    textDirection = View.TEXT_DIRECTION_LOCALE
-                                })
-                            },
-                            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) },
-                        )
+                        textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                        gravity = Gravity.START
                     },
-                    LinearLayout.LayoutParams(-1, -2),
+                    LinearLayout.LayoutParams(0, -2, 1f),
                 )
-                addView(TextView(this@MainActivity).apply {
-                    text = detail
-                    textSize = 12f
-                    typeface = WhiteDnsBodyTypeface
-                    setTextColor(TEXT_SECONDARY)
-                    includeFontPadding = false
-                    maxLines = 2
-                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                    textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-                    gravity = Gravity.START
-                }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
-                if (error.isNotBlank()) addView(TextView(this@MainActivity).apply {
-                    text = getString(R.string.subscription_error, error)
-                    textSize = 12f
-                    typeface = WhiteDnsBodyBoldTypeface
-                    setTextColor(ERROR)
-                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                    textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-                    gravity = Gravity.START
-                }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+                if (selected) addView(
+                    TextView(this@MainActivity).apply {
+                        setText(R.string.subscription_selected_badge)
+                        textSize = 12f
+                        typeface = WhiteDnsBodyBoldTypeface
+                        setTextColor(TEAL)
+                        includeFontPadding = false
+                        gravity = Gravity.CENTER
+                        isSingleLine = true
+                        setPaddingRelative(dp(8), dp(4), dp(8), dp(4))
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.RECTANGLE
+                            cornerRadius = dp(12).toFloat()
+                            setColor(withAlpha(TEAL, if (palette.isDark) 34 else 22))
+                            setStroke(dp(1), withAlpha(TEAL, 92))
+                        }
+                    },
+                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) },
+                )
             },
-            LinearLayout.LayoutParams(0, -2, 1f),
+            LinearLayout.LayoutParams(-1, -2),
         )
-        if (overflowActions.isNotEmpty()) {
-            addView(
-                subscriptionManageButton { view ->
-                    whiteDnsPopupMenu(view).apply {
-                        overflowActions.forEachIndexed { index, (labelRes, _) ->
-                            menu.add(0, index, index, labelRes)
-                        }
-                        setOnMenuItemClickListener { item ->
-                            overflowActions[item.itemId].second()
-                            true
-                        }
-                    }.show()
-                },
-                LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(12) },
-            )
-        }
-    }
+        addView(TextView(this@MainActivity).apply {
+            text = detail
+            textSize = 12f
+            typeface = WhiteDnsBodyTypeface
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            gravity = Gravity.START
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        if (error.isNotBlank()) addView(TextView(this@MainActivity).apply {
+            text = getString(R.string.subscription_error, error)
+            textSize = 12f
+            typeface = WhiteDnsBodyBoldTypeface
+            setTextColor(ERROR)
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            gravity = Gravity.START
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
 
-    private fun subscriptionManageButton(action: (View) -> Unit): ImageButton =
-        ImageButton(this).apply {
-            setImageResource(R.drawable.ic_more_vert)
-            imageTintList = ColorStateList.valueOf(TEXT_PRIMARY)
-            scaleType = ImageView.ScaleType.CENTER
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            setSelectableBackground()
-            contentDescription = getString(R.string.subscription_action_manage)
+        fun actionButton(
+            @StringRes labelRes: Int,
+            @DrawableRes iconRes: Int,
+            accent: Boolean,
+            action: (View) -> Unit,
+        ): MaterialButton = MaterialButton(this@MainActivity).apply {
+            setText(labelRes)
+            setIconResource(iconRes)
+            iconTint = ColorStateList.valueOf(if (accent) TEAL else TEXT_SECONDARY)
+            iconSize = dp(18)
+            iconPadding = dp(8)
+            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+            setAllCaps(false)
+            isSingleLine = true
+            ellipsize = TextUtils.TruncateAt.END
+            textSize = 14f
+            typeface = WhiteDnsBodyBoldTypeface
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = dp(48)
+            minimumHeight = dp(48)
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(8)
+            setPaddingRelative(dp(12), 0, dp(12), 0)
+            backgroundTintList = ColorStateList.valueOf(palette.surfaceElevated2)
+            strokeWidth = dp(1)
+            strokeColor = ColorStateList.valueOf(if (accent) withAlpha(TEAL, 150) else OUTLINE)
+            rippleColor = ColorStateList.valueOf(withAlpha(TEAL, 26))
+            setTextColor(if (accent) TEAL else TEXT_PRIMARY)
             setOnClickListener(action)
         }
+
+        addView(
+            LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                addView(
+                    actionButton(
+                        labelRes = R.string.subscription_action_test,
+                        iconRes = R.drawable.ic_connection_test,
+                        accent = true,
+                    ) { onTestConnections() },
+                    LinearLayout.LayoutParams(0, dp(48), 1f),
+                )
+                addView(
+                    actionButton(
+                        labelRes = R.string.subscription_action_options,
+                        iconRes = R.drawable.ic_more_vert,
+                        accent = false,
+                    ) { view ->
+                        whiteDnsPopupMenu(view).apply {
+                            overflowActions.forEachIndexed { index, (labelRes, _) ->
+                                menu.add(0, index, index, labelRes)
+                            }
+                            setOnMenuItemClickListener { item ->
+                                overflowActions[item.itemId].second()
+                                true
+                            }
+                        }.show()
+                    },
+                    LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) },
+                )
+            },
+            LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(12) },
+        )
+    }
+
+    private fun openSubscriptionConnectionTesting(subscriptionId: String) {
+        if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
+        val store = SubscriptionStore(this)
+        if (store.readSelectedSubscriptionId() != subscriptionId) {
+            userSubscriptionManager.select(subscriptionId)
+            onSubscriptionSelected()
+        }
+        val profiles = if (subscriptionId == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
+            store.readCatalog()?.profiles
+        } else {
+            runCatching { userSubscriptionManager.cachedSnapshot(subscriptionId) }
+                .getOrNull()
+                ?.catalog
+                ?.profiles
+        }.orEmpty()
+        updateLocationOptions(profiles, resetMissingSelection = true)
+        showConnectionTestingPage()
+    }
 
     private fun showAddSubscriptionDialog() = showSubscriptionDialog()
 
@@ -861,12 +1000,10 @@ class MainActivity : Activity() {
 
     private fun renderConnectionDetails(state: VpnState) {
         if (!::connectionDetailsText.isInitialized) return
-        connectionDetailsText.text = ConnectionDetailsPresenter.forDashboard(
-            selectedSource = selectedSubscriptionName(),
-            runtimeDetails = connectionDetails.takeIf { state == VpnState.Started }.orEmpty(),
-            stringFor = { getString(it) },
-        )
-        connectionDetailsText.visibility = View.VISIBLE
+        connectionDetailsText.text = connectionDetails.takeIf { state == VpnState.Started }.orEmpty()
+        connectionDetailsText.visibility =
+            if (connectionDetailsText.text.isNotBlank()) View.VISIBLE else View.GONE
+        renderDashboardConnectionMetadataVisibility()
     }
 
     private fun renderDashboardLocalEndpoint(mode: ConnectionMode) {
@@ -882,6 +1019,18 @@ class MainActivity : Activity() {
         }
         dashboardLocalEndpointText.visibility =
             if (dashboardLocalEndpointText.text.isNotEmpty()) View.VISIBLE else View.GONE
+        renderDashboardConnectionMetadataVisibility()
+    }
+
+    private fun renderDashboardConnectionMetadataVisibility() {
+        if (!::dashboardConnectionMetadataSection.isInitialized) return
+        dashboardConnectionMetadataSection.visibility = if (
+            connectionDetailsText.text.isNotBlank() || dashboardLocalEndpointText.text.isNotBlank()
+        ) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
     }
 
     private fun localizedError(@Suppress("UNUSED_PARAMETER") error: Throwable, @StringRes fallbackRes: Int): String =
@@ -895,6 +1044,7 @@ class MainActivity : Activity() {
         val filter = IntentFilter().apply {
             addAction(Actions.STATE_CHANGED)
             addAction(Actions.CONNECTION_DELAY_TEST_CHANGED)
+            addAction(Actions.CONNECTION_SPEED_TEST_CHANGED)
         }
         // Below API 33 a bare registerReceiver is implicitly exported, which would let any other
         // app broadcast STATE_CHANGED and paint a false "connected" state over the UI.
@@ -916,6 +1066,9 @@ class MainActivity : Activity() {
             VpnRuntimeStateStore.readAlwaysOn(this),
             VpnRuntimeStateStore.readLockdown(this),
         )
+        if (connectionTestingPageVisible) {
+            showConnectionTestingPage(animate = false, rebuild = true)
+        }
     }
 
     override fun onStop() {
@@ -926,10 +1079,24 @@ class MainActivity : Activity() {
         mainHandler.removeCallbacks(disconnectTimeoutRunnable)
         privacyPolicyDialog?.dismiss()
         privacyPolicyDialog = null
-        connectionSelectorDialog?.dismiss()
-        connectionSelectorDialog = null
+        connectionDelayTestListener = null
         unregisterReceiver(stateReceiver)
         super.onStop()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(STATE_CONNECTION_TESTING_PAGE, connectionTestingPageVisible)
+        super.onSaveInstanceState(outState)
+    }
+
+    @Deprecated("Deprecated in Android API")
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        when {
+            connectionTestingPageVisible -> closeConnectionTestingPage()
+            advancedSettingsBackAction != null -> advancedSettingsBackAction?.invoke()
+            else -> super.onBackPressed()
+        }
     }
 
     override fun onDestroy() {
@@ -1129,22 +1296,24 @@ class MainActivity : Activity() {
             stateListAnimator = null
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+            val selectedBackground = withAlpha(TEAL, if (palette.isDark) 64 else 32)
             backgroundTintList = ColorStateList(
                 connectionModeButtonColors,
-                intArrayOf(TEAL, Color.TRANSPARENT, withAlpha(TEAL, 80), Color.TRANSPARENT),
+                intArrayOf(selectedBackground, Color.TRANSPARENT, withAlpha(TEAL, 24), Color.TRANSPARENT),
             )
             setTextColor(
                 ColorStateList(
                     connectionModeButtonColors,
                     intArrayOf(
-                        palette.onAccent,
+                        TEAL,
                         TEXT_PRIMARY,
-                        withAlpha(palette.onAccent, 140),
+                        withAlpha(TEAL, 120),
                         withAlpha(TEXT_PRIMARY, 110),
                     ),
                 ),
             )
             rippleColor = ColorStateList.valueOf(withAlpha(TEAL, 28))
+            gravity = Gravity.CENTER
         }
         vpnModeButton = connectionModeButton(R.string.connection_mode_vpn)
         proxyModeButton = connectionModeButton(R.string.connection_mode_proxy)
@@ -1158,10 +1327,12 @@ class MainActivity : Activity() {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(16).toFloat()
                 setColor(withAlpha(SURFACE, 200))
+                setStroke(dp(1), withAlpha(OUTLINE, 180))
             }
-            setPadding(dp(5), dp(5), dp(5), dp(5))
-            addView(vpnModeButton, LinearLayout.LayoutParams(0, -1, 1f))
-            addView(proxyModeButton, LinearLayout.LayoutParams(0, -1, 1f))
+            minimumHeight = dp(52)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            addView(vpnModeButton, LinearLayout.LayoutParams(0, dp(44), 1f))
+            addView(proxyModeButton, LinearLayout.LayoutParams(0, dp(44), 1f))
             check(
                 if (connectionModePreferenceStore.read() == ConnectionMode.Proxy) {
                     proxyModeButton.id
@@ -1208,7 +1379,7 @@ class MainActivity : Activity() {
             text = "00:00:00"
             textSize = 15f
             letterSpacing = 0.02f
-            typeface = WhiteDnsBodyBoldTypeface // Same as stats
+            typeface = WhiteDnsDataTypeface
             setTextColor(TEXT_PRIMARY)
             includeFontPadding = false
             alpha = 0.25f
@@ -1219,7 +1390,7 @@ class MainActivity : Activity() {
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             textDirection = View.TEXT_DIRECTION_LTR
             textSize = 15f
-            typeface = WhiteDnsBodyBoldTypeface
+            typeface = WhiteDnsDataTypeface
             setTextColor(TEXT_PRIMARY)
             includeFontPadding = false
         }
@@ -1229,7 +1400,7 @@ class MainActivity : Activity() {
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             textDirection = View.TEXT_DIRECTION_LTR
             textSize = 15f
-            typeface = WhiteDnsBodyBoldTypeface
+            typeface = WhiteDnsDataTypeface
             setTextColor(TEXT_PRIMARY)
             includeFontPadding = false
         }
@@ -1264,6 +1435,8 @@ class MainActivity : Activity() {
             typeface = WhiteDnsDataTypeface
             setTextColor(TEXT_SECONDARY)
             includeFontPadding = false
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
             visibility = View.GONE
         }
 
@@ -1313,14 +1486,14 @@ class MainActivity : Activity() {
             setText(R.string.action_reconnect)
             textSize = 11f
             typeface = WhiteDnsBodyBoldTypeface
-            minHeight = dp(32)
-            minimumHeight = dp(32)
+            minHeight = dp(44)
+            minimumHeight = dp(44)
             minWidth = 0
             minimumWidth = 0
             insetTop = 0
             insetBottom = 0
             setPadding(dp(12), dp(6), dp(12), dp(6))
-            cornerRadius = dp(16)
+            cornerRadius = dp(12)
             strokeWidth = 0
             elevation = 0f
             stateListAnimator = null
@@ -1336,6 +1509,7 @@ class MainActivity : Activity() {
         // Row with reconnect button on left and timer on right
         val timerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             gravity = Gravity.CENTER_VERTICAL
             // Reconnect button on left
             addView(
@@ -1354,6 +1528,26 @@ class MainActivity : Activity() {
             )
         }
 
+        val statusCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(16).toFloat()
+                setColor(withAlpha(SURFACE, 200))
+                setStroke(dp(1), withAlpha(OUTLINE, 180))
+            }
+            addView(timerRow, LinearLayout.LayoutParams(-1, dp(44)))
+            addView(
+                View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+                LinearLayout.LayoutParams(-1, dp(1)).apply {
+                    topMargin = dp(8)
+                    bottomMargin = dp(8)
+                },
+            )
+            addView(speedStatsRow, LinearLayout.LayoutParams(-1, dp(44)))
+        }
+
         val signalSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -1365,15 +1559,10 @@ class MainActivity : Activity() {
                 connectionOrb,
                 LinearLayout.LayoutParams(-2, -2),
             )
-            // Timer and reconnect button row
+            // Connection status and traffic metrics
             addView(
-                timerRow,
-                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
-            )
-            // Speed stats row
-            addView(
-                speedStatsRow,
-                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
+                statusCard,
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) },
             )
         }
 
@@ -1383,21 +1572,48 @@ class MainActivity : Activity() {
         }
         connectionSelectorRow = DashboardDataRowView(this).apply {
             setRow(getString(R.string.connection_label), getString(R.string.option_automatic))
-            setOnRowClickListener { showConnectionSelector() }
+            setOnRowClickListener { showConnectionTestingPage() }
         }
-        splitTunnelRow = DashboardDataRowView(this).apply {
-            setRow(getString(R.string.split_tunnel_label), getString(R.string.value_inactive))
-            setOnRowClickListener { showSplitTunnelSelector() }
+        homeSubscriptionSelectorRow = DashboardDataRowView(this).apply {
+            val subscriptionName = selectedSubscriptionName()
+            setRow(getString(R.string.subscriptions_title), subscriptionName)
+            contentDescription = getString(R.string.home_menu_subscription, subscriptionName)
+            setOnRowClickListener { showHomeSubscriptionMenu(this) }
         }
-        // Settings card with rounded corners and shadow
+        dashboardConnectionMetadataSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(
+                View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+                LinearLayout.LayoutParams(-1, dp(1)).apply {
+                    marginStart = dp(18)
+                    marginEnd = dp(18)
+                },
+            )
+            addView(
+                LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(16), dp(10), dp(16), dp(12))
+                    addView(connectionDetailsText, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(
+                        dashboardLocalEndpointText,
+                        LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) },
+                    )
+                },
+                LinearLayout.LayoutParams(-1, -2),
+            )
+        }
+        // Connection details card
         val dataRowsList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(22).toFloat()
+                cornerRadius = dp(16).toFloat()
                 setColor(withAlpha(SURFACE, 200))
+                setStroke(dp(1), withAlpha(OUTLINE, 180))
             }
-            elevation = dp(8).toFloat()
             clipToOutline = true
             addView(locationSelectorRow, LinearLayout.LayoutParams(-1, -2))
             addView(View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
@@ -1411,47 +1627,10 @@ class MainActivity : Activity() {
                     marginStart = dp(18)
                     marginEnd = dp(18)
                 })
-            addView(splitTunnelRow, LinearLayout.LayoutParams(-1, -2))
+            addView(homeSubscriptionSelectorRow, LinearLayout.LayoutParams(-1, -2))
+            addView(dashboardConnectionMetadataSection, LinearLayout.LayoutParams(-1, -2))
         }
         val dataRows = dataRowsList
-
-        val footerCopyrightText = TextView(this).apply {
-            gravity = Gravity.CENTER
-            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-            text = getString(R.string.footer_copyright)
-            textSize = 12f
-            typeface = WhiteDnsBodyTypeface
-            setTextColor(TEXT_SECONDARY)
-            includeFontPadding = false
-        }
-        val footerTelegramLink = TextView(this).apply {
-            gravity = Gravity.CENTER
-            layoutDirection = View.LAYOUT_DIRECTION_LTR
-            textDirection = View.TEXT_DIRECTION_LTR
-            text = getString(R.string.footer_url)
-            textSize = 12f
-            typeface = WhiteDnsBodyTypeface
-            setTextColor(TEXT_SECONDARY)
-            includeFontPadding = false
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            minHeight = dp(44)
-            setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_telegram, 0, 0, 0)
-            compoundDrawablePadding = dp(6)
-            compoundDrawableTintList = ColorStateList.valueOf(TEXT_SECONDARY)
-            setSelectableBackground()
-            isClickable = true
-            isFocusable = true
-            contentDescription = getString(R.string.footer_telegram_content_description)
-            setOnClickListener { openFooterLink() }
-        }
-        val footer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            addView(footerCopyrightText, LinearLayout.LayoutParams(-1, -2))
-            addView(footerTelegramLink, LinearLayout.LayoutParams(-2, dp(44)))
-        }
 
         dashboardContent.apply {
             addView(
@@ -1471,21 +1650,6 @@ class MainActivity : Activity() {
                 dataRows,
                 contentParams(dp(16)),
             )
-            // Connection details row
-            addView(
-                LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                    gravity = Gravity.CENTER_VERTICAL
-                    addView(connectionDetailsText, LinearLayout.LayoutParams(0, -2, 1f))
-                    addView(dashboardLocalEndpointText, LinearLayout.LayoutParams(-2, -2))
-                },
-                contentParams(dp(4)),
-            )
-            addView(
-                footer,
-                contentParams(dp(16)),
-            )
         }
         viewport.addView(
             dashboardContent,
@@ -1500,6 +1664,7 @@ class MainActivity : Activity() {
     }
 
     private fun buildAdvancedScreen(): View {
+        val root = FrameLayout(this).apply { setBackgroundColor(withAlpha(BACKGROUND, 0)) }
         val scrollView = ScrollView(this).apply {
             isFillViewport = true
             clipToPadding = false
@@ -1524,34 +1689,145 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             maxWidthPx = dp(520)
-            setPadding(dp(24), dp(34), dp(24), dp(40))
-            addView(
-                TextView(this@MainActivity).apply {
-                    setText(R.string.settings_title)
-                    textSize = 28f
-                    typeface = WhiteDnsDisplayTypeface
-                    setTextColor(TEXT_PRIMARY)
-                    includeFontPadding = false
-                },
-            )
-            addView(
-                TextView(this@MainActivity).apply {
-                    setText(R.string.settings_description)
-                    textSize = 14f
-                    typeface = WhiteDnsBodyTypeface
-                    setTextColor(TEXT_SECONDARY)
-                    includeFontPadding = false
-                    setLineSpacing(dp(2).toFloat(), 1f)
-                },
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                ),
-            )
+            setPadding(dp(24), dp(20), dp(24), dp(40))
         }
-        advancedBody.addView(
-            advancedSectionLabel(getString(R.string.tls_integrity_section)),
+        fun settingsContent() = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+        }
+        val testingSettings = settingsContent()
+        val connectionSettings = settingsContent()
+        val splitTunnelSettings = settingsContent()
+        val sharingSettings = settingsContent()
+        val systemSettings = settingsContent()
+        var connectionTestSettings = connectionTestSettingsPreferenceStore.read()
+        testingSettings.addView(
+            advancedSectionLabel(getString(R.string.config_test_section)),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(32) },
+        )
+        val connectionTestPanel = advancedSettingsPanel()
+        fun testIntegerInput(
+            title: String,
+            detail: String,
+            initialValue: Int,
+            range: IntRange,
+            imeAction: Int,
+            onValueChanged: (Int) -> Unit,
+        ): TextInputLayout {
+            var savedValue = initialValue
+            val input = TextInputEditText(this).apply {
+                setSingleLine(true)
+                layoutDirection = View.LAYOUT_DIRECTION_LTR
+                textDirection = View.TEXT_DIRECTION_LTR
+                gravity = Gravity.CENTER
+                background = null
+                textSize = 16f
+                typeface = WhiteDnsDataTypeface
+                inputType = InputType.TYPE_CLASS_NUMBER
+                imeOptions = imeAction
+                filters = arrayOf(InputFilter.LengthFilter(3))
+                setText(initialValue.toString())
+                setSelectAllOnFocus(true)
+                setTextColor(TEXT_PRIMARY)
+            }
+            fun commit() {
+                val value = (input.text?.toString()?.toIntOrNull() ?: savedValue)
+                    .coerceIn(range.first, range.last)
+                if (input.text?.toString() != value.toString()) {
+                    input.setText(value.toString())
+                    input.setSelection(input.text?.length ?: 0)
+                }
+                if (value != savedValue) {
+                    savedValue = value
+                    onValueChanged(value)
+                }
+            }
+            input.onFocusChangeListener = View.OnFocusChangeListener { _, hasFocus ->
+                if (!hasFocus) commit()
+            }
+            input.setOnEditorActionListener { _, actionId, _ ->
+                if (actionId != EditorInfo.IME_ACTION_NEXT && actionId != EditorInfo.IME_ACTION_DONE) {
+                    false
+                } else {
+                    commit()
+                    input.clearFocus()
+                    true
+                }
+            }
+            return TextInputLayout(this).apply {
+                hint = title
+                helperText = getString(R.string.config_test_integer_range, range.first, range.last, detail)
+                boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+                boxBackgroundColor = withAlpha(SURFACE, if (palette.isDark) 232 else 246)
+                boxStrokeColor = TEAL
+                boxStrokeWidth = dp(1)
+                boxStrokeWidthFocused = dp(1)
+                defaultHintTextColor = ColorStateList.valueOf(TEXT_SECONDARY)
+                setHelperTextColor(ColorStateList.valueOf(TEXT_SECONDARY))
+                setBoxCornerRadii(dp(8).toFloat(), dp(8).toFloat(), dp(8).toFloat(), dp(8).toFloat())
+                addView(input)
+            }
+        }
+        connectionTestPanel.addView(
+            testIntegerInput(
+                title = getString(R.string.config_test_timeout_title),
+                detail = getString(R.string.config_test_timeout_detail),
+                initialValue = connectionTestSettings.timeoutSeconds,
+                range = ConnectionTestSettings.MIN_TIMEOUT_SECONDS..ConnectionTestSettings.MAX_TIMEOUT_SECONDS,
+                imeAction = EditorInfo.IME_ACTION_NEXT,
+            ) { value ->
+                connectionTestSettings = connectionTestSettings.copy(timeoutSeconds = value)
+                connectionTestSettingsPreferenceStore.save(connectionTestSettings)
+            },
+            LinearLayout.LayoutParams(-1, -2).apply {
+                marginStart = dp(12)
+                marginEnd = dp(12)
+                topMargin = dp(12)
+            },
+        )
+        connectionTestPanel.addView(
+            testIntegerInput(
+                title = getString(R.string.config_test_concurrency_title),
+                detail = getString(R.string.config_test_concurrency_detail),
+                initialValue = connectionTestSettings.concurrency,
+                range = ConnectionTestSettings.MIN_CONCURRENCY..ConnectionTestSettings.MAX_CONCURRENCY,
+                imeAction = EditorInfo.IME_ACTION_NEXT,
+            ) { value ->
+                connectionTestSettings = connectionTestSettings.copy(concurrency = value)
+                connectionTestSettingsPreferenceStore.save(connectionTestSettings)
+            },
+            LinearLayout.LayoutParams(-1, -2).apply {
+                marginStart = dp(12)
+                marginEnd = dp(12)
+                topMargin = dp(12)
+            },
+        )
+        connectionTestPanel.addView(
+            testIntegerInput(
+                title = getString(R.string.config_test_speed_size_title),
+                detail = getString(R.string.config_test_speed_size_detail),
+                initialValue = connectionTestSettings.speedTestMegabytes,
+                range = ConnectionTestSettings.MIN_SPEED_TEST_MEGABYTES..
+                    ConnectionTestSettings.MAX_SPEED_TEST_MEGABYTES,
+                imeAction = EditorInfo.IME_ACTION_DONE,
+            ) { value ->
+                connectionTestSettings = connectionTestSettings.copy(speedTestMegabytes = value)
+                connectionTestSettingsPreferenceStore.save(connectionTestSettings)
+            },
+            LinearLayout.LayoutParams(-1, -2).apply {
+                marginStart = dp(12)
+                marginEnd = dp(12)
+                topMargin = dp(12)
+                bottomMargin = dp(12)
+            },
+        )
+        testingSettings.addView(
+            connectionTestPanel,
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
+        )
+        connectionSettings.addView(
+            advancedSectionLabel(getString(R.string.tls_integrity_section)),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) },
         )
         val tlsIntegrityPanel = advancedSettingsPanel()
         tlsIntegrityCheckbox = MaterialSwitch(this).apply {
@@ -1567,11 +1843,11 @@ class MainActivity : Activity() {
             ),
             LinearLayout.LayoutParams(-1, -2),
         )
-        advancedBody.addView(
+        connectionSettings.addView(
             tlsIntegrityPanel,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
-        advancedBody.addView(
+        connectionSettings.addView(
             advancedSectionLabel(getString(R.string.settings_warp_section)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1579,7 +1855,7 @@ class MainActivity : Activity() {
             ).apply { topMargin = dp(24) },
         )
         val amneziaPanel = advancedSettingsPanel()
-        advancedBody.addView(
+        connectionSettings.addView(
             amneziaPanel,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
@@ -1685,7 +1961,7 @@ class MainActivity : Activity() {
                 marginEnd = dp(8)
             },
         )
-        advancedBody.addView(
+        connectionSettings.addView(
             advancedSectionLabel(getString(R.string.fronting_section)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1695,7 +1971,7 @@ class MainActivity : Activity() {
             },
         )
         val frontingPanel = advancedSettingsPanel()
-        advancedBody.addView(
+        connectionSettings.addView(
             frontingPanel,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
@@ -1813,7 +2089,7 @@ class MainActivity : Activity() {
                 marginEnd = dp(8)
             },
         )
-        advancedBody.addView(
+        connectionSettings.addView(
             advancedSectionLabel(getString(R.string.routing_section)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1823,7 +2099,7 @@ class MainActivity : Activity() {
             },
         )
         val routingPanel = advancedSettingsPanel()
-        advancedBody.addView(
+        connectionSettings.addView(
             routingPanel,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
@@ -1907,7 +2183,7 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ),
         )
-        advancedBody.addView(
+        connectionSettings.addView(
             advancedSectionLabel(getString(R.string.dns_privacy_section)),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1917,7 +2193,7 @@ class MainActivity : Activity() {
             },
         )
         val dnsPanel = advancedSettingsPanel()
-        advancedBody.addView(
+        connectionSettings.addView(
             dnsPanel,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
@@ -2077,7 +2353,7 @@ class MainActivity : Activity() {
                 marginEnd = dp(8)
             },
         )
-        advancedBody.addView(
+        sharingSettings.addView(
             advancedSectionLabel(getString(R.string.lan_sharing_section)),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) },
         )
@@ -2170,11 +2446,11 @@ class MainActivity : Activity() {
                 bottomMargin = dp(16)
             },
         )
-        advancedBody.addView(
+        sharingSettings.addView(
             lanSharingPanel,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
-        advancedBody.addView(
+        systemSettings.addView(
             advancedSectionLabel(getString(R.string.always_on_section)),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) },
         )
@@ -2227,7 +2503,7 @@ class MainActivity : Activity() {
                 bottomMargin = dp(16)
             },
         )
-        advancedBody.addView(
+        systemSettings.addView(
             alwaysOnPanel,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
@@ -2240,8 +2516,255 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ),
         )
+        scrollView.visibility = View.GONE
+
+        val indexBody = MaxWidthLinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            maxWidthPx = dp(520)
+            setPadding(dp(24), dp(34), dp(24), dp(40))
+            addView(
+                TextView(this@MainActivity).apply {
+                    setText(R.string.settings_title)
+                    textSize = 28f
+                    typeface = WhiteDnsDisplayTypeface
+                    setTextColor(TEXT_PRIMARY)
+                    includeFontPadding = false
+                },
+            )
+            addView(
+                TextView(this@MainActivity).apply {
+                    setText(R.string.settings_categories_description)
+                    textSize = 14f
+                    typeface = WhiteDnsBodyTypeface
+                    setTextColor(TEXT_SECONDARY)
+                    includeFontPadding = false
+                    setLineSpacing(dp(2).toFloat(), 1f)
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) },
+            )
+        }
+        val indexScrollView = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+            setBackgroundColor(withAlpha(BACKGROUND, 0))
+            addView(indexBody, ViewGroup.LayoutParams(-1, -2))
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(indexScrollView) { view, insets ->
+            val topInset = insets.getInsets(
+                WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.displayCutout(),
+            ).top
+            val bottomInset = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            view.setPadding(view.paddingLeft, topInset, view.paddingRight, bottomInset)
+            insets
+        }
+
+        fun closeCategory() {
+            currentFocus?.clearFocus()
+            advancedSettingsBackAction = null
+            scrollView.visibility = View.GONE
+            indexScrollView.visibility = View.VISIBLE
+            indexScrollView.scrollTo(0, 0)
+            ViewCompat.requestApplyInsets(indexScrollView)
+        }
+
+        fun showCategory(@StringRes titleRes: Int, content: View) {
+            advancedBody.removeAllViews()
+            (content.parent as? ViewGroup)?.removeView(content)
+            val backButton = ImageButton(this).apply {
+                setImageResource(R.drawable.ic_arrow_back)
+                imageTintList = ColorStateList.valueOf(TEXT_PRIMARY)
+                setBackgroundColor(Color.TRANSPARENT)
+                setSelectableBackground()
+                contentDescription = getString(R.string.settings_category_back)
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                setOnClickListener { closeCategory() }
+            }
+            advancedBody.addView(
+                LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutDirection = View.LAYOUT_DIRECTION_LTR
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(backButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(8) })
+                    addView(
+                        TextView(this@MainActivity).apply {
+                            setText(titleRes)
+                            textSize = 24f
+                            typeface = WhiteDnsDisplayTypeface
+                            setTextColor(TEXT_PRIMARY)
+                            includeFontPadding = false
+                            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                            textDirection = View.TEXT_DIRECTION_LOCALE
+                        },
+                        LinearLayout.LayoutParams(0, -2, 1f),
+                    )
+                },
+                LinearLayout.LayoutParams(-1, -2),
+            )
+            advancedBody.addView(
+                View(this).apply { setBackgroundColor(OUTLINE) },
+                LinearLayout.LayoutParams(-1, dp(1)).apply { topMargin = dp(16) },
+            )
+            advancedBody.addView(content, LinearLayout.LayoutParams(-1, -2))
+            indexScrollView.visibility = View.GONE
+            scrollView.visibility = View.VISIBLE
+            scrollView.scrollTo(0, 0)
+            ViewCompat.requestApplyInsets(scrollView)
+            advancedSettingsBackAction = { closeCategory() }
+            renderAdvancedControls()
+        }
+
+        val categoriesPanel = advancedSettingsPanel()
+        fun addCategory(
+            @StringRes titleRes: Int,
+            @StringRes detailRes: Int,
+            content: View,
+            addDivider: Boolean = true,
+            onOpen: (() -> Unit)? = null,
+        ) {
+            categoriesPanel.addView(
+                LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                    gravity = Gravity.CENTER_VERTICAL
+                    minimumHeight = dp(76)
+                    setPadding(dp(16), dp(14), dp(12), dp(14))
+                    setSelectableBackground()
+                    isClickable = true
+                    isFocusable = true
+                    contentDescription = getString(titleRes)
+                    setOnClickListener {
+                        showCategory(titleRes, content)
+                        onOpen?.invoke()
+                    }
+                    addView(
+                        LinearLayout(this@MainActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                            addView(
+                                TextView(this@MainActivity).apply {
+                                    setText(titleRes)
+                                    textSize = 16f
+                                    typeface = WhiteDnsBodyBoldTypeface
+                                    setTextColor(TEXT_PRIMARY)
+                                    includeFontPadding = false
+                                },
+                            )
+                            addView(
+                                TextView(this@MainActivity).apply {
+                                    setText(detailRes)
+                                    textSize = 12f
+                                    typeface = WhiteDnsBodyTypeface
+                                    setTextColor(TEXT_SECONDARY)
+                                    includeFontPadding = false
+                                    maxLines = 2
+                                },
+                                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) },
+                            )
+                        },
+                        LinearLayout.LayoutParams(0, -2, 1f),
+                    )
+                    addView(
+                        TextView(this@MainActivity).apply {
+                            setText(R.string.chevron_forward)
+                            textSize = 22f
+                            typeface = WhiteDnsBodyBoldTypeface
+                            setTextColor(TEAL)
+                            includeFontPadding = false
+                            layoutDirection = View.LAYOUT_DIRECTION_LTR
+                            textDirection = View.TEXT_DIRECTION_LTR
+                        },
+                        LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) },
+                    )
+                },
+                LinearLayout.LayoutParams(-1, -2),
+            )
+            if (addDivider) {
+                categoriesPanel.addView(
+                    View(this).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+                    LinearLayout.LayoutParams(-1, dp(1)).apply {
+                        marginStart = dp(16)
+                        marginEnd = dp(16)
+                    },
+                )
+            }
+        }
+        addCategory(
+            R.string.settings_category_testing,
+            R.string.settings_category_testing_detail,
+            testingSettings,
+        )
+        addCategory(
+            R.string.settings_category_connections,
+            R.string.settings_category_connections_detail,
+            connectionSettings,
+        )
+        addCategory(
+            R.string.split_tunnel_label,
+            R.string.settings_category_split_tunnel_detail,
+            splitTunnelSettings,
+            onOpen = { showSplitTunnelSelector(splitTunnelSettings) },
+        )
+        addCategory(
+            R.string.settings_category_sharing,
+            R.string.settings_category_sharing_detail,
+            sharingSettings,
+        )
+        addCategory(
+            R.string.settings_category_system,
+            R.string.settings_category_system_detail,
+            systemSettings,
+            addDivider = false,
+        )
+        indexBody.addView(
+            categoriesPanel,
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) },
+        )
+        val footerCopyrightText = TextView(this).apply {
+            gravity = Gravity.CENTER
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            text = getString(R.string.footer_copyright)
+            textSize = 12f
+            typeface = WhiteDnsBodyTypeface
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+        }
+        val footerTelegramLink = TextView(this).apply {
+            gravity = Gravity.CENTER
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            textDirection = View.TEXT_DIRECTION_LTR
+            text = getString(R.string.footer_url)
+            textSize = 12f
+            typeface = WhiteDnsBodyTypeface
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            minHeight = dp(44)
+            setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_telegram, 0, 0, 0)
+            compoundDrawablePadding = dp(6)
+            compoundDrawableTintList = ColorStateList.valueOf(TEXT_SECONDARY)
+            setSelectableBackground()
+            isClickable = true
+            isFocusable = true
+            contentDescription = getString(R.string.footer_telegram_content_description)
+            setOnClickListener { openFooterLink() }
+        }
+        indexBody.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                addView(footerCopyrightText, LinearLayout.LayoutParams(-1, -2))
+                addView(footerTelegramLink, LinearLayout.LayoutParams(-2, dp(44)))
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(32) },
+        )
+
+        root.addView(indexScrollView, FrameLayout.LayoutParams(-1, -1))
+        root.addView(scrollView, FrameLayout.LayoutParams(-1, -1))
         renderAdvancedControls()
-        return scrollView
+        return root
     }
 
     private fun scrollFieldIntoView(
@@ -2382,7 +2905,6 @@ class MainActivity : Activity() {
         }
     }
 
-
     private fun showPrivacyPolicyIfNeeded(onAccepted: (() -> Unit)? = null): Boolean {
         if (privacyPolicyStore.isAccepted()) return false
         showPrivacyPolicyDialog(onAccepted)
@@ -2498,7 +3020,7 @@ class MainActivity : Activity() {
             refreshLocationOptions()
         }
         if (state == VpnState.Starting || state == VpnState.Stopping) {
-            connectionSelectorDialog?.dismiss()
+            closeConnectionTestingPage()
         }
         applyRuntimeState(
             state,
@@ -2676,7 +3198,8 @@ class MainActivity : Activity() {
         renderConnectionSelection()
     }
 
-    private fun showConnectionSelector() {
+    private fun showConnectionTestingPage(animate: Boolean = true, rebuild: Boolean = false) {
+        if (connectionTestingPageVisible && !rebuild) return
         if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
         val subscriptionStore = SubscriptionStore(this)
         val selectedSubscriptionId = subscriptionStore.readSelectedSubscriptionId()
@@ -2705,10 +3228,12 @@ class MainActivity : Activity() {
             automaticLabel = allCountriesLabel,
             displayLocale = displayLocale,
         )
+        val selectableCountryOptions = countryOptions.filter { it.countryCode != null }
+        val availableCountryCodes = selectableCountryOptions.mapNotNull(LocationSelectorOption::countryCode).toSet()
         val availableTypes = ConnectionTypeSelectionPolicy.availableTypes(selectorProfiles)
         val restoredSession = ConnectionDelayTestState.snapshot(selectedSubscriptionId)
         val profilesByFingerprint = selectorProfiles.associateBy(ConnectionProfile::fingerprint)
-        var selectedCountryCode = restoredSession
+        val selectedCountryCodes = restoredSession
             ?.takeIf(ConnectionDelayTestSession::isRunning)
             ?.targetFingerprints
             ?.map { fingerprint ->
@@ -2716,8 +3241,10 @@ class MainActivity : Activity() {
                     ?.let { ConnectionLocationPolicy.countryForProfile(it, displayLocale) }
                     ?.code
             }
-            ?.distinct()
-            ?.singleOrNull()
+            ?.filterNotNull()
+            ?.toMutableSet()
+            ?.takeIf { it.isNotEmpty() }
+            ?: availableCountryCodes.toMutableSet()
         val selectedTypes = restoredSession
             ?.takeIf(ConnectionDelayTestSession::isRunning)
             ?.connectionTypes
@@ -2733,33 +3260,33 @@ class MainActivity : Activity() {
         } else {
             mutableSetOf<String>()
         }
-        val speedTestingFingerprints = restoredSession
-            ?.takeIf { it.isRunning && it.speedTestEnabled }
-            ?.let { session ->
-                session.finishedFingerprints.filterTo(mutableSetOf()) { fingerprint ->
-                    fingerprint !in session.speedFinishedFingerprints &&
-                        connectionDelayRecords[fingerprint]?.status == ConnectionDelayStatus.Success
-                }
-            }
-            ?: mutableSetOf()
-        var speedTestEnabled = restoredSession?.speedTestEnabled
-            ?: connectionDelayRecords.values.any { it.speedKbps != null }
+        val restoredSpeedSession = ConnectionSpeedTestState.snapshot(selectedSubscriptionId)
+        var speedTestId = restoredSpeedSession?.testId
+        var speedTestingFingerprint = restoredSpeedSession
+            ?.takeIf(ConnectionSpeedTestSession::isRunning)
+            ?.fingerprint
+        var speedTestRunning = restoredSpeedSession?.isRunning == true
         fun selectedTypesLabel(): String = when {
             selectedTypes.size == availableTypes.size -> getString(R.string.connection_filter_all_types)
             selectedTypes.size == 1 -> selectedTypes.first().uppercase(Locale.US)
             else -> getString(R.string.connection_filter_types_count, selectedTypes.size)
         }
-        fun selectedCountryLabel(): String = countryOptions
-            .firstOrNull { it.countryCode == selectedCountryCode }
-            ?.label
-            ?: allCountriesLabel
+        fun selectedCountryLabel(): String = when {
+            selectedCountryCodes == availableCountryCodes -> allCountriesLabel
+            selectedCountryCodes.size == 1 -> selectableCountryOptions
+                .firstOrNull { it.countryCode in selectedCountryCodes }
+                ?.label
+                ?: allCountriesLabel
+            else -> getString(R.string.connection_filter_countries_count, selectedCountryCodes.size)
+        }
         fun visibleProfiles(): List<ConnectionProfile> {
-            val matchingCountry = ConnectionLocationPolicy.filterProfiles(
-                profiles = selectorProfiles,
-                selectedCountryCode = selectedCountryCode,
-                automaticLabel = allCountriesLabel,
-                displayLocale = displayLocale,
-            ).profiles
+            val matchingCountry = if (selectedCountryCodes == availableCountryCodes) {
+                selectorProfiles
+            } else {
+                selectorProfiles.filter { profile ->
+                    ConnectionLocationPolicy.countryForProfile(profile, displayLocale)?.code in selectedCountryCodes
+                }
+            }
             val matchingType = ConnectionTypeSelectionPolicy.filterProfiles(
                 matchingCountry,
                 selectedTypes,
@@ -2767,8 +3294,7 @@ class MainActivity : Activity() {
             return ConnectionTestResultOrder.order(
                 profiles = matchingType,
                 records = connectionDelayRecords,
-                speedTestEnabled = speedTestEnabled,
-                pendingFingerprints = testingFingerprints + speedTestingFingerprints,
+                pendingFingerprints = testingFingerprints,
             )
         }
         var filteredProfiles = visibleProfiles()
@@ -2777,12 +3303,9 @@ class MainActivity : Activity() {
         var lastTestCompleted = restoredSession?.completed ?: 0
         var lastTestTotal = restoredSession?.total ?: 0
         var lastTestAvailable = restoredSession?.available ?: 0
-        var lastSpeedCompleted = restoredSession?.speedCompleted ?: 0
-        var lastSpeedTotal = restoredSession?.speedTotal ?: 0
         var lastTestStatus = restoredSession?.status
         var lastTestError = restoredSession?.error.orEmpty()
         var delayTestId: String? = restoredSession?.testId
-        lateinit var dialog: AlertDialog
 
         data class ConnectionRowHolder(
             val container: LinearLayout,
@@ -2790,12 +3313,60 @@ class MainActivity : Activity() {
             val detail: TextView,
             val delayBadge: TextView,
             val checkIcon: View,
+            val speedAction: FrameLayout,
+            val speedButton: TextView,
+            val speedProgress: ProgressBar,
         )
 
-        val content = LinearLayout(this).apply {
+        val content = MaxWidthLinearLayout(this).apply {
+            maxWidthPx = dp(640)
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), 0)
+            setPadding(dp(24), dp(20), dp(24), dp(12))
         }
+
+        val backButton = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_arrow_back)
+            imageTintList = ColorStateList.valueOf(TEXT_PRIMARY)
+            setBackgroundColor(Color.TRANSPARENT)
+            setSelectableBackground()
+            contentDescription = getString(R.string.connection_testing_back)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setOnClickListener { closeConnectionTestingPage() }
+        }
+        val pageTitle = TextView(this).apply {
+            setText(R.string.connection_testing_page_title)
+            textSize = 24f
+            typeface = WhiteDnsDisplayTypeface
+            setTextColor(TEXT_PRIMARY)
+            includeFontPadding = false
+        }
+        val settings = connectionTestSettingsPreferenceStore.read()
+        val pageConfig = TextView(this).apply {
+            text = getString(
+                R.string.connection_testing_page_config,
+                settings.timeoutSeconds,
+                settings.concurrency,
+                settings.speedTestMegabytes,
+            )
+            textSize = 12f
+            typeface = WhiteDnsDataTypeface
+            setTextColor(TEAL)
+            includeFontPadding = false
+        }
+        val headerCopy = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            addView(pageTitle, LinearLayout.LayoutParams(-1, -2))
+            addView(pageConfig, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        }
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            gravity = Gravity.TOP
+            addView(backButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(8) })
+            addView(headerCopy, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        val headerRule = View(this).apply { setBackgroundColor(OUTLINE) }
 
         // Filter row - horizontal with chips
         val filterRow = LinearLayout(this).apply {
@@ -2810,6 +3381,8 @@ class MainActivity : Activity() {
             setTextColor(TEXT_PRIMARY)
             includeFontPadding = false
             gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
             setPadding(dp(14), dp(10), dp(14), dp(10))
             background = GradientDrawable().apply {
                 cornerRadius = dp(20).toFloat()
@@ -2821,8 +3394,8 @@ class MainActivity : Activity() {
         val countryFilterButton = filterChip(allCountriesLabel)
         val typeFilterButton = filterChip(getString(R.string.connection_filter_all_types))
 
-        filterRow.addView(countryFilterButton, LinearLayout.LayoutParams(-2, -2))
-        filterRow.addView(typeFilterButton, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+        filterRow.addView(countryFilterButton, LinearLayout.LayoutParams(0, dp(44), 1f))
+        filterRow.addView(typeFilterButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) })
 
         // Progress section
         val progressSection = LinearLayout(this).apply {
@@ -2867,16 +3440,6 @@ class MainActivity : Activity() {
             backgroundTintList = ColorStateList.valueOf(TEAL)
             setTextColor(BACKGROUND)
             setAllCaps(false)
-        }
-
-        val speedTestToggle = MaterialSwitch(this).apply {
-            setText(R.string.connection_speed_test_toggle)
-            textSize = 12f
-            typeface = WhiteDnsBodyTypeface
-            setTextColor(TEXT_SECONDARY)
-            minHeight = dp(40)
-            gravity = Gravity.CENTER_VERTICAL
-            isChecked = speedTestEnabled
         }
 
         val controlRow = LinearLayout(this).apply {
@@ -2976,8 +3539,39 @@ class MainActivity : Activity() {
                         typeface = WhiteDnsDataTypeface
                         includeFontPadding = false
                         gravity = Gravity.CENTER
-                        setPadding(dp(10), dp(6), dp(10), dp(6))
-                        minWidth = dp(70)
+                        maxLines = 1
+                        setPadding(dp(7), dp(3), dp(7), dp(3))
+                        visibility = View.GONE
+                    }
+                    val speedButton = TextView(this@MainActivity).apply {
+                        setText(R.string.connection_speed_test_label)
+                        textSize = 11f
+                        typeface = WhiteDnsBodyBoldTypeface
+                        setTextColor(TEAL)
+                        includeFontPadding = false
+                        gravity = Gravity.CENTER
+                        compoundDrawablePadding = dp(4)
+                        setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_speedometer, 0, 0, 0)
+                        compoundDrawableTintList = ColorStateList.valueOf(TEAL)
+                        setPadding(dp(8), 0, dp(8), 0)
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(16).toFloat()
+                            setColor((TEAL and 0x00FFFFFF) or (0x18 shl 24))
+                        }
+                        visibility = View.GONE
+                    }
+                    val speedProgress = ProgressBar(this@MainActivity).apply {
+                        isIndeterminate = true
+                        indeterminateTintList = ColorStateList.valueOf(TEAL)
+                        visibility = View.GONE
+                    }
+                    val speedAction = FrameLayout(this@MainActivity).apply {
+                        visibility = View.GONE
+                        isClickable = true
+                        isFocusable = true
+                        setSelectableBackground()
+                        addView(speedButton, FrameLayout.LayoutParams(-2, dp(32), Gravity.CENTER))
+                        addView(speedProgress, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
                     }
                     // Selection indicator (small dot)
                     val checkIcon = View(this@MainActivity).apply {
@@ -2991,11 +3585,23 @@ class MainActivity : Activity() {
                         orientation = LinearLayout.VERTICAL
                         layoutDirection = View.LAYOUT_DIRECTION_LOCALE
                         addView(title, LinearLayout.LayoutParams(-1, -2))
-                        addView(detail, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(3) })
+                        addView(
+                            LinearLayout(this@MainActivity).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                                gravity = Gravity.CENTER_VERTICAL
+                                addView(delayBadge, LinearLayout.LayoutParams(-2, -2))
+                                addView(
+                                    detail,
+                                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) },
+                                )
+                            },
+                            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(3) },
+                        )
                     }
                     container.addView(checkIcon, LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(10) })
                     container.addView(textColumn, LinearLayout.LayoutParams(0, -2, 1f))
-                    container.addView(delayBadge, LinearLayout.LayoutParams(dp(108), -2).apply { marginStart = dp(8) })
+                    container.addView(speedAction, LinearLayout.LayoutParams(dp(96), dp(56)).apply { marginStart = dp(4) })
 
                     row = LinearLayout(this@MainActivity).apply {
                         orientation = LinearLayout.VERTICAL
@@ -3007,7 +3613,16 @@ class MainActivity : Activity() {
                         cornerRadius = dp(12).toFloat()
                         setColor(SURFACE)
                     }
-                    holder = ConnectionRowHolder(container, title, detail, delayBadge, checkIcon)
+                    holder = ConnectionRowHolder(
+                        container,
+                        title,
+                        detail,
+                        delayBadge,
+                        checkIcon,
+                        speedAction,
+                        speedButton,
+                        speedProgress,
+                    )
                     row.tag = holder
                 } else {
                     row = convertView as LinearLayout
@@ -3043,7 +3658,9 @@ class MainActivity : Activity() {
                         ?.let { getString(R.string.connection_automatic_active_detail, automaticDetail, it) }
                         ?: automaticDetail
                     holder.delayBadge.text = ""
+                    holder.delayBadge.visibility = View.GONE
                     holder.delayBadge.background = null
+                    holder.speedAction.visibility = View.GONE
                 } else {
                     holder.title.text = profile.tag
                     holder.detail.text = if (
@@ -3066,12 +3683,11 @@ class MainActivity : Activity() {
                     }
                     val speedKbps = delayRecord?.speedKbps
                     val isTesting = profile.fingerprint in testingFingerprints
-                    val isSpeedTesting = profile.fingerprint in speedTestingFingerprints
+                    val isSpeedTesting = speedTestRunning && speedTestingFingerprint == profile.fingerprint
 
                     holder.delayBadge.text = when {
                         isTesting -> getString(R.string.connection_delay_testing)
-                        isSpeedTesting && delayMs != null -> getString(R.string.connection_speed_testing, delayMs)
-                        speedTestEnabled && speedKbps != null && delayMs != null -> getString(
+                        speedKbps != null && delayMs != null -> getString(
                             R.string.connection_speed_delay_value,
                             speedKbps / 1_000.0,
                             delayMs,
@@ -3084,25 +3700,65 @@ class MainActivity : Activity() {
 
                     // Badge background based on state
                     val badgeColor = when {
-                        isTesting || isSpeedTesting -> AMBER
+                        isTesting -> AMBER
                         delayMs != null -> TEAL
                         delayRecord?.status == ConnectionDelayStatus.Failure -> ERROR
                         else -> TEXT_SECONDARY
                     }
                     if (holder.delayBadge.text.isNotEmpty()) {
+                        holder.delayBadge.visibility = View.VISIBLE
                         holder.delayBadge.setTextColor(badgeColor)
                         holder.delayBadge.background = GradientDrawable().apply {
                             cornerRadius = dp(12).toFloat()
                             setColor((badgeColor and 0x00FFFFFF) or (0x20 shl 24))
                         }
                     } else {
+                        holder.delayBadge.visibility = View.GONE
                         holder.delayBadge.background = null
+                    }
+
+                    holder.speedAction.visibility = if (delayMs != null) View.VISIBLE else View.GONE
+                    holder.speedButton.visibility = if (delayMs != null && !isSpeedTesting) View.VISIBLE else View.GONE
+                    holder.speedProgress.visibility = if (isSpeedTesting) View.VISIBLE else View.GONE
+                    holder.speedAction.isEnabled = delayMs != null && !testRunning && !speedTestRunning
+                    holder.speedAction.alpha = if (holder.speedAction.isEnabled) 1f else 0.45f
+                    holder.speedAction.contentDescription = getString(
+                        R.string.connection_speed_test_action,
+                        profile.tag,
+                    )
+                    holder.speedAction.setOnClickListener {
+                        if (testRunning || speedTestRunning || delayMs == null) return@setOnClickListener
+                        delayRecord?.copy(speedKbps = null)?.let { clearedRecord ->
+                            subscriptionStore.saveConnectionDelayRecord(clearedRecord)
+                            connectionDelayRecords = connectionDelayRecords +
+                                (profile.fingerprint to clearedRecord)
+                        }
+                        speedTestId = SystemClock.elapsedRealtimeNanos().toString()
+                        speedTestingFingerprint = profile.fingerprint
+                        speedTestRunning = true
+                        notifyDataSetChanged()
+                        testButton.isEnabled = false
+                        testButton.alpha = 0.5f
+                        typeFilterButton.isEnabled = false
+                        typeFilterButton.alpha = 0.5f
+                        countryFilterButton.isEnabled = false
+                        countryFilterButton.alpha = 0.5f
+                        startService(
+                            Intent(this@MainActivity, WhiteDnsVpnService::class.java)
+                                .setAction(Actions.TEST_CONNECTION_SPEED)
+                                .putExtra(Actions.EXTRA_APP_INITIATED, true)
+                                .putExtra(Actions.EXTRA_SPEED_TEST_ID, speedTestId)
+                                .putExtra(Actions.EXTRA_SUBSCRIPTION_ID, selectedSubscriptionId)
+                                .putExtra(Actions.EXTRA_CONNECTION_FINGERPRINT, profile.fingerprint),
+                        )
                     }
                 }
 
+                row.isEnabled = !speedTestRunning
                 row.setOnClickListener {
+                    if (speedTestRunning) return@setOnClickListener
                     handleConnectionSelected(profile, selectedTypes)
-                    dialog.dismiss()
+                    closeConnectionTestingPage()
                 }
                 return row
             }
@@ -3111,7 +3767,7 @@ class MainActivity : Activity() {
 
         fun updateTestControls() {
             // Test button state
-            testButton.isEnabled = filteredProfiles.isNotEmpty() && (!testRunning || testPaused)
+            testButton.isEnabled = filteredProfiles.isNotEmpty() && !speedTestRunning && (!testRunning || testPaused)
             testButton.alpha = if (testButton.isEnabled) 1f else 0.5f
             val hasResults = filteredProfiles.any { it.fingerprint in connectionDelayRecords }
             testButton.setText(
@@ -3128,36 +3784,27 @@ class MainActivity : Activity() {
             stopButton.visibility = if (testRunning) View.VISIBLE else View.GONE
 
             // Filter chips
-            typeFilterButton.isEnabled = !testRunning && availableTypes.isNotEmpty()
+            typeFilterButton.isEnabled = !testRunning && !speedTestRunning && availableTypes.isNotEmpty()
             typeFilterButton.alpha = if (typeFilterButton.isEnabled) 1f else 0.5f
             typeFilterButton.text = selectedTypesLabel()
             (typeFilterButton.background as? GradientDrawable)?.setStroke(
                 dp(1), if (selectedTypes.size < availableTypes.size) TEAL else OUTLINE
             )
 
-            countryFilterButton.isEnabled = !testRunning && countryOptions.size > 1
+            countryFilterButton.isEnabled = !testRunning && !speedTestRunning && countryOptions.size > 1
             countryFilterButton.alpha = if (countryFilterButton.isEnabled) 1f else 0.5f
             countryFilterButton.text = selectedCountryLabel()
             (countryFilterButton.background as? GradientDrawable)?.setStroke(
-                dp(1), if (selectedCountryCode != null) TEAL else OUTLINE
+                dp(1), if (selectedCountryCodes != availableCountryCodes) TEAL else OUTLINE
             )
-
-            // Speed test toggle
-            speedTestToggle.isEnabled = !testRunning
-            speedTestToggle.alpha = if (speedTestToggle.isEnabled) 1f else 0.5f
 
             // Progress section
             val failed = lastTestStatus == Actions.DELAY_TEST_FAILED
-            val speedPhase = testRunning && lastSpeedTotal > 0 && lastTestCompleted >= lastTestTotal
 
             progressSection.visibility = if (testRunning || lastTestStatus != null) View.VISIBLE else View.GONE
 
             // Update progress bar
-            val progressPercent = when {
-                speedPhase && lastSpeedTotal > 0 -> (lastSpeedCompleted * 100) / lastSpeedTotal
-                lastTestTotal > 0 -> (lastTestCompleted * 100) / lastTestTotal
-                else -> 0
-            }
+            val progressPercent = if (lastTestTotal > 0) (lastTestCompleted * 100) / lastTestTotal else 0
             progressBar.progress = progressPercent
             progressBar.progressTintList = ColorStateList.valueOf(
                 when {
@@ -3172,10 +3819,6 @@ class MainActivity : Activity() {
             testStatus.text = when {
                 selectorProfiles.isEmpty() -> getString(R.string.connection_empty)
                 testRunning && lastTestTotal == 0 -> getString(R.string.connection_test_preparing)
-                speedPhase && testPaused ->
-                    getString(R.string.connection_speed_test_paused, lastSpeedCompleted, lastSpeedTotal)
-                speedPhase ->
-                    getString(R.string.connection_speed_test_progress, lastSpeedCompleted, lastSpeedTotal)
                 testRunning && testPaused ->
                     getString(R.string.connection_test_paused, lastTestCompleted, lastTestTotal)
                 testRunning ->
@@ -3189,46 +3832,99 @@ class MainActivity : Activity() {
             }
         }
 
+        fun filterBulkButton(@StringRes textRes: Int) = MaterialButton(this).apply {
+            setText(textRes)
+            textSize = 12f
+            typeface = WhiteDnsBodyBoldTypeface
+            setTextColor(TEAL)
+            setAllCaps(false)
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = dp(44)
+            minimumHeight = dp(44)
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(22)
+            strokeWidth = dp(1)
+            strokeColor = ColorStateList.valueOf(OUTLINE)
+            backgroundTintList = ColorStateList.valueOf(SURFACE)
+        }
+
         typeFilterButton.setOnClickListener {
             val draft = selectedTypes.toMutableSet()
+            val typeChecks = mutableListOf<MaterialCheckBox>()
             val choices = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(4), 0, dp(4), 0)
             }
-            availableTypes.forEach { type ->
-                choices.addView(
-                    MaterialCheckBox(this).apply {
-                        text = type.uppercase(Locale.US)
-                        textSize = 14f
-                        typeface = WhiteDnsBodyTypeface
-                        setTextColor(TEXT_PRIMARY)
-                        minHeight = dp(48)
-                        gravity = Gravity.CENTER_VERTICAL
-                        isUseMaterialThemeColors = false
-                        buttonTintList = ColorStateList(
-                            arrayOf(
-                                intArrayOf(android.R.attr.state_checked),
-                                intArrayOf(),
-                            ),
-                            intArrayOf(TEAL, TEXT_SECONDARY),
-                        )
-                        isChecked = type in draft
-                        setOnCheckedChangeListener { button, isChecked ->
-                            if (!isChecked && draft.size == 1) {
-                                button.isChecked = true
-                            } else if (isChecked) {
-                                draft += type
-                            } else {
-                                draft -= type
-                            }
+            val bulkActions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    filterBulkButton(R.string.connection_filter_select_all).apply {
+                        setOnClickListener {
+                            draft.clear()
+                            draft += availableTypes
+                            typeChecks.forEach { it.isChecked = true }
                         }
                     },
+                    LinearLayout.LayoutParams(0, dp(44), 1f),
+                )
+                addView(
+                    filterBulkButton(R.string.connection_filter_deselect_all).apply {
+                        setOnClickListener {
+                            draft.clear()
+                            typeChecks.forEach { it.isChecked = false }
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) },
+                )
+            }
+            availableTypes.forEach { type ->
+                val check = MaterialCheckBox(this).apply {
+                    text = type.uppercase(Locale.US)
+                    textSize = 14f
+                    typeface = WhiteDnsBodyTypeface
+                    setTextColor(TEXT_PRIMARY)
+                    minHeight = dp(48)
+                    gravity = Gravity.CENTER_VERTICAL
+                    isUseMaterialThemeColors = false
+                    buttonTintList = ColorStateList(
+                        arrayOf(
+                            intArrayOf(android.R.attr.state_checked),
+                            intArrayOf(),
+                        ),
+                        intArrayOf(TEAL, TEXT_SECONDARY),
+                    )
+                    isChecked = type in draft
+                    setOnCheckedChangeListener { _, isChecked ->
+                        if (isChecked) draft += type else draft -= type
+                    }
+                }
+                typeChecks += check
+                choices.addView(
+                    check,
                     LinearLayout.LayoutParams(-1, dp(48)),
+                )
+            }
+            val dialogContent = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(8), 0, dp(8), 0)
+                addView(bulkActions, LinearLayout.LayoutParams(-1, dp(44)))
+                addView(
+                    ScrollView(this@MainActivity).apply { addView(choices) },
+                    LinearLayout.LayoutParams(
+                        -1,
+                        minOf(
+                            availableTypes.size.coerceAtLeast(1) * dp(48),
+                            (resources.displayMetrics.heightPixels * 0.42f).toInt(),
+                        ),
+                    ).apply { topMargin = dp(8) },
                 )
             }
             MaterialAlertDialogBuilder(this)
                 .setTitle(R.string.connection_filter_types_title)
-                .setView(ScrollView(this).apply { addView(choices) })
+                .setView(dialogContent)
                 .setNegativeButton(R.string.split_tunnel_cancel, null)
                 .setPositiveButton(R.string.split_tunnel_save) { _, _ ->
                     selectedTypes.clear()
@@ -3242,31 +3938,92 @@ class MainActivity : Activity() {
         }
 
         countryFilterButton.setOnClickListener {
-            val labels = countryOptions.map(LocationSelectorOption::label).toTypedArray()
-            val selectedIndex = countryOptions.indexOfFirst { it.countryCode == selectedCountryCode }
+            val draft = selectedCountryCodes.toMutableSet()
+            val countryChecks = mutableListOf<MaterialCheckBox>()
+            val choices = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(4), 0, dp(4), 0)
+            }
+            val bulkActions = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    filterBulkButton(R.string.connection_filter_select_all).apply {
+                        setOnClickListener {
+                            draft.clear()
+                            draft += availableCountryCodes
+                            countryChecks.forEach { it.isChecked = true }
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, dp(44), 1f),
+                )
+                addView(
+                    filterBulkButton(R.string.connection_filter_deselect_all).apply {
+                        setOnClickListener {
+                            draft.clear()
+                            countryChecks.forEach { it.isChecked = false }
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) },
+                )
+            }
+            selectableCountryOptions.forEach { option ->
+                val code = option.countryCode ?: return@forEach
+                val check = MaterialCheckBox(this).apply {
+                    text = option.label
+                    textSize = 14f
+                    typeface = WhiteDnsBodyTypeface
+                    setTextColor(TEXT_PRIMARY)
+                    minHeight = dp(48)
+                    gravity = Gravity.CENTER_VERTICAL
+                    isUseMaterialThemeColors = false
+                    buttonTintList = ColorStateList(
+                        arrayOf(
+                            intArrayOf(android.R.attr.state_checked),
+                            intArrayOf(),
+                        ),
+                        intArrayOf(TEAL, TEXT_SECONDARY),
+                    )
+                    isChecked = code in draft
+                    setOnCheckedChangeListener { _, isChecked ->
+                        if (isChecked) draft += code else draft -= code
+                    }
+                }
+                countryChecks += check
+                choices.addView(check, LinearLayout.LayoutParams(-1, dp(48)))
+            }
+            val dialogContent = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(8), 0, dp(8), 0)
+                addView(bulkActions, LinearLayout.LayoutParams(-1, dp(44)))
+                addView(
+                    ScrollView(this@MainActivity).apply { addView(choices) },
+                    LinearLayout.LayoutParams(
+                        -1,
+                        minOf(
+                            selectableCountryOptions.size.coerceAtLeast(1) * dp(48),
+                            (resources.displayMetrics.heightPixels * 0.42f).toInt(),
+                        ),
+                    ).apply { topMargin = dp(8) },
+                )
+            }
             MaterialAlertDialogBuilder(this)
                 .setTitle(R.string.connection_filter_country_title)
-                .setSingleChoiceItems(labels, selectedIndex) { choiceDialog, which ->
-                    selectedCountryCode = countryOptions[which].countryCode
+                .setView(dialogContent)
+                .setPositiveButton(R.string.split_tunnel_save) { _, _ ->
+                    selectedCountryCodes.clear()
+                    selectedCountryCodes += draft
                     filteredProfiles = visibleProfiles()
                     adapter.notifyDataSetChanged()
                     updateTestControls()
-                    choiceDialog.dismiss()
                 }
                 .setNegativeButton(R.string.split_tunnel_cancel, null)
                 .create()
                 .showWhiteDnsDialog()
         }
 
-        speedTestToggle.setOnCheckedChangeListener { _, isChecked ->
-            speedTestEnabled = isChecked
-            filteredProfiles = visibleProfiles()
-            adapter.notifyDataSetChanged()
-            updateTestControls()
-        }
-
         testButton.setOnClickListener {
-            if (testRunning && !testPaused) return@setOnClickListener
+            if (speedTestRunning || testRunning && !testPaused) return@setOnClickListener
             val targets = filteredProfiles.toList()
             if (targets.isEmpty()) return@setOnClickListener
             testRunning = true
@@ -3274,8 +4031,6 @@ class MainActivity : Activity() {
             lastTestCompleted = 0
             lastTestTotal = targets.size
             lastTestAvailable = 0
-            lastSpeedCompleted = 0
-            lastSpeedTotal = 0
             lastTestStatus = Actions.DELAY_TEST_PREPARING
             lastTestError = ""
             delayTestId = SystemClock.elapsedRealtimeNanos().toString()
@@ -3283,7 +4038,6 @@ class MainActivity : Activity() {
             connectionDelayRecords = connectionDelayRecords.filterKeys { it !in targetFingerprints }
             testingFingerprints.clear()
             testingFingerprints += targetFingerprints
-            speedTestingFingerprints.clear()
             ConnectionDelayTestState.replace(
                 ConnectionDelayTestSession(
                     testId = delayTestId.orEmpty(),
@@ -3292,7 +4046,6 @@ class MainActivity : Activity() {
                     targetFingerprints = targets.map(ConnectionProfile::fingerprint),
                     status = Actions.DELAY_TEST_PREPARING,
                     total = targets.size,
-                    speedTestEnabled = speedTestEnabled,
                 ),
             )
             filteredProfiles = visibleProfiles()
@@ -3303,7 +4056,6 @@ class MainActivity : Activity() {
                     .setAction(Actions.TEST_CONNECTION_DELAYS)
                     .putExtra(Actions.EXTRA_APP_INITIATED, true)
                     .putExtra(Actions.EXTRA_DELAY_TEST_ID, delayTestId)
-                    .putExtra(Actions.EXTRA_SPEED_TEST_ENABLED, speedTestEnabled)
                     .putStringArrayListExtra(
                         Actions.EXTRA_CONNECTION_TYPES,
                         ArrayList(selectedTypes.sorted()),
@@ -3345,6 +4097,40 @@ class MainActivity : Activity() {
         }
 
         connectionDelayTestListener = listener@{ intent ->
+            if (intent.action == Actions.CONNECTION_SPEED_TEST_CHANGED) {
+                val broadcastTestId = intent.getStringExtra(Actions.EXTRA_SPEED_TEST_ID) ?: return@listener
+                if (broadcastTestId != speedTestId) return@listener
+                val broadcastSubscriptionId = intent.getStringExtra(Actions.EXTRA_SUBSCRIPTION_ID).orEmpty()
+                if (broadcastSubscriptionId != selectedSubscriptionId) return@listener
+                val session = ConnectionSpeedTestState.snapshot(selectedSubscriptionId)
+                    ?.takeIf { it.testId == broadcastTestId }
+                    ?: ConnectionSpeedTestSession(
+                        testId = broadcastTestId,
+                        subscriptionId = broadcastSubscriptionId,
+                        fingerprint = intent.getStringExtra(Actions.EXTRA_CONNECTION_FINGERPRINT).orEmpty(),
+                        status = intent.getStringExtra(Actions.EXTRA_SPEED_TEST_STATUS)
+                            ?: Actions.SPEED_TEST_FAILED,
+                        error = intent.getStringExtra(Actions.EXTRA_SPEED_TEST_ERROR).orEmpty(),
+                    )
+                speedTestRunning = session.isRunning
+                speedTestingFingerprint = session.fingerprint.takeIf { session.isRunning }
+                if (!session.isRunning) {
+                    connectionDelayRecords = subscriptionStore
+                        .readConnectionDelayRecords(selectedSubscriptionId, selectorProfiles)
+                        .associateBy(ConnectionDelayRecord::fingerprint)
+                }
+                adapter.notifyDataSetChanged()
+                updateTestControls()
+                if (session.status == Actions.SPEED_TEST_FAILED) {
+                    Toast.makeText(
+                        this,
+                        session.error.ifBlank { getString(R.string.connection_speed_test_failed) },
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+                return@listener
+            }
+
             val broadcastTestId = intent.getStringExtra(Actions.EXTRA_DELAY_TEST_ID)
             if (broadcastTestId != delayTestId) return@listener
             val session = ConnectionDelayTestState.snapshot(selectedSubscriptionId)
@@ -3354,13 +4140,9 @@ class MainActivity : Activity() {
             lastTestCompleted = session.completed
             lastTestTotal = session.total
             lastTestAvailable = session.available
-            lastSpeedCompleted = session.speedCompleted
-            lastSpeedTotal = session.speedTotal
             lastTestStatus = status
             lastTestError = session.error
             testPaused = session.paused
-            speedTestEnabled = session.speedTestEnabled
-            speedTestToggle.isChecked = speedTestEnabled
             if (status == Actions.DELAY_TEST_PROGRESS || status == Actions.DELAY_TEST_COMPLETED) {
                 connectionDelayRecords = subscriptionStore
                     .readConnectionDelayRecords(
@@ -3370,15 +4152,8 @@ class MainActivity : Activity() {
                     .associateBy(ConnectionDelayRecord::fingerprint)
             }
             testingFingerprints.clear()
-            speedTestingFingerprints.clear()
             if (session.isRunning) {
                 testingFingerprints += session.targetFingerprints - session.finishedFingerprints
-                if (session.speedTestEnabled) {
-                    speedTestingFingerprints += session.finishedFingerprints.filter { fingerprint ->
-                        fingerprint !in session.speedFinishedFingerprints &&
-                            connectionDelayRecords[fingerprint]?.status == ConnectionDelayStatus.Success
-                    }
-                }
             }
             if (status == Actions.DELAY_TEST_PROGRESS || status == Actions.DELAY_TEST_COMPLETED) {
                 filteredProfiles = visibleProfiles()
@@ -3396,7 +4171,6 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    speedTestingFingerprints.clear()
                     filteredProfiles = visibleProfiles()
                     adapter.notifyDataSetChanged()
                     updateTestControls()
@@ -3406,7 +4180,6 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    speedTestingFingerprints.clear()
                     adapter.notifyDataSetChanged()
                     updateTestControls()
                 }
@@ -3415,7 +4188,6 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    speedTestingFingerprints.clear()
                     adapter.notifyDataSetChanged()
                     updateTestControls()
                 }
@@ -3423,14 +4195,18 @@ class MainActivity : Activity() {
         }
 
         // Assemble layout
-        content.addView(filterRow, LinearLayout.LayoutParams(-1, -2))
+        content.addView(headerRow, LinearLayout.LayoutParams(-1, -2))
+        content.addView(
+            headerRule,
+            LinearLayout.LayoutParams(-1, dp(1)).apply {
+                topMargin = dp(18)
+                bottomMargin = dp(16)
+            },
+        )
+        content.addView(filterRow, LinearLayout.LayoutParams(-1, dp(44)))
         content.addView(
             progressSection,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
-        )
-        content.addView(
-            speedTestToggle,
-            LinearLayout.LayoutParams(-1, dp(40)).apply { topMargin = dp(8) },
         )
         content.addView(
             controlRow,
@@ -3438,23 +4214,16 @@ class MainActivity : Activity() {
         )
         content.addView(
             list,
-            LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.45f).toInt()).apply {
-                topMargin = dp(12)
-            },
+            LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(12) },
         )
 
-        dialog = MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.connection_selector_title)
-            .setView(content)
-            .setNegativeButton(R.string.split_tunnel_cancel, null)
-            .create()
-        dialog.setOnDismissListener {
-            connectionDelayTestListener = null
-            if (connectionSelectorDialog === dialog) connectionSelectorDialog = null
-        }
-        connectionSelectorDialog = dialog
+        connectionTestingPageHost.removeAllViews()
+        connectionTestingPageHost.addView(
+            content,
+            FrameLayout.LayoutParams(-1, -1, Gravity.CENTER_HORIZONTAL),
+        )
         updateTestControls()
-        dialog.showWhiteDnsDialog()
+        setConnectionTestingPageVisible(visible = true, animate = animate && !rebuild)
     }
 
     private fun handleConnectionSelected(
@@ -3649,20 +4418,51 @@ class MainActivity : Activity() {
         whiteDnsPopupMenu(anchor).apply {
             menu.add(
                 0,
-                HOME_MENU_THEME_ID,
+                HOME_MENU_SUBSCRIPTION_ID,
                 0,
+                getString(R.string.home_menu_subscription, selectedSubscriptionName()),
+            )
+            menu.add(
+                0,
+                HOME_MENU_THEME_ID,
+                1,
                 getString(R.string.home_menu_theme, getString(themeMode.labelRes)),
             )
             menu.add(
                 0,
                 HOME_MENU_LANGUAGE_ID,
-                1,
+                2,
                 getString(R.string.home_menu_language, getString(language.labelRes)),
             )
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
+                    HOME_MENU_SUBSCRIPTION_ID -> anchor.post { showHomeSubscriptionMenu(anchor) }
                     HOME_MENU_THEME_ID -> showThemeSelector()
                     HOME_MENU_LANGUAGE_ID -> showLanguageSelector()
+                }
+                true
+            }
+        }.show()
+    }
+
+    private fun showHomeSubscriptionMenu(anchor: View) {
+        val subscriptions = listOf(
+            SubscriptionStore.DEFAULT_SUBSCRIPTION_ID to "WhiteVPN",
+        ) + userSubscriptionManager.list().map { it.id to it.name }
+        val selectedId = userSubscriptionManager.selectedId()
+        whiteDnsPopupMenu(anchor).apply {
+            subscriptions.forEachIndexed { index, (id, name) ->
+                menu.add(0, HOME_SUBSCRIPTION_ITEM_ID_BASE + index, index, name).apply {
+                    isCheckable = true
+                    isChecked = id == selectedId
+                }
+            }
+            menu.setGroupCheckable(0, true, true)
+            setOnMenuItemClickListener { item ->
+                val subscriptionId = subscriptions[item.itemId - HOME_SUBSCRIPTION_ITEM_ID_BASE].first
+                if (subscriptionId != selectedId) {
+                    userSubscriptionManager.select(subscriptionId)
+                    onSubscriptionSelected()
                 }
                 true
             }
@@ -3869,8 +4669,19 @@ class MainActivity : Activity() {
         if (focusOnError) dnsPrivacyEndpointInput.requestFocus()
     }
 
-    private fun showSplitTunnelSelector() {
-        if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
+    private fun showSplitTunnelSelector(container: LinearLayout) {
+        updateSplitTunnelControlsEnabled = null
+        container.removeAllViews()
+        container.addView(
+            ProgressBar(this).apply {
+                isIndeterminate = true
+                contentDescription = getString(R.string.split_tunnel_title)
+            },
+            LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = dp(32)
+            },
+        )
         activityScope.launch {
             val apps = runCatching {
                 withContext(Dispatchers.IO) {
@@ -3881,14 +4692,22 @@ class MainActivity : Activity() {
             }.getOrNull()
 
             if (apps == null) {
+                container.removeAllViews()
+                container.addView(
+                    advancedSectionDetail(getString(R.string.split_tunnel_empty_apps)),
+                    LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) },
+                )
                 Toast.makeText(this@MainActivity, R.string.split_tunnel_empty_apps, Toast.LENGTH_SHORT).show()
                 return@launch
             }
-            showSplitTunnelDialog(apps)
+            showSplitTunnelSettings(container, apps)
         }
     }
 
-    private fun showSplitTunnelDialog(apps: List<SplitTunnelInstalledApp>) {
+    private fun showSplitTunnelSettings(
+        container: LinearLayout,
+        apps: List<SplitTunnelInstalledApp>,
+    ) {
         val launchablePackages = apps.map { it.packageName }.toSet()
         val savedSettings = splitTunnelPreferenceStore.readSettings()
         val prunedSettings = SplitTunnelPolicy.sanitizeSettings(
@@ -3908,12 +4727,12 @@ class MainActivity : Activity() {
 
         var currentMode = prunedSettings.mode
         val selectedPackages = prunedSettings.selectedPackages.toMutableSet()
-        var saveButton: android.widget.Button? = null
+        var controlsEnabled = buttonModel.state != VpnState.Starting && buttonModel.state != VpnState.Stopping
 
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            setPadding(dp(20), dp(8), dp(20), dp(4))
+            setPadding(0, dp(24), 0, dp(24))
         }
 
         val modeGroup = RadioGroup(this).apply {
@@ -3946,12 +4765,12 @@ class MainActivity : Activity() {
                         intArrayOf(TEAL, TEXT_SECONDARY),
                     )
                     setSelectableBackground()
-                    setPaddingRelative(dp(12), 0, dp(12), 0)
+                    setPaddingRelative(dp(12), dp(8), dp(12), dp(8))
                     isChecked = currentMode == mode
                 },
                 RadioGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
-                    dp(48),
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
                 ),
             )
         }
@@ -3989,7 +4808,7 @@ class MainActivity : Activity() {
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG
         }
-        val appListHeight = minOf(dp(320), resources.displayMetrics.heightPixels * 36 / 100)
+        val appListHeight = minOf(dp(520), resources.displayMetrics.heightPixels * 55 / 100)
         val appList = ListView(this).apply {
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             divider = ColorDrawable(OUTLINE)
@@ -4062,10 +4881,26 @@ class MainActivity : Activity() {
             )
         }
 
+        val saveButton = MaterialButton(this).apply {
+            setText(R.string.split_tunnel_save)
+            setAllCaps(false)
+            textSize = 14f
+            typeface = WhiteDnsBodyBoldTypeface
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = dp(48)
+            minimumHeight = dp(48)
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = dp(12)
+            backgroundTintList = ColorStateList.valueOf(TEAL)
+            setTextColor(BACKGROUND)
+        }
+
         fun updateSaveState() {
             val requiresSelection = currentMode != SplitTunnelMode.Off
             val isValid = !requiresSelection || selectedPackages.isNotEmpty()
-            saveButton?.isEnabled = isValid
+            saveButton.isEnabled = controlsEnabled && isValid
             selectedCountText.text = if (isValid) {
                 getString(R.string.split_tunnel_selected_count, selectedPackages.size)
             } else {
@@ -4187,6 +5022,7 @@ class MainActivity : Activity() {
                 holder.packageName.gravity = appTextGravity
                 holder.checkBox.setOnCheckedChangeListener(null)
                 holder.checkBox.isChecked = app.packageName in selectedPackages
+                holder.checkBox.isEnabled = controlsEnabled
                 holder.checkBox.contentDescription = "${app.label}, ${app.packageName}"
                 holder.checkBox.setOnCheckedChangeListener { _, isChecked ->
                     if (isChecked) {
@@ -4196,7 +5032,10 @@ class MainActivity : Activity() {
                     }
                     updateSaveState()
                 }
-                row.setOnClickListener { holder.checkBox.performClick() }
+                row.isEnabled = controlsEnabled
+                row.setOnClickListener {
+                    if (controlsEnabled) holder.checkBox.performClick()
+                }
 
                 holder.icon.tag = app.packageName
                 val cachedIcon = appIconCache[app.packageName]
@@ -4268,76 +5107,53 @@ class MainActivity : Activity() {
                 topMargin = dp(16)
             },
         )
+        content.addView(
+            saveButton,
+            LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(16) },
+        )
 
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.split_tunnel_title)
-            .setView(content)
-            .setNegativeButton(R.string.split_tunnel_cancel, null)
-            .setPositiveButton(R.string.split_tunnel_save, null)
-            .create()
+        saveButton.setOnClickListener {
+            val nextSettings = SplitTunnelPolicy.sanitizeSettings(
+                SplitTunnelSettings(
+                    mode = currentMode,
+                    selectedPackages = selectedPackages,
+                ),
+                packageName,
+            )
+            if (nextSettings.mode != SplitTunnelMode.Off && nextSettings.selectedPackages.isEmpty()) {
+                updateSaveState()
+                return@setOnClickListener
+            }
 
+            val previousSettings = splitTunnelPreferenceStore.readSettings()
+            splitTunnelPreferenceStore.saveSettings(nextSettings)
+            DiagnosticLogger.info(
+                this@MainActivity,
+                "activity.splitTunnel.saved",
+                "mode=${nextSettings.mode.wireName} selected=${nextSettings.selectedPackages.size}",
+            )
+            if (buttonModel.state == VpnState.Started && previousSettings != nextSettings) {
+                buttonModel.onStateChanged(VpnState.Starting)
+                renderState(VpnState.Starting)
+                startVpnService(Actions.RECONNECT)
+            }
+        }
+
+        updateSplitTunnelControlsEnabled = { enabled ->
+            controlsEnabled = enabled
+            for (index in 0 until modeGroup.childCount) {
+                modeGroup.getChildAt(index).isEnabled = enabled
+            }
+            searchInput.isEnabled = enabled
+            appList.isEnabled = enabled
+            appListAdapter.notifyDataSetChanged()
+            content.alpha = if (enabled) 1f else 0.45f
+            updateSaveState()
+        }
         updateModeUi()
-        dialog.showWhiteDnsDialog {
-            saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-            saveButton?.apply {
-                setTextColor(
-                    ColorStateList(
-                        arrayOf(
-                            intArrayOf(android.R.attr.state_enabled),
-                            intArrayOf(),
-                        ),
-                        intArrayOf(TEAL, withAlpha(TEXT_SECONDARY, 120)),
-                    ),
-                )
-            }
-            saveButton?.setOnClickListener {
-                val nextSettings = SplitTunnelPolicy.sanitizeSettings(
-                    SplitTunnelSettings(
-                        mode = currentMode,
-                        selectedPackages = selectedPackages,
-                    ),
-                    packageName,
-                )
-                if (nextSettings.mode != SplitTunnelMode.Off && nextSettings.selectedPackages.isEmpty()) {
-                    updateSaveState()
-                    return@setOnClickListener
-                }
-
-                val previousSettings = splitTunnelPreferenceStore.readSettings()
-                splitTunnelPreferenceStore.saveSettings(nextSettings)
-                DiagnosticLogger.info(
-                    this@MainActivity,
-                    "activity.splitTunnel.saved",
-                    "mode=${nextSettings.mode.wireName} selected=${nextSettings.selectedPackages.size}",
-                )
-                dialog.dismiss()
-                renderSplitTunnelSelection()
-                if (buttonModel.state == VpnState.Started && previousSettings != nextSettings) {
-                    buttonModel.onStateChanged(VpnState.Starting)
-                    renderState(VpnState.Starting)
-                    startVpnService(Actions.RECONNECT)
-                }
-            }
-            updateModeUi()
-        }
-    }
-
-    private fun renderSplitTunnelSelection() {
-        if (!::splitTunnelRow.isInitialized) return
-        val settings = splitTunnelPreferenceStore.readSettings()
-        val rowValue = when (settings.mode) {
-            SplitTunnelMode.Off -> getString(R.string.value_inactive)
-            SplitTunnelMode.BypassSelected -> getString(
-                R.string.split_tunnel_value_bypass,
-                settings.selectedPackages.size,
-            )
-            SplitTunnelMode.VpnOnlySelected -> getString(
-                R.string.split_tunnel_value_vpn_only,
-                settings.selectedPackages.size,
-            )
-        }
-        splitTunnelRow.setValue(rowValue)
-        splitTunnelRow.contentDescription = getString(R.string.split_tunnel_content_description, rowValue)
+        container.removeAllViews()
+        container.addView(content, LinearLayout.LayoutParams(-1, -2))
+        updateSplitTunnelControlsEnabled?.invoke(controlsEnabled)
     }
 
     private fun commitFrontingIpInput(
@@ -4662,6 +5478,7 @@ class MainActivity : Activity() {
             routingModeRow.alpha = if (settingsEnabled) 1f else 0.45f
         }
         renderDnsPrivacySelection()
+        updateSplitTunnelControlsEnabled?.invoke(settingsEnabled)
     }
 
     private fun beginConnectFlow(action: String = Actions.CONNECT) {
@@ -4804,7 +5621,7 @@ class MainActivity : Activity() {
         val settingsEnabled = state != VpnState.Starting && state != VpnState.Stopping
         locationSelectorRow.isEnabled = settingsEnabled
         connectionSelectorRow.isEnabled = settingsEnabled
-        splitTunnelRow.isEnabled = settingsEnabled
+        updateSplitTunnelControlsEnabled?.invoke(settingsEnabled)
         if (::tlsIntegrityCheckbox.isInitialized) tlsIntegrityCheckbox.isEnabled = settingsEnabled
         renderConnectionOptionsControls(settingsEnabled)
         renderLanSharingControls(settingsEnabled)
@@ -4835,7 +5652,6 @@ class MainActivity : Activity() {
             }
         }
         renderLocationSelection()
-        renderSplitTunnelSelection()
         if (
             state == VpnState.Stopped ||
             state == VpnState.DailyLimitReached ||
@@ -5070,7 +5886,11 @@ class MainActivity : Activity() {
         const val TIMER_TICK_MS = 1_000L
         const val DISCONNECT_UI_TIMEOUT_MS = 7_000L
         const val KEYBOARD_SCROLL_DELAY_MS = 250L
+        const val CONNECTION_TESTING_PAGE_ANIMATION_MS = 300L
+        const val STATE_CONNECTION_TESTING_PAGE = "connection_testing_page"
         const val HOME_MENU_THEME_ID = 100
         const val HOME_MENU_LANGUAGE_ID = 101
+        const val HOME_MENU_SUBSCRIPTION_ID = 102
+        const val HOME_SUBSCRIPTION_ITEM_ID_BASE = 200
     }
 }

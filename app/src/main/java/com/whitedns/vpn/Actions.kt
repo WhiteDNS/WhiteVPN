@@ -7,11 +7,13 @@ object Actions {
     const val REFRESH = "com.whitedns.vpn.action.REFRESH"
     const val SWITCH_CONNECTION = "com.whitedns.vpn.action.SWITCH_CONNECTION"
     const val TEST_CONNECTION_DELAYS = "com.whitedns.vpn.action.TEST_CONNECTION_DELAYS"
+    const val TEST_CONNECTION_SPEED = "com.whitedns.vpn.action.TEST_CONNECTION_SPEED"
     const val PAUSE_CONNECTION_DELAY_TEST = "com.whitedns.vpn.action.PAUSE_CONNECTION_DELAY_TEST"
     const val RESUME_CONNECTION_DELAY_TEST = "com.whitedns.vpn.action.RESUME_CONNECTION_DELAY_TEST"
     const val CANCEL_CONNECTION_DELAY_TEST = "com.whitedns.vpn.action.CANCEL_CONNECTION_DELAY_TEST"
     const val STATE_CHANGED = "com.whitedns.vpn.action.STATE_CHANGED"
     const val CONNECTION_DELAY_TEST_CHANGED = "com.whitedns.vpn.action.CONNECTION_DELAY_TEST_CHANGED"
+    const val CONNECTION_SPEED_TEST_CHANGED = "com.whitedns.vpn.action.CONNECTION_SPEED_TEST_CHANGED"
 
     const val EXTRA_STATE = "extra_state"
     const val EXTRA_ERROR = "extra_error"
@@ -39,8 +41,10 @@ object Actions {
     const val EXTRA_DELAY_TEST_AVAILABLE = "extra_delay_test_available"
     const val EXTRA_DELAY_TEST_FINISHED = "extra_delay_test_finished"
     const val EXTRA_DELAY_TEST_PAUSED = "extra_delay_test_paused"
-    const val EXTRA_SPEED_TEST_ENABLED = "extra_speed_test_enabled"
     const val EXTRA_DELAY_TEST_ERROR = "extra_delay_test_error"
+    const val EXTRA_SPEED_TEST_ID = "extra_speed_test_id"
+    const val EXTRA_SPEED_TEST_STATUS = "extra_speed_test_status"
+    const val EXTRA_SPEED_TEST_ERROR = "extra_speed_test_error"
 
     const val DELAY_TEST_PREPARING = "preparing"
     const val DELAY_TEST_STARTED = "started"
@@ -48,6 +52,12 @@ object Actions {
     const val DELAY_TEST_COMPLETED = "completed"
     const val DELAY_TEST_FAILED = "failed"
     const val DELAY_TEST_CANCELED = "canceled"
+
+    const val SPEED_TEST_PREPARING = "preparing"
+    const val SPEED_TEST_STARTED = "started"
+    const val SPEED_TEST_COMPLETED = "completed"
+    const val SPEED_TEST_FAILED = "failed"
+    const val SPEED_TEST_CANCELED = "canceled"
 
     fun resolveServiceAction(action: String?, appInitiated: Boolean): String? {
         return if (appInitiated) action else CONNECT

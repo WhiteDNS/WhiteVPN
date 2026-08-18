@@ -467,6 +467,7 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
         gravity = Gravity.START
+        textAlignment = View.TEXT_ALIGNMENT_VIEW_START
     }
     private val valueText = TextView(context).apply {
         textSize = 14f
@@ -476,6 +477,8 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         isSingleLine = true
         ellipsize = TextUtils.TruncateAt.END
         gravity = Gravity.END
+        textAlignment = View.TEXT_ALIGNMENT_VIEW_END
+        textDirection = View.TEXT_DIRECTION_FIRST_STRONG
     }
     private val chevronText = TextView(context).apply {
         text = "‹"  // Left-pointing chevron for RTL-friendly design
@@ -508,7 +511,7 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         // Label on left
         addView(
             labelText,
-            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT),
+            LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT),
         )
         // Value on right (takes remaining space)
         addView(

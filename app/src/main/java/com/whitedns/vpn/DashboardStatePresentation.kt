@@ -51,15 +51,6 @@ object DashboardStatePresenter {
 }
 
 object ConnectionDetailsPresenter {
-    fun forDashboard(
-        selectedSource: String,
-        runtimeDetails: String,
-        stringFor: (Int) -> String = ::englishString,
-    ): String = buildList {
-        add(stringFor(R.string.connection_detail_source).format(selectedSource))
-        if (runtimeDetails.isNotBlank()) add(runtimeDetails)
-    }.joinToString("\n")
-
     fun forProfile(
         profile: ConnectionProfile,
         showServer: Boolean = false,
@@ -93,7 +84,6 @@ object ConnectionDetailsPresenter {
     }
 
     private fun englishString(@StringRes id: Int): String = when (id) {
-        R.string.connection_detail_source -> "Selected · %1\$s"
         R.string.connection_detail_outbound -> "%1\$s outbound"
         R.string.connection_detail_ech_not_applicable -> "ECH not applicable"
         R.string.connection_detail_ech_unknown -> "ECH unknown"
