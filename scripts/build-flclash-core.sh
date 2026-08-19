@@ -7,14 +7,30 @@ CORE_DIR="${FLCLASH_DIR}/core"
 SUBMODULE_DIR="${CORE_DIR}/Clash.Meta"
 FLCLASH_REPOSITORY="https://github.com/chen08209/FlClash.git"
 FLCLASH_COMMIT="ac2f6b919ec1ad395b61b4bb1e714a39c750babe"
-FLCLASH_PATCH="${ROOT_DIR}/scripts/patches/flclash-v1.19.29.patch"
+FLCLASH_PATCH="${ROOT_DIR}/scripts/patches/flclash-v1.19.30.patch"
+MIHOMO_PATCH="${ROOT_DIR}/scripts/patches/mihomo-v1.19.30-flclash.patch"
 OUT_JNI_DIR="${ROOT_DIR}/app/src/main/jniLibs"
 OUT_INCLUDE_DIR="${ROOT_DIR}/app/src/main/cpp/includes"
 VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
-MIHOMO_TAG="v1.19.29"
-FLCLASH_PATCH_COMMIT="80362fc1895dcf60b79b562896653046e0687413"
+MIHOMO_TAG="v1.19.30"
 API_LEVEL="${ANDROID_API_LEVEL:-26}"
 ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
+
+outputs_exist() {
+  local abi
+  [[ -f "${VERSION_FILE}" ]] || return 1
+  [[ "$(<"${VERSION_FILE}")" == "${MIHOMO_TAG}" ]] || return 1
+  for abi in "${ABIS[@]}"; do
+    [[ -f "${OUT_JNI_DIR}/${abi}/libclash.so" ]] || return 1
+    [[ -f "${OUT_INCLUDE_DIR}/${abi}/libclash.h" ]] || return 1
+    [[ -f "${OUT_INCLUDE_DIR}/${abi}/bride.h" ]] || return 1
+  done
+}
+
+if [[ "${FORCE_FLCLASH_CORE_BUILD:-0}" != "1" ]] && outputs_exist; then
+  echo "FlClash core outputs already exist. Set FORCE_FLCLASH_CORE_BUILD=1 to rebuild."
+  exit 0
+fi
 
 if [[ ! -d "${FLCLASH_DIR}/.git" ]]; then
   if [[ -e "${FLCLASH_DIR}" && -n "$(find "${FLCLASH_DIR}" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
@@ -52,17 +68,20 @@ if [[ ! -f "${SUBMODULE_DIR}/go.mod" ]]; then
   git clone --depth 1 --branch "${MIHOMO_TAG}" \
     https://github.com/MetaCubeX/mihomo.git \
     "${SUBMODULE_DIR}"
-  git -C "${SUBMODULE_DIR}" fetch --depth 2 \
-    https://github.com/chen08209/Clash.Meta.git "${FLCLASH_PATCH_COMMIT}"
-  git -c commit.gpgsign=false \
-    -c user.name="WhiteVPN Build" \
-    -c user.email="actions@users.noreply.github.com" \
-    -C "${SUBMODULE_DIR}" cherry-pick "${FLCLASH_PATCH_COMMIT}"
 fi
 
 if ! git -C "${SUBMODULE_DIR}" rev-parse --verify "${MIHOMO_TAG}^{commit}" >/dev/null 2>&1 ||
   ! git -C "${SUBMODULE_DIR}" merge-base --is-ancestor "${MIHOMO_TAG}" HEAD; then
   echo "FlClash Mihomo source is not based on ${MIHOMO_TAG}: ${SUBMODULE_DIR}" >&2
+  exit 1
+fi
+
+if git -C "${SUBMODULE_DIR}" apply --reverse --check "${MIHOMO_PATCH}" 2>/dev/null; then
+  :
+elif git -C "${SUBMODULE_DIR}" apply --check "${MIHOMO_PATCH}"; then
+  git -C "${SUBMODULE_DIR}" apply "${MIHOMO_PATCH}"
+else
+  echo "Unable to apply the pinned Mihomo FlClash patch: ${MIHOMO_PATCH}" >&2
   exit 1
 fi
 
@@ -112,22 +131,6 @@ TOOLCHAIN_BIN="$(find "${NDK_ROOT}/toolchains/llvm/prebuilt" -mindepth 2 -maxdep
 if [[ -z "${TOOLCHAIN_BIN}" || ! -d "${TOOLCHAIN_BIN}" ]]; then
   echo "Android NDK LLVM toolchain not found under ${NDK_ROOT}." >&2
   exit 1
-fi
-
-outputs_exist() {
-  local abi
-  [[ -f "${VERSION_FILE}" ]] || return 1
-  [[ "$(<"${VERSION_FILE}")" == "${MIHOMO_TAG}" ]] || return 1
-  for abi in "${ABIS[@]}"; do
-    [[ -f "${OUT_JNI_DIR}/${abi}/libclash.so" ]] || return 1
-    [[ -f "${OUT_INCLUDE_DIR}/${abi}/libclash.h" ]] || return 1
-    [[ -f "${OUT_INCLUDE_DIR}/${abi}/bride.h" ]] || return 1
-  done
-}
-
-if [[ "${FORCE_FLCLASH_CORE_BUILD:-0}" != "1" ]] && outputs_exist; then
-  echo "FlClash core outputs already exist. Set FORCE_FLCLASH_CORE_BUILD=1 to rebuild."
-  exit 0
 fi
 
 (cd "${CORE_DIR}" && go mod tidy)

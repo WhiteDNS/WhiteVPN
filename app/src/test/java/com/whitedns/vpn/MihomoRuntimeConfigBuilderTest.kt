@@ -671,7 +671,24 @@ class MihomoRuntimeConfigBuilderTest {
         """.trimIndent()
         val options = MihomoConnectionOptions(
             amneziaNoiseEnabled = true,
-            amneziaNoise = AmneziaNoiseSettings(5, 50, 100),
+            amneziaNoise = AmneziaNoiseSettings(
+                count = 5,
+                minSize = 50,
+                maxSize = 100,
+                fakeTtl = 7,
+                version = 3,
+                ipStackMode = "mips",
+                congestionController = "bbr3",
+                headerProtectionKey = "aGVsbG8=",
+                contentPaddingAddition = "16-32",
+                rekeyAfterTime = "120s",
+                rekeyTimeout = "5s",
+                rejectAfterTime = "180s",
+                keepaliveTimeout = "30s",
+                maxHandshakeAttempts = "10",
+                randomTrailers = true,
+                disableCookies = false,
+            ),
         )
 
         val patched = MihomoConnectionOptionsPatcher.patch(yaml, options)
@@ -682,10 +699,33 @@ class MihomoRuntimeConfigBuilderTest {
         assertTrue(patched.contains("jmin: 50"))
         assertTrue(patched.contains("jmax: 100"))
         assertTrue(patched.contains("s1: 15"))
+        assertTrue(patched.contains("version: 3"))
+        assertTrue(patched.contains("header-protection-key: 'aGVsbG8='"))
+        assertTrue(patched.contains("content-padding-addition: '16-32'"))
+        assertTrue(patched.contains("rekey-after-time: '120s'"))
+        assertTrue(patched.contains("rekey-timeout: '5s'"))
+        assertTrue(patched.contains("reject-after-time: '180s'"))
+        assertTrue(patched.contains("keepalive-timeout: '30s'"))
+        assertTrue(patched.contains("max-handshake-attempts: '10'"))
+        assertTrue(patched.contains("random-trailers: true"))
+        assertTrue(patched.contains("disable-cookies: false"))
+        assertTrue(patched.contains("fake-count: 5"))
+        assertTrue(patched.contains("fake-min-size: 50"))
+        assertTrue(patched.contains("fake-max-size: 100"))
+        assertTrue(patched.contains("fake-ttl: 7"))
+        assertTrue(patched.contains("mode: mips"))
+        assertTrue(patched.contains("congestion-controller: bbr3"))
         assertEquals(2, Regex("amnezia-wg-option:").findAll(patched).count())
+        assertEquals(2, Regex("wireguard-dpi-option:").findAll(patched).count())
+        assertEquals(2, Regex("ip-stack:").findAll(patched).count())
         assertEquals(yaml, MihomoConnectionOptionsPatcher.patch(yaml, MihomoConnectionOptions()))
         assertThrows(IllegalArgumentException::class.java) {
             MihomoConnectionOptionsPolicy.validateNoise(AmneziaNoiseSettings(5, 101, 100))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            MihomoConnectionOptionsPolicy.validateNoise(
+                AmneziaNoiseSettings(5, 50, 100, headerProtectionKey = "aGVsbG8="),
+            )
         }
     }
 

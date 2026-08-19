@@ -1,0 +1,1737 @@
+diff --git a/adapter/adapter.go b/adapter/adapter.go
+index 6f20c08abb43eb0ddef4f2ccf989ab0254e7f5ed..22054f0709ef2193aa26a5ecb017142717237c1b 100644
+--- a/adapter/adapter.go
++++ b/adapter/adapter.go
+@@ -167,6 +167,10 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
+ 	var satisfied bool
+ 
+ 	defer func() {
++		if UrlTestHook != nil {
++			UrlTestHook(url, p.Name(), t)
++		}
++
+ 		alive := err == nil
+ 		record := C.DelayHistory{Time: time.Now()}
+ 		if alive {
+diff --git a/adapter/outbound/wireguard.go b/adapter/outbound/wireguard.go
+index b856c5c846d55d4976081812365daa42006d1753..e4c784daf30473b7902a9ad4f29b4a412e1f682b 100644
+--- a/adapter/outbound/wireguard.go
++++ b/adapter/outbound/wireguard.go
+@@ -2,10 +2,13 @@ package outbound
+ 
+ import (
+ 	"context"
++	"crypto/rand"
+ 	"encoding/base64"
++	"encoding/binary"
+ 	"encoding/hex"
+ 	"errors"
+ 	"fmt"
++	"hash/fnv"
+ 	"net"
+ 	"net/netip"
+ 	"os"
+@@ -26,14 +29,17 @@ import (
+ 
+ 	amneziav3 "github.com/metacubex/amneziawg-go/device"
+ 	amnezia "github.com/metacubex/amneziawg-go/device_v1"
++	amneziaawg "github.com/metacubex/amneziawg-go/device_v1/awg"
+ 	"github.com/metacubex/mipstack"
+ 	wireguard "github.com/metacubex/sing-wireguard"
++	wgconn "github.com/metacubex/wireguard-go/conn"
+ 	"github.com/metacubex/wireguard-go/device"
+ 	"github.com/metacubex/wireguard-go/tun"
+ 
+ 	"github.com/metacubex/sing/common/debug"
+ 	E "github.com/metacubex/sing/common/exceptions"
+ 	M "github.com/metacubex/sing/common/metadata"
++	N "github.com/metacubex/sing/common/network"
+ )
+ 
+ const (
+@@ -47,6 +53,263 @@ type wireguardGoDevice interface {
+ 	IpcSet(uapiConf string) error
+ }
+ 
++const (
++	wireGuardHandshakeInitiationSize = 148
++	maxWireGuardDPIFakeCount         = 20
++	maxWireGuardDPIFakeSize          = 1280
++	maxWireGuardDPIFakeTTL           = 255
++	wireGuardDefaultDPIFakeTTL       = 3
++)
++
++type wireGuardDPIStrategy uint32
++
++const (
++	wireGuardDPIStrategyBurst wireGuardDPIStrategy = iota
++	wireGuardDPIStrategyPairedDuplicates
++	wireGuardDPIStrategyInterleavedDuplicates
++	wireGuardDPIStrategyTTL
++	wireGuardDPIStrategyCount
++)
++
++type wireGuardDPIBind struct {
++	wgconn.Bind
++	option    WireGuardDPIOption
++	pattern   wireGuardInitiationPattern
++	control   *wireGuardDPIWriteControl
++	identity  string
++	rotations map[string]uint32
++	mutex     sync.Mutex
++}
++
++type WireGuardDPIOption struct {
++	FakeCount   int `proxy:"fake-count,omitempty"`
++	FakeMinSize int `proxy:"fake-min-size,omitempty"`
++	FakeMaxSize int `proxy:"fake-max-size,omitempty"`
++	FakeTTL     int `proxy:"fake-ttl,omitempty"`
++}
++
++type wireGuardInitiationPattern struct {
++	size       int
++	typeOffset int
++	typeMin    uint32
++	typeMax    uint32
++}
++
++type wireGuardDPIWriteControl struct {
++	ttl int
++}
++
++type wireGuardDPIDialer struct {
++	N.Dialer
++	control *wireGuardDPIWriteControl
++}
++
++type wireGuardDPIUDPConn struct {
++	*net.UDPConn
++	control *wireGuardDPIWriteControl
++}
++
++var (
++	_ wgconn.Bind    = (*wireGuardDPIBind)(nil)
++	_ N.Dialer       = (*wireGuardDPIDialer)(nil)
++	_ net.Conn       = (*wireGuardDPIUDPConn)(nil)
++	_ net.PacketConn = (*wireGuardDPIUDPConn)(nil)
++)
++
++func (o WireGuardDPIOption) enabled() bool {
++	return o.FakeCount != 0 || o.FakeMinSize != 0 || o.FakeMaxSize != 0 || o.FakeTTL != 0
++}
++
++func (o WireGuardDPIOption) validate() error {
++	if o.FakeCount < 1 || o.FakeCount > maxWireGuardDPIFakeCount {
++		return E.New("wireguard dpi fake-count must be between 1 and ", maxWireGuardDPIFakeCount)
++	}
++	if o.FakeMinSize < 1 || o.FakeMaxSize > maxWireGuardDPIFakeSize || o.FakeMinSize > o.FakeMaxSize {
++		return E.New("wireguard dpi sizes must satisfy 1 <= fake-min-size <= fake-max-size <= ", maxWireGuardDPIFakeSize)
++	}
++	if o.FakeTTL < 0 || o.FakeTTL > maxWireGuardDPIFakeTTL {
++		return E.New("wireguard dpi fake-ttl must be between 0 and ", maxWireGuardDPIFakeTTL)
++	}
++	return nil
++}
++
++func (p wireGuardInitiationPattern) matches(packet []byte) bool {
++	if len(packet) != p.size || p.typeOffset < 0 || p.typeOffset+4 > len(packet) {
++		return false
++	}
++	messageType := binary.LittleEndian.Uint32(packet[p.typeOffset : p.typeOffset+4])
++	return messageType >= p.typeMin && messageType <= p.typeMax
++}
++
++func newWireGuardInitiationPattern(option *AmneziaWGOption) (wireGuardInitiationPattern, error) {
++	pattern := wireGuardInitiationPattern{
++		size:    wireGuardHandshakeInitiationSize,
++		typeMin: 1,
++		typeMax: 1,
++	}
++	if option == nil || !option.hasHandshakeChanges() {
++		return pattern, nil
++	}
++	if option.S1 < 0 {
++		return pattern, E.New("wireguard dpi cannot match a negative amnezia s1")
++	}
++	pattern.size += option.S1
++	pattern.typeOffset = option.S1
++	if option.H1 == "" {
++		return pattern, nil
++	}
++	header, err := amneziaawg.ParseMagicHeader("h1", option.H1)
++	if err != nil {
++		return pattern, E.Cause(err, "parse amnezia h1 for wireguard dpi")
++	}
++	if header.Min > 4 {
++		pattern.typeMin = header.Min
++		pattern.typeMax = header.Max
++	}
++	return pattern, nil
++}
++
++func (b *wireGuardDPIBind) Send(bufs [][]byte, endpoint wgconn.Endpoint) error {
++	b.mutex.Lock()
++	defer b.mutex.Unlock()
++	if len(bufs) != 1 || !b.pattern.matches(bufs[0]) {
++		return b.send(bufs, endpoint, 0)
++	}
++
++	strategy := b.nextStrategy(endpoint)
++	for _, fake := range b.fakePlan(strategy) {
++		ttl := 0
++		if strategy == wireGuardDPIStrategyTTL {
++			ttl = b.option.FakeTTL
++		}
++		if err := b.send([][]byte{fake}, endpoint, ttl); err != nil {
++			break
++		}
++	}
++	// Every strategy is fail-open and leaves the authenticated packet untouched.
++	return b.send(bufs, endpoint, 0)
++}
++
++func (b *wireGuardDPIBind) nextStrategy(endpoint wgconn.Endpoint) wireGuardDPIStrategy {
++	endpointKey := ""
++	if endpoint != nil {
++		endpointKey = endpoint.DstToString()
++	}
++	attempt := b.rotations[endpointKey]
++	b.rotations[endpointKey] = attempt + 1
++	hash := fnv.New32a()
++	_, _ = hash.Write([]byte(b.identity + "|" + endpointKey))
++	return wireGuardDPIStrategy((hash.Sum32() + attempt) % uint32(wireGuardDPIStrategyCount))
++}
++
++func (b *wireGuardDPIBind) fakePlan(strategy wireGuardDPIStrategy) [][]byte {
++	if strategy != wireGuardDPIStrategyPairedDuplicates && strategy != wireGuardDPIStrategyInterleavedDuplicates {
++		fakes := make([][]byte, 0, b.option.FakeCount)
++		for len(fakes) < b.option.FakeCount {
++			if fake := b.randomFakePacket(); fake != nil {
++				fakes = append(fakes, fake)
++			} else {
++				break
++			}
++		}
++		return fakes
++	}
++
++	unique := make([][]byte, 0, (b.option.FakeCount+1)/2)
++	for len(unique) < cap(unique) {
++		if fake := b.randomFakePacket(); fake != nil {
++			unique = append(unique, fake)
++		} else {
++			break
++		}
++	}
++	plan := make([][]byte, 0, b.option.FakeCount)
++	if strategy == wireGuardDPIStrategyPairedDuplicates {
++		for _, fake := range unique {
++			plan = append(plan, fake)
++			if len(plan) < b.option.FakeCount {
++				plan = append(plan, fake)
++			}
++		}
++		return plan
++	}
++	plan = append(plan, unique...)
++	for _, fake := range unique {
++		if len(plan) == b.option.FakeCount {
++			break
++		}
++		plan = append(plan, fake)
++	}
++	return plan
++}
++
++func (b *wireGuardDPIBind) randomFakePacket() []byte {
++	size := b.option.FakeMinSize
++	if span := b.option.FakeMaxSize - b.option.FakeMinSize + 1; span > 1 {
++		var sample [2]byte
++		if _, err := rand.Read(sample[:]); err == nil {
++			size += int(binary.LittleEndian.Uint16(sample[:])) % span
++		}
++	}
++	fake := make([]byte, size)
++	if _, err := rand.Read(fake); err != nil {
++		return nil
++	}
++	if b.pattern.typeOffset+4 <= len(fake) {
++		binary.LittleEndian.PutUint32(fake[b.pattern.typeOffset:b.pattern.typeOffset+4], 0)
++	} else {
++		fake[0] = 0
++	}
++	return fake
++}
++
++func (b *wireGuardDPIBind) send(bufs [][]byte, endpoint wgconn.Endpoint, ttl int) error {
++	b.control.ttl = ttl
++	defer func() { b.control.ttl = 0 }()
++	return b.Bind.Send(bufs, endpoint)
++}
++
++func (d *wireGuardDPIDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
++	connection, err := d.Dialer.DialContext(ctx, network, destination)
++	if err != nil {
++		return nil, err
++	}
++	if udpConn, ok := connection.(*net.UDPConn); ok {
++		return &wireGuardDPIUDPConn{UDPConn: udpConn, control: d.control}, nil
++	}
++	return connection, nil
++}
++
++func (d *wireGuardDPIDialer) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
++	packetConn, err := d.Dialer.ListenPacket(ctx, destination)
++	if err != nil {
++		return nil, err
++	}
++	if udpConn, ok := packetConn.(*net.UDPConn); ok {
++		return &wireGuardDPIUDPConn{UDPConn: udpConn, control: d.control}, nil
++	}
++	return packetConn, nil
++}
++
++func (c *wireGuardDPIUDPConn) Write(payload []byte) (int, error) {
++	if c.control.ttl > 0 {
++		if n, err, supported := writeWireGuardUDPWithTTL(c.UDPConn, payload, nil, c.control.ttl); supported && (err == nil || n > 0) {
++			return n, err
++		}
++	}
++	return c.UDPConn.Write(payload)
++}
++
++func (c *wireGuardDPIUDPConn) WriteTo(payload []byte, destination net.Addr) (int, error) {
++	udpDestination, isUDP := destination.(*net.UDPAddr)
++	if c.control.ttl > 0 && isUDP {
++		if n, err, supported := writeWireGuardUDPWithTTL(c.UDPConn, payload, udpDestination, c.control.ttl); supported && (err == nil || n > 0) {
++			return n, err
++		}
++	}
++	return c.UDPConn.WriteTo(payload, destination)
++}
++
+ type WireGuard struct {
+ 	*Base
+ 	bind      *wireguard.ClientBind
+@@ -80,7 +343,8 @@ type WireGuardOption struct {
+ 
+ 	IPStack IPStackOption `proxy:"ip-stack,omitempty"`
+ 
+-	AmneziaWGOption *AmneziaWGOption `proxy:"amnezia-wg-option,omitempty"`
++	AmneziaWGOption *AmneziaWGOption    `proxy:"amnezia-wg-option,omitempty"`
++	DPIOption       *WireGuardDPIOption `proxy:"wireguard-dpi-option,omitempty"`
+ 
+ 	Peers []WireGuardPeerOption `proxy:"peers,omitempty"`
+ 
+@@ -288,6 +552,16 @@ func newWireguardDevice(stack ipStack) (wireguardDevice, error) {
+ 	}, nil
+ }
+ 
++func (o *AmneziaWGOption) hasHandshakeChanges() bool {
++	return o.Version == 3 || o.S1 != 0 || o.S2 != 0 || o.S3 != 0 || o.S4 != 0 ||
++		o.H1 != "" || o.H2 != "" || o.H3 != "" || o.H4 != "" ||
++		o.I1 != "" || o.I2 != "" || o.I3 != "" || o.I4 != "" || o.I5 != "" ||
++		o.J1 != "" || o.J2 != "" || o.J3 != "" || o.Itime != 0 ||
++		o.HeaderProtectionKey != "" || o.ContentPaddingAddition != "" || o.RekeyAfterTime != "" ||
++		o.RekeyTimeout != "" || o.RejectAfterTime != "" || o.KeepaliveTimeout != "" ||
++		o.MaxHandshakeAttempts != "" || o.RandomTrailers || o.DisableCookies
++}
++
+ type wgSingErrorHandler struct {
+ 	name string
+ }
+@@ -345,6 +619,35 @@ func (option WireGuardOption) Prefixes() ([]netip.Prefix, error) {
+ }
+ 
+ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
++	dpiOption := option.DPIOption
++	// Legacy junk-only options use the standard device so WARP handshakes and reserved bytes stay intact.
++	if awg := option.AmneziaWGOption; awg != nil && !awg.hasHandshakeChanges() {
++		if dpiOption == nil && (awg.JC != 0 || awg.JMin != 0 || awg.JMax != 0) {
++			dpiOption = &WireGuardDPIOption{
++				FakeCount:   awg.JC,
++				FakeMinSize: awg.JMin,
++				FakeMaxSize: awg.JMax,
++				FakeTTL:     wireGuardDefaultDPIFakeTTL,
++			}
++		}
++		option.AmneziaWGOption = nil
++	}
++	if dpiOption != nil {
++		if !dpiOption.enabled() {
++			dpiOption = nil
++		} else if err := dpiOption.validate(); err != nil {
++			return nil, err
++		}
++	}
++	option.DPIOption = dpiOption
++	var initiationPattern wireGuardInitiationPattern
++	var err error
++	if dpiOption != nil {
++		initiationPattern, err = newWireGuardInitiationPattern(option.AmneziaWGOption)
++		if err != nil {
++			return nil, err
++		}
++	}
+ 	outbound := &WireGuard{
+ 		Base: NewBase(BaseOption{
+ 			Name:         option.Name,
+@@ -359,6 +662,14 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
+ 	}
+ 	outbound.dialer = option.NewDialer(outbound.DialOptions())
+ 	singDialer := proxydialer.NewSingDialer(proxydialer.NewSlowDownDialer(outbound.dialer, slowdown.New()))
++	var clientDialer N.Dialer = singDialer
++	var dpiControl *wireGuardDPIWriteControl
++	if dpiOption != nil {
++		dpiControl = &wireGuardDPIWriteControl{}
++		if option.DialerProxy == "" && option.DialerForAPI == nil {
++			clientDialer = &wireGuardDPIDialer{Dialer: clientDialer, control: dpiControl}
++		}
++	}
+ 
+ 	var reserved [3]uint8
+ 	if len(option.Reserved) > 0 {
+@@ -376,9 +687,8 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
+ 			outbound.connectAddr = option.Addr()
+ 		}
+ 	}
+-	outbound.bind = wireguard.NewClientBind(context.Background(), wgSingErrorHandler{outbound.Name()}, singDialer, isConnect, outbound.connectAddr.AddrPort(), reserved)
++	outbound.bind = wireguard.NewClientBind(context.Background(), wgSingErrorHandler{outbound.Name()}, clientDialer, isConnect, outbound.connectAddr.AddrPort(), reserved)
+ 
+-	var err error
+ 	outbound.localPrefixes, err = option.Prefixes()
+ 	if err != nil {
+ 		return nil, err
+@@ -474,15 +784,26 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
+ 			log.SingLogger.Error(fmt.Sprintf("[WG](%s) %s", option.Name, fmt.Sprintf(format, args...)))
+ 		},
+ 	}
++	deviceBind := wgconn.Bind(outbound.bind)
++	if dpiOption != nil {
++		deviceBind = &wireGuardDPIBind{
++			Bind:      deviceBind,
++			option:    *dpiOption,
++			pattern:   initiationPattern,
++			control:   dpiControl,
++			identity:  option.Name,
++			rotations: make(map[string]uint32),
++		}
++	}
+ 	if option.AmneziaWGOption != nil {
+ 		outbound.bind.SetParseReserved(false) // AmneziaWG don't need parse reserved
+ 		if option.AmneziaWGOption.Version == 3 {
+-			outbound.device = amneziav3.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
++			outbound.device = amneziav3.NewDevice(outbound.tunDevice, deviceBind, logger, option.Workers)
+ 		} else {
+-			outbound.device = amnezia.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
++			outbound.device = amnezia.NewDevice(outbound.tunDevice, deviceBind, logger, option.Workers)
+ 		}
+ 	} else {
+-		outbound.device = device.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
++		outbound.device = device.NewDevice(outbound.tunDevice, deviceBind, logger, option.Workers)
+ 	}
+ 
+ 	var has6 bool
+diff --git a/adapter/outbound/wireguard_dpi_ttl_other.go b/adapter/outbound/wireguard_dpi_ttl_other.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c322d1b3fe104ca08c740d067b8fd473be1b3a4d
+--- /dev/null
++++ b/adapter/outbound/wireguard_dpi_ttl_other.go
+@@ -0,0 +1,14 @@
++//go:build !linux && !android
++
++package outbound
++
++import "net"
++
++func writeWireGuardUDPWithTTL(
++	_ *net.UDPConn,
++	_ []byte,
++	_ *net.UDPAddr,
++	_ int,
++) (int, error, bool) {
++	return 0, nil, false
++}
+diff --git a/adapter/outbound/wireguard_dpi_ttl_unix.go b/adapter/outbound/wireguard_dpi_ttl_unix.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d552b878cbd306f46f7d1872bc915972d03b5e1f
+--- /dev/null
++++ b/adapter/outbound/wireguard_dpi_ttl_unix.go
+@@ -0,0 +1,38 @@
++//go:build linux || android
++
++package outbound
++
++import (
++	"net"
++	"syscall"
++	"unsafe"
++)
++
++func writeWireGuardUDPWithTTL(
++	connection *net.UDPConn,
++	payload []byte,
++	destination *net.UDPAddr,
++	ttl int,
++) (int, error, bool) {
++	remote := destination
++	if remote == nil {
++		remote, _ = connection.RemoteAddr().(*net.UDPAddr)
++	}
++	if remote == nil || ttl < 1 || ttl > 255 {
++		return 0, nil, false
++	}
++
++	control := make([]byte, syscall.CmsgSpace(4))
++	header := (*syscall.Cmsghdr)(unsafe.Pointer(&control[0]))
++	if remote.IP.To4() == nil {
++		header.Level = syscall.IPPROTO_IPV6
++		header.Type = syscall.IPV6_HOPLIMIT
++	} else {
++		header.Level = syscall.IPPROTO_IP
++		header.Type = syscall.IP_TTL
++	}
++	header.SetLen(syscall.CmsgLen(4))
++	*(*int32)(unsafe.Pointer(&control[syscall.CmsgLen(0)])) = int32(ttl)
++	n, _, err := connection.WriteMsgUDP(payload, control, destination)
++	return n, err, true
++}
+diff --git a/adapter/outbound/wireguard_udp_desync_test.go b/adapter/outbound/wireguard_udp_desync_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..7de1c16f5244b9eb285abea7c9dfeeeca36c53b3
+--- /dev/null
++++ b/adapter/outbound/wireguard_udp_desync_test.go
+@@ -0,0 +1,181 @@
++package outbound
++
++import (
++	"bytes"
++	"encoding/binary"
++	"errors"
++	"testing"
++
++	wgconn "github.com/metacubex/wireguard-go/conn"
++)
++
++type recordedWireGuardSend struct {
++	bufs []byte
++	ttl  int
++}
++
++type recordingWireGuardBind struct {
++	wgconn.Bind
++	control   *wireGuardDPIWriteControl
++	sends     []recordedWireGuardSend
++	failFirst bool
++}
++
++func (b *recordingWireGuardBind) Send(bufs [][]byte, _ wgconn.Endpoint) error {
++	for _, buf := range bufs {
++		b.sends = append(b.sends, recordedWireGuardSend{
++			bufs: bytes.Clone(buf),
++			ttl:  b.control.ttl,
++		})
++	}
++	if b.failFirst && len(b.sends) == 1 {
++		return errors.New("fake send failed")
++	}
++	return nil
++}
++
++func TestWireGuardDPIStrategyEngine(t *testing.T) {
++	if (&AmneziaWGOption{JC: 2, JMin: 64, JMax: 64}).hasHandshakeChanges() {
++		t.Fatal("legacy junk-only options must keep standard WireGuard")
++	}
++	if !(&AmneziaWGOption{S1: 15}).hasHandshakeChanges() {
++		t.Fatal("Amnezia handshake fields must keep the AmneziaWG device")
++	}
++	awgPattern, err := newWireGuardInitiationPattern(&AmneziaWGOption{S1: 10, H1: "100-200"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	awgHandshake := make([]byte, wireGuardHandshakeInitiationSize+10)
++	binary.LittleEndian.PutUint32(awgHandshake[10:], 150)
++	if !awgPattern.matches(awgHandshake) {
++		t.Fatal("Amnezia initiation range was not recognized")
++	}
++
++	option := WireGuardDPIOption{FakeCount: 4, FakeMinSize: 64, FakeMaxSize: 64, FakeTTL: 3}
++	if err := option.validate(); err != nil {
++		t.Fatal(err)
++	}
++	awgControl := &wireGuardDPIWriteControl{}
++	awgRecorder := &recordingWireGuardBind{control: awgControl}
++	awgBind := &wireGuardDPIBind{
++		Bind:      awgRecorder,
++		option:    option,
++		pattern:   awgPattern,
++		control:   awgControl,
++		identity:  "profile-awg",
++		rotations: make(map[string]uint32),
++	}
++	if err := awgBind.Send([][]byte{awgHandshake}, nil); err != nil {
++		t.Fatal(err)
++	}
++	if len(awgRecorder.sends) != option.FakeCount+1 {
++		t.Fatalf("Amnezia initiation sent %d packets, want %d", len(awgRecorder.sends), option.FakeCount+1)
++	}
++	var awgRealCount int
++	for _, send := range awgRecorder.sends {
++		if bytes.Equal(send.bufs, awgHandshake) {
++			awgRealCount++
++		}
++	}
++	awgReal := awgRecorder.sends[len(awgRecorder.sends)-1]
++	if awgRealCount != 1 || awgReal.ttl != 0 || !bytes.Equal(awgReal.bufs, awgHandshake) {
++		t.Fatal("Amnezia initiation must be the final packet and sent exactly once without fake TTL")
++	}
++
++	standardHandshake := make([]byte, wireGuardHandshakeInitiationSize)
++	binary.LittleEndian.PutUint32(standardHandshake, 1)
++	standardStart := len(awgRecorder.sends)
++	if err := awgBind.Send([][]byte{standardHandshake}, nil); err != nil {
++		t.Fatal(err)
++	}
++	if len(awgRecorder.sends) != standardStart+1 || !bytes.Equal(awgRecorder.sends[standardStart].bufs, standardHandshake) {
++		t.Fatal("standard initiation must not be classified as an Amnezia initiation")
++	}
++
++	control := &wireGuardDPIWriteControl{}
++	recorder := &recordingWireGuardBind{control: control}
++	bind := &wireGuardDPIBind{
++		Bind:      recorder,
++		option:    option,
++		pattern:   wireGuardInitiationPattern{size: wireGuardHandshakeInitiationSize, typeMin: 1, typeMax: 1},
++		control:   control,
++		identity:  "profile-a",
++		rotations: make(map[string]uint32),
++	}
++
++	pairedPlan := bind.fakePlan(wireGuardDPIStrategyPairedDuplicates)
++	if !bytes.Equal(pairedPlan[0], pairedPlan[1]) || !bytes.Equal(pairedPlan[2], pairedPlan[3]) {
++		t.Fatal("paired strategy did not duplicate adjacent decoys")
++	}
++	interleavedPlan := bind.fakePlan(wireGuardDPIStrategyInterleavedDuplicates)
++	if !bytes.Equal(interleavedPlan[0], interleavedPlan[2]) || !bytes.Equal(interleavedPlan[1], interleavedPlan[3]) {
++		t.Fatal("interleaved strategy did not preserve controlled ordering")
++	}
++	randomPlan := bind.fakePlan(wireGuardDPIStrategyBurst)
++	if bytes.Equal(randomPlan[0], randomPlan[1]) {
++		t.Fatal("independent decoys were not randomized")
++	}
++
++	handshake := make([]byte, wireGuardHandshakeInitiationSize)
++	binary.LittleEndian.PutUint32(handshake, 1)
++	handshake[10] = 42
++	seenStrategies := make(map[wireGuardDPIStrategy]bool)
++	for attempt := 0; attempt < int(wireGuardDPIStrategyCount); attempt++ {
++		strategy := bind.nextStrategy(nil)
++		bind.rotations[""]--
++		start := len(recorder.sends)
++		if err := bind.Send([][]byte{handshake}, nil); err != nil {
++			t.Fatal(err)
++		}
++		sends := recorder.sends[start:]
++		if len(sends) != option.FakeCount+1 {
++			t.Fatalf("strategy %d sent %d packets, want %d", strategy, len(sends), option.FakeCount+1)
++		}
++		for _, fake := range sends[:option.FakeCount] {
++			if len(fake.bufs) != 64 || fake.bufs[0] != 0 {
++				t.Fatalf("strategy %d emitted a valid or incorrectly sized decoy", strategy)
++			}
++			if strategy == wireGuardDPIStrategyTTL && fake.ttl != option.FakeTTL {
++				t.Fatalf("TTL strategy used ttl=%d, want %d", fake.ttl, option.FakeTTL)
++			}
++			if strategy != wireGuardDPIStrategyTTL && fake.ttl != 0 {
++				t.Fatalf("strategy %d unexpectedly used ttl=%d", strategy, fake.ttl)
++			}
++		}
++		real := sends[len(sends)-1]
++		if real.ttl != 0 || !bytes.Equal(real.bufs, handshake) {
++			t.Fatal("real handshake was modified or inherited fake TTL")
++		}
++		seenStrategies[strategy] = true
++	}
++	if len(seenStrategies) != int(wireGuardDPIStrategyCount) {
++		t.Fatalf("rotation covered %d strategies, want %d", len(seenStrategies), wireGuardDPIStrategyCount)
++	}
++
++	transport := make([]byte, 32)
++	binary.LittleEndian.PutUint32(transport, 4)
++	start := len(recorder.sends)
++	if err := bind.Send([][]byte{transport}, nil); err != nil {
++		t.Fatal(err)
++	}
++	if len(recorder.sends) != start+1 || !bytes.Equal(recorder.sends[start].bufs, transport) {
++		t.Fatal("non-initiation packets must pass through unchanged")
++	}
++
++	failControl := &wireGuardDPIWriteControl{}
++	failingRecorder := &recordingWireGuardBind{control: failControl, failFirst: true}
++	failOpenBind := &wireGuardDPIBind{
++		Bind:      failingRecorder,
++		option:    option,
++		pattern:   bind.pattern,
++		control:   failControl,
++		identity:  "profile-b",
++		rotations: make(map[string]uint32),
++	}
++	if err := failOpenBind.Send([][]byte{handshake}, nil); err != nil {
++		t.Fatal(err)
++	}
++	if len(failingRecorder.sends) != 2 || !bytes.Equal(failingRecorder.sends[1].bufs, handshake) {
++		t.Fatal("a decoy failure must still send the real handshake")
++	}
++}
+diff --git a/adapter/patch.go b/adapter/patch.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..4391c56be65041f228fe723798cb802afbcb6b38
+--- /dev/null
++++ b/adapter/patch.go
+@@ -0,0 +1,5 @@
++package adapter
++
++type UrlTestCheck func(url string, name string, delay uint16)
++
++var UrlTestHook UrlTestCheck
+diff --git a/adapter/provider/patch.go b/adapter/provider/patch.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1f3306a62b3626f372a4b821994a2cd24c137630
+--- /dev/null
++++ b/adapter/provider/patch.go
+@@ -0,0 +1,5 @@
++package provider
++
++func (pp *proxySetProvider) GetSubscriptionInfo() *SubscriptionInfo {
++	return pp.subscriptionInfo
++}
+diff --git a/component/loopback/detector.go b/component/loopback/detector.go
+index 59d16ca8a49bfd2620207ec1980a011b89ab42fe..02f71373b4ea5fa895841f9119813be571fc07a3 100644
+--- a/component/loopback/detector.go
++++ b/component/loopback/detector.go
+@@ -17,7 +17,7 @@ import (
+ var disableLoopBackDetector, _ = strconv.ParseBool(os.Getenv("DISABLE_LOOPBACK_DETECTOR"))
+ 
+ func init() {
+-	if features.CMFA {
++	if features.Android {
+ 		disableLoopBackDetector = true
+ 	}
+ }
+diff --git a/component/process/process.go b/component/process/process.go
+index 464f5a79bc445a904ee5711fc159f76622607e53..8b758b91c8e397de65e79c74aaf834b9cb3a25cb 100644
+--- a/component/process/process.go
++++ b/component/process/process.go
+@@ -22,12 +22,10 @@ func FindProcessName(network string, srcIP netip.Addr, srcPort int) (uint32, str
+ 	return findProcessName(network, srcIP, srcPort)
+ }
+ 
+-// PackageNameResolver
+-// never change type traits because it's used in CMFA
+ type PackageNameResolver func(metadata *C.Metadata) (string, error)
+ 
+ // DefaultPackageNameResolver
+-// never change type traits because it's used in CMFA
++// never change type traits because it's used in CFMA
+ var DefaultPackageNameResolver PackageNameResolver
+ 
+ func FindPackageName(metadata *C.Metadata) (string, error) {
+diff --git a/component/resource/fetcher.go b/component/resource/fetcher.go
+index 464af2e702a2fbd174d96f4316cc7f9e598a2236..6d671c815861e83d8e404522acf6a7953d019cd7 100644
+--- a/component/resource/fetcher.go
++++ b/component/resource/fetcher.go
+@@ -236,7 +236,7 @@ func (f *Fetcher[V]) updateCallback(path string) {
+ func (f *Fetcher[V]) updateWithLog() {
+ 	_, same, err := f.Update()
+ 	if err != nil {
+-		log.Errorln("[Provider] %s pull error: %s", f.Name(), err.Error())
++		log.Warnln("[Provider] %s pull error: %s", f.Name(), err.Error())
+ 		return
+ 	}
+ 
+diff --git a/component/updater/patch.go b/component/updater/patch.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..f969393876dc103386371643ba1c432106db6ab0
+--- /dev/null
++++ b/component/updater/patch.go
+@@ -0,0 +1,67 @@
++package updater
++
++import (
++	"context"
++	"time"
++
++	"github.com/metacubex/mihomo/log"
++)
++
++var (
++	GeoUpdateHook func(geoType string, updating bool, skipped bool, updateErr error)
++)
++
++func sendGeoUpdateStatus(geoType string, updating bool, skipped bool, updateErr error) {
++	if GeoUpdateHook != nil {
++		GeoUpdateHook(geoType, updating, skipped, updateErr)
++	}
++}
++
++var geoUpdateCancel context.CancelFunc
++
++func RegisterGeoUpdaterWithCancel() {
++	if geoUpdateCancel != nil {
++		geoUpdateCancel()
++	}
++
++	if updateInterval <= 0 {
++		log.Errorln("[GEO] Invalid update interval: %d", updateInterval)
++		return
++	}
++
++	ctx, cancel := context.WithCancel(context.Background())
++	geoUpdateCancel = cancel
++
++	go func() {
++		ticker := time.NewTicker(time.Duration(updateInterval) * time.Hour)
++		defer ticker.Stop()
++
++		lastUpdate, err := getUpdateTime()
++		if err != nil {
++			log.Errorln("[GEO] Get GEO database update time error: %s", err.Error())
++			return
++		}
++
++		log.Infoln("[GEO] last update time %s", lastUpdate)
++		if lastUpdate.Add(time.Duration(updateInterval) * time.Hour).Before(time.Now()) {
++			log.Infoln("[GEO] Database has not been updated for %v, update now", time.Duration(updateInterval)*time.Hour)
++			if err := UpdateGeoDatabases(); err != nil {
++				log.Errorln("[GEO] Failed to update GEO database: %s", err.Error())
++				return
++			}
++		}
++
++		for {
++			select {
++			case <-ctx.Done():
++				log.Infoln("[GEO] Geo updater stopped")
++				return
++			case <-ticker.C:
++				log.Infoln("[GEO] updating database every %d hours", updateInterval)
++				if err := UpdateGeoDatabases(); err != nil {
++					log.Errorln("[GEO] Failed to update GEO database: %s", err.Error())
++				}
++			}
++		}
++	}()
++}
+diff --git a/component/updater/update_geo.go b/component/updater/update_geo.go
+index 63e6d1501266ee90be4698c9c2d096320186af61..19c5a211f6b8bacc27f2e36939c47d58fc929a36 100644
+--- a/component/updater/update_geo.go
++++ b/component/updater/update_geo.go
+@@ -45,6 +45,10 @@ func SetGeoUpdateInterval(newGeoUpdateInterval int) {
+ }
+ 
+ func UpdateMMDB() (err error) {
++	sendGeoUpdateStatus("MMDB", true, false, nil)
++	var skipped bool
++	defer func() { sendGeoUpdateStatus("MMDB", false, skipped, err) }()
++
+ 	vehicle := resource.NewHTTPVehicle(geodata.MmdbUrl(), C.Path.MMDB(), "", nil, defaultHttpTimeout, 0)
+ 	var oldHash utils.HashType
+ 	if buf, err := os.ReadFile(vehicle.Path()); err == nil {
+@@ -55,6 +59,7 @@ func UpdateMMDB() (err error) {
+ 		return fmt.Errorf("can't download MMDB database file: %w", err)
+ 	}
+ 	if oldHash.Equal(hash) { // same hash, ignored
++		skipped = true
+ 		return nil
+ 	}
+ 	if len(data) == 0 {
+@@ -76,6 +81,10 @@ func UpdateMMDB() (err error) {
+ }
+ 
+ func UpdateASN() (err error) {
++	sendGeoUpdateStatus("ASN", true, false, nil)
++	var skipped bool
++	defer func() { sendGeoUpdateStatus("ASN", false, skipped, err) }()
++
+ 	vehicle := resource.NewHTTPVehicle(geodata.ASNUrl(), C.Path.ASN(), "", nil, defaultHttpTimeout, 0)
+ 	var oldHash utils.HashType
+ 	if buf, err := os.ReadFile(vehicle.Path()); err == nil {
+@@ -86,6 +95,7 @@ func UpdateASN() (err error) {
+ 		return fmt.Errorf("can't download ASN database file: %w", err)
+ 	}
+ 	if oldHash.Equal(hash) { // same hash, ignored
++		skipped = true
+ 		return nil
+ 	}
+ 	if len(data) == 0 {
+@@ -107,6 +117,10 @@ func UpdateASN() (err error) {
+ }
+ 
+ func UpdateGeoIp() (err error) {
++	sendGeoUpdateStatus("GEOIP", true, false, nil)
++	var skipped bool
++	defer func() { sendGeoUpdateStatus("GEOIP", false, skipped, err) }()
++
+ 	geoLoader, err := geodata.GetGeoDataLoader("standard")
+ 
+ 	vehicle := resource.NewHTTPVehicle(geodata.GeoIpUrl(), C.Path.GeoIP(), "", nil, defaultHttpTimeout, 0)
+@@ -119,6 +133,7 @@ func UpdateGeoIp() (err error) {
+ 		return fmt.Errorf("can't download GeoIP database file: %w", err)
+ 	}
+ 	if oldHash.Equal(hash) { // same hash, ignored
++		skipped = true
+ 		return nil
+ 	}
+ 	if len(data) == 0 {
+@@ -137,6 +152,10 @@ func UpdateGeoIp() (err error) {
+ }
+ 
+ func UpdateGeoSite() (err error) {
++	sendGeoUpdateStatus("GEOSITE", true, false, nil)
++	var skipped bool
++	defer func() { sendGeoUpdateStatus("GEOSITE", false, skipped, err) }()
++
+ 	geoLoader, err := geodata.GetGeoDataLoader("standard")
+ 
+ 	vehicle := resource.NewHTTPVehicle(geodata.GeoSiteUrl(), C.Path.GeoSite(), "", nil, defaultHttpTimeout, 0)
+@@ -149,6 +168,7 @@ func UpdateGeoSite() (err error) {
+ 		return fmt.Errorf("can't download GeoSite database file: %w", err)
+ 	}
+ 	if oldHash.Equal(hash) { // same hash, ignored
++		skipped = true
+ 		return nil
+ 	}
+ 	if len(data) == 0 {
+diff --git a/config/config.go b/config/config.go
+index 45efb291e339dee50aa4c9ffd9056e7f7ff37107..babbc4c2e906b4d4e1a316456b936726cf77ea67 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -989,6 +989,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
+ 		return nil, nil, err
+ 	}
+ 
++	SetProxyNameList(proxyList)
+ 	return proxies, providersMap, nil
+ }
+ 
+diff --git a/config/patch.go b/config/patch.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..01c415ab732bdd2b92accec1e69411a6fcf7d957
+--- /dev/null
++++ b/config/patch.go
+@@ -0,0 +1,20 @@
++package config
++
++import "sync"
++
++var (
++	proxyNameList   []string
++	proxyNameListMu sync.RWMutex
++)
++
++func GetProxyNameList() []string {
++	proxyNameListMu.RLock()
++	defer proxyNameListMu.RUnlock()
++	return proxyNameList
++}
++
++func SetProxyNameList(list []string) {
++	proxyNameListMu.Lock()
++	defer proxyNameListMu.Unlock()
++	proxyNameList = list
++}
+diff --git a/constant/adapters.go b/constant/adapters.go
+index a28ac547a7bcd287404546fd8555f8ef7c0e362c..0cf51f5fa93a1fe0e3a8967238a231f6445ffb6d 100644
+--- a/constant/adapters.go
++++ b/constant/adapters.go
+@@ -61,9 +61,10 @@ const (
+ 	DefaultUDPTimeout = dialer.DefaultUDPTimeout
+ 	DefaultDropTime   = 12 * DefaultTCPTimeout
+ 	DefaultTLSTimeout = DefaultTCPTimeout
+-	DefaultTestURL    = "https://www.gstatic.com/generate_204"
+ )
+ 
++var DefaultTestURL = "https://www.gstatic.com/generate_204"
++
+ var ErrNotSupport = errors.New("no support")
+ 
+ type Connection interface {
+diff --git a/constant/features/android.go b/constant/features/android.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c1174f0804f63870aac82efef8432038c2e63673
+--- /dev/null
++++ b/constant/features/android.go
+@@ -0,0 +1,5 @@
++//go:build android
++
++package features
++
++const Android = true
+diff --git a/constant/features/android_stub.go b/constant/features/android_stub.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..282493e7c759f07766d541e1bd00cb9414575137
+--- /dev/null
++++ b/constant/features/android_stub.go
+@@ -0,0 +1,5 @@
++//go:build !android
++
++package features
++
++const Android = false
+diff --git a/constant/features/cmfa.go b/constant/features/cmfa.go
+deleted file mode 100644
+index 9a81d82ffe5c9e016a8aeba434e30ed6c2606250..0000000000000000000000000000000000000000
+--- a/constant/features/cmfa.go
++++ /dev/null
+@@ -1,5 +0,0 @@
+-//go:build cmfa
+-
+-package features
+-
+-const CMFA = true
+diff --git a/constant/features/cmfa_stub.go b/constant/features/cmfa_stub.go
+deleted file mode 100644
+index f7ef082741045fbabbaf5cac9cea78a94a51079e..0000000000000000000000000000000000000000
+--- a/constant/features/cmfa_stub.go
++++ /dev/null
+@@ -1,5 +0,0 @@
+-//go:build !cmfa
+-
+-package features
+-
+-const CMFA = false
+diff --git a/constant/features/tags.go b/constant/features/tags.go
+index 524c4d77e50e22b762b48ba1dc4209dc12e7025a..ac12385cc0132a1ad23a1b22d8ebb56304a3fa53 100644
+--- a/constant/features/tags.go
++++ b/constant/features/tags.go
+@@ -1,9 +1,6 @@
+ package features
+ 
+ func Tags() (tags []string) {
+-	if CMFA {
+-		tags = append(tags, "cmfa")
+-	}
+ 	if WithLowMemory {
+ 		tags = append(tags, "with_low_memory")
+ 	}
+diff --git a/constant/path.go b/constant/path.go
+index f2463a4a235e7c10f24aaeb6ebadb1430b14d245..590928d0b6cfc523da73c582dd6015f121b6781a 100644
+--- a/constant/path.go
++++ b/constant/path.go
+@@ -86,7 +86,7 @@ func (p *path) Resolve(path string) string {
+ 
+ // IsSafePath return true if path is a subpath of homedir (or in the SAFE_PATHS environment variable)
+ func (p *path) IsSafePath(path string) bool {
+-	if p.allowUnsafePath || features.CMFA {
++	if p.allowUnsafePath || features.Android {
+ 		return true
+ 	}
+ 	path = p.Resolve(path)
+@@ -135,7 +135,8 @@ func (p *path) MMDB() string {
+ 		} else {
+ 			if strings.EqualFold(fi.Name(), "Country.mmdb") ||
+ 				strings.EqualFold(fi.Name(), "geoip.db") ||
+-				strings.EqualFold(fi.Name(), "geoip.metadb") {
++				strings.EqualFold(fi.Name(), "geoip.metadb") ||
++				strings.EqualFold(fi.Name(), "GEOIP.metadb") {
+ 				GeoipName = fi.Name()
+ 				return P.Join(p.homeDir, fi.Name())
+ 			}
+@@ -200,7 +201,8 @@ func (p *path) GeoIP() string {
+ 			// 目录则直接跳过
+ 			continue
+ 		} else {
+-			if strings.EqualFold(fi.Name(), "GeoIP.dat") {
++			if strings.EqualFold(fi.Name(), "GeoIP.dat") ||
++				strings.EqualFold(fi.Name(), "GEOIP.dat") {
+ 				GeoipName = fi.Name()
+ 				return P.Join(p.homeDir, fi.Name())
+ 			}
+@@ -219,7 +221,8 @@ func (p *path) GeoSite() string {
+ 			// 目录则直接跳过
+ 			continue
+ 		} else {
+-			if strings.EqualFold(fi.Name(), "GeoSite.dat") {
++			if strings.EqualFold(fi.Name(), "GeoSite.dat") ||
++				strings.EqualFold(fi.Name(), "GEOSITE.dat") {
+ 				GeositeName = fi.Name()
+ 				return P.Join(p.homeDir, fi.Name())
+ 			}
+diff --git a/dns/patch_android.go b/dns/patch_android.go
+index cad718b6930ba627f261b51c2fcf5c43621f8ce9..138e95d57bfda8d853d9b817f3c43e56dd5e08f4 100644
+--- a/dns/patch_android.go
++++ b/dns/patch_android.go
+@@ -1,4 +1,4 @@
+-//go:build android && cmfa
++//go:build android
+ 
+ package dns
+ 
+diff --git a/dns/system_common.go b/dns/system_common.go
+index e6dabdcfff1411b8115c3f50b1fbcda5826a6ec1..78c4a86f28131474ff27801e21d1165aa18ab081 100644
+--- a/dns/system_common.go
++++ b/dns/system_common.go
+@@ -1,4 +1,4 @@
+-//go:build !(android && cmfa)
++//go:build !android
+ 
+ package dns
+ 
+diff --git a/hub/executor/executor.go b/hub/executor/executor.go
+index 796face2f1b9eb498035ce8d2cf72e62ea5a0b0c..dc7c66b9376f67135e1d33becc4b54d6bf619422 100644
+--- a/hub/executor/executor.go
++++ b/hub/executor/executor.go
+@@ -104,8 +104,8 @@ func ApplyConfig(cfg *config.Config, force bool) {
+ 	updateGeneral(cfg.General, true)
+ 	updateDNS(cfg.DNS, cfg.General.IPv6)
+ 	updateNTP(cfg.NTP) // initialize NTP after DNS because an NTP server may be a hostname.
+-	updateListeners(cfg.General, cfg.Listeners, force)
+-	updateTun(cfg.General) // tun should not care "force"
++	//updateListeners(cfg.General, cfg.Listeners, force)
++	//updateTun(cfg.General) // tun should not care "force"
+ 	updateIPTables(cfg)
+ 	updateTunnels(cfg.Tunnels)
+ 
+@@ -328,13 +328,17 @@ func loadProvider[T P.Provider](providers map[string]T) {
+ 			switch pv.Type() {
+ 			case P.Proxy:
+ 				{
+-					log.Errorln("initial proxy provider %s error: %v", name, err)
++					log.Warnln("initial proxy provider %s error: %v", name, err)
+ 				}
+ 			case P.Rule:
+ 				{
+-					log.Errorln("initial rule provider %s error: %v", name, err)
++					log.Warnln("initial rule provider %s error: %v", name, err)
+ 				}
+ 			}
++		} else {
++			if DefaultProviderLoadedHook != nil {
++				DefaultProviderLoadedHook(name)
++			}
+ 		}
+ 	}
+ 
+@@ -349,7 +353,6 @@ func loadProvider[T P.Provider](providers map[string]T) {
+ 			load(pv)
+ 		}()
+ 	}
+-	wg.Wait()
+ }
+ 
+ func updateSniffer(snifferConfig *sniffer.Config) {
+diff --git a/hub/executor/patch.go b/hub/executor/patch.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1cbbbbc0c0a06cad673a607d1ffb8ed06f6dfc4c
+--- /dev/null
++++ b/hub/executor/patch.go
+@@ -0,0 +1,5 @@
++package executor
++
++type ProviderLoadedHook func(providerName string)
++
++var DefaultProviderLoadedHook ProviderLoadedHook
+diff --git a/hub/route/patch_android.go b/hub/route/patch_android.go
+index 5eba2796467ff3bb339f16618de057394b5f0f97..4b6dcf25acb9bf0983b0b89973ca0497bc359360 100644
+--- a/hub/route/patch_android.go
++++ b/hub/route/patch_android.go
+@@ -1,4 +1,4 @@
+-//go:build android && cmfa
++//go:build android
+ 
+ package route
+ 
+diff --git a/hub/route/server.go b/hub/route/server.go
+index 6d37d4802bfe4e5caef8fc224479a1225c38ab8e..b1659cd085d278193a94ed860e3bfd9a8721d95e 100644
+--- a/hub/route/server.go
++++ b/hub/route/server.go
+@@ -181,9 +181,7 @@ func start(cfg *Config) {
+ 			Handler: router(cfg.IsDebug, cfg.Secret, cfg.DohServer, cfg.Cors),
+ 		}
+ 		httpServer = server
+-		if err = server.Serve(l); err != nil {
+-			log.Errorln("External controller serve error: %s", err)
+-		}
++		_ = server.Serve(l)
+ 	}
+ }
+ 
+diff --git a/listener/http/patch_android.go b/listener/http/patch_android.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a763c95e853b15d73008bdbeb2bb253beef7cf03
+--- /dev/null
++++ b/listener/http/patch_android.go
+@@ -0,0 +1,9 @@
++//go:build android
++
++package http
++
++import "net"
++
++func (l *Listener) Listener() net.Listener {
++	return l.listener
++}
+diff --git a/listener/listener.go b/listener/listener.go
+index 3a0a8aad415dc078529a86417048522796fd2a3d..ececbc41fd6bf11788a88b30399e0c0fbc75ec03 100644
+--- a/listener/listener.go
++++ b/listener/listener.go
+@@ -512,10 +512,8 @@ func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
+ 		}
+ 	}()
+ 
+-	if tunConf.Equal(LastTunConf) {
+-		if tunLister != nil { // some default value in dialer maybe changed when config reload, reset at here
+-			tunLister.OnReload()
+-		}
++	if tunLister != nil && tunConf.Equal(LastTunConf) {
++		tunLister.OnReload()
+ 		return
+ 	}
+ 
+diff --git a/listener/patch.go b/listener/patch.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6ab5aa1182cb5c87f6716b754c7981286c9e7c04
+--- /dev/null
++++ b/listener/patch.go
+@@ -0,0 +1,74 @@
++package listener
++
++func StopListener() {
++
++	if socksListener != nil {
++		_ = socksListener.Close()
++		socksListener = nil
++	}
++
++	if socksUDPListener != nil {
++		_ = socksUDPListener.Close()
++		socksUDPListener = nil
++	}
++
++	if httpListener != nil {
++		_ = httpListener.Close()
++		httpListener = nil
++	}
++
++	if redirListener != nil {
++		_ = redirListener.Close()
++		redirListener = nil
++	}
++
++	if redirUDPListener != nil {
++		_ = redirUDPListener.Close()
++		redirUDPListener = nil
++	}
++
++	if tproxyListener != nil {
++		_ = tproxyListener.Close()
++		tproxyListener = nil
++	}
++
++	if tproxyUDPListener != nil {
++		_ = tproxyUDPListener.Close()
++		tproxyUDPListener = nil
++	}
++
++	if mixedListener != nil {
++		_ = mixedListener.Close()
++		mixedListener = nil
++	}
++
++	if mixedUDPLister != nil {
++		_ = mixedUDPLister.Close()
++		mixedUDPLister = nil
++	}
++
++	if tunLister != nil {
++		_ = tunLister.Close()
++		tunLister = nil
++	}
++
++	if shadowSocksListener != nil {
++		_ = shadowSocksListener.Close()
++		shadowSocksListener = nil
++	}
++
++	if shadowSocksListener != nil {
++		_ = shadowSocksListener.Close()
++		shadowSocksListener = nil
++	}
++
++	if vmessListener != nil {
++		_ = vmessListener.Close()
++		vmessListener = nil
++	}
++
++	if tuicListener != nil {
++		_ = tuicListener.Close()
++		tuicListener = nil
++	}
++}
+diff --git a/listener/sing_tun/server.go b/listener/sing_tun/server.go
+index 3e5ef59197e456f4273b31da62fa7244ca437ee8..281f6348665095f8f24f1897a8b4dc5149b29bfe 100644
+--- a/listener/sing_tun/server.go
++++ b/listener/sing_tun/server.go
+@@ -469,12 +469,6 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
+ 		}
+ 
+ 	}
+-
+-	err = l.buildAndroidRules(&tunOptions)
+-	if err != nil {
+-		err = E.Cause(err, "build android rules")
+-		return
+-	}
+ 	tunIf, err := tunNew(tunOptions)
+ 	if err != nil {
+ 		err = E.Cause(err, "configure tun interface")
+diff --git a/listener/sing_tun/server_android.go b/listener/sing_tun/server_android.go
+index f180bd3051b96bec9e241468fca3388b56aa6c20..71ac263590efb8a8eafbe22ab85d45bc138ac864 100644
+--- a/listener/sing_tun/server_android.go
++++ b/listener/sing_tun/server_android.go
+@@ -1,77 +1,11 @@
+-//go:build android && !cmfa
++//go:build android
+ 
+ package sing_tun
+ 
+ import (
+-	"errors"
+-	"sync"
+-
+-	"github.com/metacubex/mihomo/component/process"
+-	"github.com/metacubex/mihomo/constant"
+-	"github.com/metacubex/mihomo/constant/features"
+-	"github.com/metacubex/mihomo/log"
+-
+-	"github.com/metacubex/sing-tun"
+-)
+-
+-type packageManagerCallback struct{}
+-
+-func (cb *packageManagerCallback) OnPackagesUpdated(packageCount int, sharedCount int) {}
+-
+-func newPackageManager() (tun.PackageManager, error) {
+-	packageManager, err := tun.NewPackageManager(tun.PackageManagerOptions{
+-		Callback: &packageManagerCallback{},
+-		Logger:   log.SingLogger,
+-	})
+-	if err != nil {
+-		return nil, err
+-	}
+-	err = packageManager.Start()
+-	if err != nil {
+-		return nil, err
+-	}
+-	return packageManager, nil
+-}
+-
+-var (
+-	globalPM tun.PackageManager
+-	pmOnce   sync.Once
+-	pmErr    error
++	tun "github.com/metacubex/sing-tun"
+ )
+ 
+-func getPackageManager() (tun.PackageManager, error) {
+-	pmOnce.Do(func() {
+-		globalPM, pmErr = newPackageManager()
+-	})
+-	return globalPM, pmErr
+-}
+-
+ func (l *Listener) buildAndroidRules(tunOptions *tun.Options) error {
+-	packageManager, err := getPackageManager()
+-	if err != nil {
+-		return err
+-	}
+-	tunOptions.BuildAndroidRules(packageManager, l.handler)
+ 	return nil
+ }
+-
+-func findPackageName(metadata *constant.Metadata) (string, error) {
+-	packageManager, err := getPackageManager()
+-	if err != nil {
+-		return "", err
+-	}
+-	uid := metadata.Uid
+-	if sharedPackage, loaded := packageManager.SharedPackageByID(uid % 100000); loaded {
+-		return sharedPackage, nil
+-	}
+-	if packageName, loaded := packageManager.PackageByID(uid % 100000); loaded {
+-		return packageName, nil
+-	}
+-	return "", errors.New("package not found")
+-}
+-
+-func init() {
+-	if !features.CMFA {
+-		process.DefaultPackageNameResolver = findPackageName
+-	}
+-}
+diff --git a/listener/sing_tun/server_notandroid.go b/listener/sing_tun/server_notandroid.go
+deleted file mode 100644
+index e393d4ca0dacfaa371e6d5bad654009493009716..0000000000000000000000000000000000000000
+--- a/listener/sing_tun/server_notandroid.go
++++ /dev/null
+@@ -1,11 +0,0 @@
+-//go:build !android || cmfa
+-
+-package sing_tun
+-
+-import (
+-	tun "github.com/metacubex/sing-tun"
+-)
+-
+-func (l *Listener) buildAndroidRules(tunOptions *tun.Options) error {
+-	return nil
+-}
+diff --git a/rules/provider/patch_android.go b/rules/provider/patch_android.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a45b9c52c6d0495c203a8147d544e3701fb1c37a
+--- /dev/null
++++ b/rules/provider/patch_android.go
+@@ -0,0 +1,17 @@
++//go:build android
++
++package provider
++
++import "time"
++
++var (
++	suspended bool
++)
++
++type UpdatableProvider interface {
++	UpdatedAt() time.Time
++}
++
++func Suspend(s bool) {
++	suspended = s
++}
+diff --git a/tunnel/patch.go b/tunnel/patch.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d27020cb600a893cfb6592a4129736ea0263a46
+--- /dev/null
++++ b/tunnel/patch.go
+@@ -0,0 +1,43 @@
++package tunnel
++
++import (
++	C "github.com/metacubex/mihomo/constant"
++	P "github.com/metacubex/mihomo/constant/provider"
++)
++
++var (
++	allProxies = make(map[string]C.Proxy)
++)
++
++func AllProxies() map[string]C.Proxy {
++	return proxiesWithProviders()
++}
++
++// UpdateAllProxies The provider requires runtime sync
++func UpdateAllProxies(proxies map[string]C.Proxy, providers map[string]P.ProxyProvider) {
++	var allProxiesTemp = make(map[string]C.Proxy)
++	for name, proxy := range proxies {
++		allProxiesTemp[name] = proxy
++	}
++	for _, p := range providers {
++		for _, proxy := range p.Proxies() {
++			name := proxy.Name()
++			allProxiesTemp[name] = proxy
++		}
++	}
++	allProxies = allProxiesTemp
++}
++
++func proxiesWithProviders() map[string]C.Proxy {
++	ap := make(map[string]C.Proxy)
++	for name, proxy := range Proxies() {
++		ap[name] = proxy
++	}
++	for _, p := range Providers() {
++		for _, proxy := range p.Proxies() {
++			name := proxy.Name()
++			ap[name] = proxy
++		}
++	}
++	return ap
++}
+diff --git a/tunnel/statistic/manager.go b/tunnel/statistic/manager.go
+index c69746dbcbac1d8fb1cc7f22e7bd538a3e62385c..f38ed07676f02b6e6b383ea1192605ec2f7865fc 100644
+--- a/tunnel/statistic/manager.go
++++ b/tunnel/statistic/manager.go
+@@ -26,18 +26,27 @@ func init() {
+ }
+ 
+ type Manager struct {
+-	connections   xsync.Map[string, Tracker]
+-	uploadTemp    atomic.Int64
+-	downloadTemp  atomic.Int64
+-	uploadBlip    atomic.Int64
+-	downloadBlip  atomic.Int64
+-	uploadTotal   atomic.Int64
+-	downloadTotal atomic.Int64
+-	pid           int32
+-	memory        uint64
++	connections        xsync.Map[string, Tracker]
++	uploadTemp         atomic.Int64
++	downloadTemp       atomic.Int64
++	uploadBlip         atomic.Int64
++	downloadBlip       atomic.Int64
++	uploadTotal        atomic.Int64
++	downloadTotal      atomic.Int64
++	proxyUploadTemp    atomic.Int64
++	proxyDownloadTemp  atomic.Int64
++	proxyUploadBlip    atomic.Int64
++	proxyDownloadBlip  atomic.Int64
++	proxyUploadTotal   atomic.Int64
++	proxyDownloadTotal atomic.Int64
++	pid                int32
++	memory             uint64
+ }
+ 
+ func (m *Manager) Join(c Tracker) {
++	if DefaultRequestNotify != nil {
++		DefaultRequestNotify(c)
++	}
+ 	m.connections.Store(c.ID(), c)
+ }
+ 
+@@ -58,12 +67,20 @@ func (m *Manager) Range(f func(c Tracker) bool) {
+ 	})
+ }
+ 
+-func (m *Manager) PushUploaded(size int64) {
++func (m *Manager) PushUploaded(lastChain string, size int64) {
++	if lastChain != "DIRECT" {
++		m.proxyUploadTemp.Add(size)
++		m.proxyUploadTotal.Add(size)
++	}
+ 	m.uploadTemp.Add(size)
+ 	m.uploadTotal.Add(size)
+ }
+ 
+-func (m *Manager) PushDownloaded(size int64) {
++func (m *Manager) PushDownloaded(lastChain string, size int64) {
++	if lastChain != "DIRECT" {
++		m.proxyDownloadTemp.Add(size)
++		m.proxyDownloadTotal.Add(size)
++	}
+ 	m.downloadTemp.Add(size)
+ 	m.downloadTotal.Add(size)
+ }
+@@ -110,6 +127,14 @@ func (m *Manager) ResetStatistic() {
+ 	m.downloadTemp.Store(0)
+ 	m.downloadBlip.Store(0)
+ 	m.downloadTotal.Store(0)
++
++	m.proxyUploadTemp.Store(0)
++	m.proxyUploadBlip.Store(0)
++	m.proxyUploadTotal.Store(0)
++	m.proxyDownloadTemp.Store(0)
++	m.proxyDownloadBlip.Store(0)
++	m.proxyDownloadTotal.Store(0)
++
+ }
+ 
+ func (m *Manager) handle() {
+@@ -118,6 +143,8 @@ func (m *Manager) handle() {
+ 	for range ticker.C {
+ 		m.uploadBlip.Store(m.uploadTemp.Swap(0))
+ 		m.downloadBlip.Store(m.downloadTemp.Swap(0))
++		m.proxyUploadBlip.Store(m.proxyUploadTemp.Swap(0))
++		m.proxyDownloadBlip.Store(m.proxyDownloadTemp.Swap(0))
+ 	}
+ }
+ 
+diff --git a/tunnel/statistic/patch.go b/tunnel/statistic/patch.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f170ee8731139b0aa5fa66294cad34a9b6bf1c6
+--- /dev/null
++++ b/tunnel/statistic/patch.go
+@@ -0,0 +1,19 @@
++package statistic
++
++type RequestNotify func(c Tracker)
++
++var DefaultRequestNotify RequestNotify
++
++func (m *Manager) TotalTraffic(onlyProxy bool) (up, down int64) {
++	if onlyProxy {
++		return m.proxyUploadTotal.Load(), m.proxyDownloadTotal.Load()
++	}
++	return m.uploadTotal.Load(), m.downloadTotal.Load()
++}
++
++func (m *Manager) NowTraffic(onlyProxy bool) (up, down int64) {
++	if onlyProxy {
++		return m.proxyUploadBlip.Load(), m.proxyDownloadBlip.Load()
++	}
++	return m.uploadBlip.Load(), m.downloadBlip.Load()
++}
+diff --git a/tunnel/statistic/patch_android.go b/tunnel/statistic/patch_android.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c4b43b05965b129a86e9f2223c445c723e4c642
+--- /dev/null
++++ b/tunnel/statistic/patch_android.go
+@@ -0,0 +1,3 @@
++//go:build android
++
++package statistic
+diff --git a/tunnel/statistic/tracker.go b/tunnel/statistic/tracker.go
+index 2fbb1cf9e350605e47c2ebf478ac6ab0f4ebf472..fa9860a04c2dc4bb37ba791569d86c56583a11d7 100644
+--- a/tunnel/statistic/tracker.go
++++ b/tunnel/statistic/tracker.go
+@@ -53,7 +53,7 @@ func (tt *tcpTracker) Read(b []byte) (int, error) {
+ 	n, err := tt.Conn.Read(b)
+ 	download := int64(n)
+ 	if tt.pushToManager {
+-		tt.manager.PushDownloaded(download)
++		tt.manager.PushDownloaded(tt.Conn.Chains().Last(), download)
+ 	}
+ 	tt.DownloadTotal.Add(download)
+ 	return n, err
+@@ -63,7 +63,7 @@ func (tt *tcpTracker) ReadBuffer(buffer *buf.Buffer) (err error) {
+ 	err = tt.Conn.ReadBuffer(buffer)
+ 	download := int64(buffer.Len())
+ 	if tt.pushToManager {
+-		tt.manager.PushDownloaded(download)
++		tt.manager.PushDownloaded(tt.Chains().Last(), download)
+ 	}
+ 	tt.DownloadTotal.Add(download)
+ 	return
+@@ -72,7 +72,7 @@ func (tt *tcpTracker) ReadBuffer(buffer *buf.Buffer) (err error) {
+ func (tt *tcpTracker) UnwrapReader() (io.Reader, []N.CountFunc) {
+ 	return tt.Conn, []N.CountFunc{func(download int64) {
+ 		if tt.pushToManager {
+-			tt.manager.PushDownloaded(download)
++			tt.manager.PushDownloaded(tt.Chains().Last(), download)
+ 		}
+ 		tt.DownloadTotal.Add(download)
+ 	}}
+@@ -82,7 +82,7 @@ func (tt *tcpTracker) Write(b []byte) (int, error) {
+ 	n, err := tt.Conn.Write(b)
+ 	upload := int64(n)
+ 	if tt.pushToManager {
+-		tt.manager.PushUploaded(upload)
++		tt.manager.PushUploaded(tt.Chains().Last(), upload)
+ 	}
+ 	tt.UploadTotal.Add(upload)
+ 	return n, err
+@@ -92,7 +92,7 @@ func (tt *tcpTracker) WriteBuffer(buffer *buf.Buffer) (err error) {
+ 	upload := int64(buffer.Len())
+ 	err = tt.Conn.WriteBuffer(buffer)
+ 	if tt.pushToManager {
+-		tt.manager.PushUploaded(upload)
++		tt.manager.PushUploaded(tt.Chains().Last(), upload)
+ 	}
+ 	tt.UploadTotal.Add(upload)
+ 	return
+@@ -101,7 +101,7 @@ func (tt *tcpTracker) WriteBuffer(buffer *buf.Buffer) (err error) {
+ func (tt *tcpTracker) UnwrapWriter() (io.Writer, []N.CountFunc) {
+ 	return tt.Conn, []N.CountFunc{func(upload int64) {
+ 		if tt.pushToManager {
+-			tt.manager.PushUploaded(upload)
++			tt.manager.PushUploaded(tt.Chains().Last(), upload)
+ 		}
+ 		tt.UploadTotal.Add(upload)
+ 	}}
+@@ -119,7 +119,7 @@ func (tt *tcpTracker) Upstream() any {
+ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.Rule, uploadTotal int64, downloadTotal int64, pushToManager bool) *tcpTracker {
+ 	metadata.RemoteDst = conn.RemoteDestination()
+ 
+-	t := &tcpTracker{
++	tt := &tcpTracker{
+ 		Conn:    conn,
+ 		manager: manager,
+ 		TrackerInfo: &TrackerInfo{
+@@ -137,20 +137,20 @@ func NewTCPTracker(conn C.Conn, manager *Manager, metadata *C.Metadata, rule C.R
+ 
+ 	if pushToManager {
+ 		if uploadTotal > 0 {
+-			manager.PushUploaded(uploadTotal)
++			manager.PushUploaded(tt.Chains().Last(), uploadTotal)
+ 		}
+ 		if downloadTotal > 0 {
+-			manager.PushDownloaded(downloadTotal)
++			manager.PushDownloaded(tt.Chains().Last(), downloadTotal)
+ 		}
+ 	}
+ 
+ 	if rule != nil {
+-		t.TrackerInfo.Rule = rule.RuleType().String()
+-		t.TrackerInfo.RulePayload = rule.Payload()
++		tt.TrackerInfo.Rule = rule.RuleType().String()
++		tt.TrackerInfo.RulePayload = rule.Payload()
+ 	}
+ 
+-	manager.Join(t)
+-	return t
++	manager.Join(tt)
++	return tt
+ }
+ 
+ type udpTracker struct {
+@@ -173,7 +173,7 @@ func (ut *udpTracker) ReadFrom(b []byte) (int, net.Addr, error) {
+ 	n, addr, err := ut.PacketConn.ReadFrom(b)
+ 	download := int64(n)
+ 	if ut.pushToManager {
+-		ut.manager.PushDownloaded(download)
++		ut.manager.PushDownloaded(ut.Chains().Last(), download)
+ 	}
+ 	ut.DownloadTotal.Add(download)
+ 	return n, addr, err
+@@ -183,7 +183,7 @@ func (ut *udpTracker) WaitReadFrom() (data []byte, put func(), addr net.Addr, er
+ 	data, put, addr, err = ut.PacketConn.WaitReadFrom()
+ 	download := int64(len(data))
+ 	if ut.pushToManager {
+-		ut.manager.PushDownloaded(download)
++		ut.manager.PushDownloaded(ut.Chains().Last(), download)
+ 	}
+ 	ut.DownloadTotal.Add(download)
+ 	return
+@@ -193,7 +193,7 @@ func (ut *udpTracker) WriteTo(b []byte, addr net.Addr) (int, error) {
+ 	n, err := ut.PacketConn.WriteTo(b, addr)
+ 	upload := int64(n)
+ 	if ut.pushToManager {
+-		ut.manager.PushUploaded(upload)
++		ut.manager.PushUploaded(ut.Chains().Last(), upload)
+ 	}
+ 	ut.UploadTotal.Add(upload)
+ 	return n, err
+@@ -229,10 +229,10 @@ func NewUDPTracker(conn C.PacketConn, manager *Manager, metadata *C.Metadata, ru
+ 
+ 	if pushToManager {
+ 		if uploadTotal > 0 {
+-			manager.PushUploaded(uploadTotal)
++			manager.PushUploaded(ut.Chains().Last(), uploadTotal)
+ 		}
+ 		if downloadTotal > 0 {
+-			manager.PushDownloaded(downloadTotal)
++			manager.PushDownloaded(ut.Chains().Last(), downloadTotal)
+ 		}
+ 	}
+ 
+diff --git a/tunnel/tunnel.go b/tunnel/tunnel.go
+index 86dbc14ae428ba7927dd2dc3ab52d78f0ddb1e87..be215f562b2e71e7ba8eafc5b5e57fd2839dfa43 100644
+--- a/tunnel/tunnel.go
++++ b/tunnel/tunnel.go
+@@ -231,6 +231,7 @@ func UpdateProxies(newProxies map[string]C.Proxy, newProviders map[string]P.Prox
+ 	configMux.Lock()
+ 	proxies = newProxies
+ 	providers = newProviders
++	UpdateAllProxies(newProxies, newProviders)
+ 	configMux.Unlock()
+ }
+ 
+@@ -351,7 +352,7 @@ func resolveMetadata(metadata *C.Metadata) (proxy C.Proxy, rule C.Rule, err erro
+ 		FindProcess: func() {
+ 			if attemptProcessLookup {
+ 				attemptProcessLookup = false
+-				if !features.CMFA {
++				if !features.Android {
+ 					// normal check for process
+ 					uid, path, err := process.FindProcessName(metadata.NetWork.String(), metadata.SrcIP, int(metadata.SrcPort))
+ 					if err != nil {

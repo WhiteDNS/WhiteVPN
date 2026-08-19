@@ -160,6 +160,44 @@ class UserSubscriptionImporterTest {
     }
 
     @Test
+    fun importerConvertsBase64WireGuardLinksAndTheirMihomoOptions() {
+        val link = "wireguard://private%2Bkey%3D@engage.example.com:2408" +
+            "?address=172.16.0.2%2F32%2C2606%3A4700%3A110%3A8765%3A%3A2%2F128" +
+            "&publickey=public%2Bkey%3D&reserved=1%2C2%2C3&keepalive=25&mtu=1280" +
+            "&wnoise=quic&wnoisecount=5&wnoisedelay=2-5&wpayloadsize=40-90" +
+            "&version=3&jc=4&jmin=40&jmax=70&header-protection-key=aGVsbG8%3D" +
+            "&content-padding-addition=16-32&rekey-after-time=120s&rekey-timeout=5s" +
+            "&reject-after-time=180s&keepalive-timeout=30s&max-handshake-attempts=10" +
+            "&random-trailers=true&disable-cookies=false&ip-stack=mips&congestion-controller=bbr3#WARP"
+        val encoded = Base64.getEncoder().encodeToString(link.toByteArray()).trimEnd('=')
+
+        val imported = UserSubscriptionImporter.import(encoded, nowMs = 123L)
+        val snapshot = MihomoConfigParser.parse(imported.yaml, 123L)
+
+        assertEquals(UserSubscriptionFormat.Links, imported.format)
+        assertEquals(1, imported.connectionCount)
+        assertEquals("wireguard", snapshot.catalog.profiles.single().type)
+        assertTrue(imported.yaml.contains("private-key: 'private+key='"))
+        assertTrue(imported.yaml.contains("public-key: 'public+key='"))
+        assertTrue(imported.yaml.contains("ipv6: '2606:4700:110:8765::2'"))
+        assertTrue(imported.yaml.contains("reserved: [1, 2, 3]"))
+        assertTrue(imported.yaml.contains("persistent-keepalive: 25"))
+        assertTrue(imported.yaml.contains("amnezia-wg-option:"))
+        assertTrue(imported.yaml.contains("'version': 3"))
+        assertTrue(imported.yaml.contains("'header-protection-key': 'aGVsbG8='"))
+        assertTrue(imported.yaml.contains("'random-trailers': true"))
+        assertTrue(imported.yaml.contains("'disable-cookies': false"))
+        assertTrue(imported.yaml.contains("wireguard-dpi-option:"))
+        assertTrue(imported.yaml.contains("'fake-count': 5"))
+        assertTrue(imported.yaml.contains("'fake-min-size': 40"))
+        assertTrue(imported.yaml.contains("'fake-max-size': 90"))
+        assertTrue(imported.yaml.contains("'fake-ttl': 3"))
+        assertTrue(imported.yaml.contains("ip-stack:"))
+        assertTrue(imported.yaml.contains("'mode': 'mips'"))
+        assertTrue(imported.yaml.contains("'congestion-controller': 'bbr3'"))
+    }
+
+    @Test
     fun importerAddsGroupsToMihomoYamlThatOnlyContainsProxies() {
         val imported = UserSubscriptionImporter.import(
             """
@@ -289,6 +327,9 @@ class UserSubscriptionImporterTest {
                     "address": ["172.16.0.2/32", "2606:4700:110:8765::2/128"],
                     "mtu": 1280,
                     "reserved": [1, 2, 3],
+                    "amnezia-wg-option": {"version": 3, "jc": 4, "jmin": 40, "jmax": 70},
+                    "wireguard-dpi-option": {"fake-count": 4, "fake-min-size": 40, "fake-max-size": 70, "fake-ttl": 3},
+                    "ip-stack": {"mode": "mips", "congestion-controller": "bbr3"},
                     "peers": [{
                       "endpoint": "engage.example.com:2408",
                       "publicKey": "public-one",
@@ -338,6 +379,13 @@ class UserSubscriptionImporterTest {
         assertTrue(imported.yaml.contains("allowed-ips: ['0.0.0.0/0', '::/0']"))
         assertTrue(imported.yaml.contains("reserved: [1, 2, 3]"))
         assertTrue(imported.yaml.contains("persistent-keepalive: 25"))
+        assertTrue(imported.yaml.contains("amnezia-wg-option:"))
+        assertTrue(imported.yaml.contains("'version': 3"))
+        assertTrue(imported.yaml.contains("wireguard-dpi-option:"))
+        assertTrue(imported.yaml.contains("'fake-count': 4"))
+        assertTrue(imported.yaml.contains("'fake-ttl': 3"))
+        assertTrue(imported.yaml.contains("ip-stack:"))
+        assertTrue(imported.yaml.contains("'congestion-controller': 'bbr3'"))
         assertTrue(imported.yaml.contains("dialer-proxy: 'WoW (proxy)'"))
     }
 

@@ -13,6 +13,7 @@ object VpnRuntimeStateStore {
     private const val KEY_ACTIVE_SUBSCRIPTION_ID = "active_subscription_id"
     private const val KEY_ACTIVE_CONNECTION_TAG = "active_connection_tag"
     private const val KEY_ACTIVE_CONNECTION_FINGERPRINT = "active_connection_fingerprint"
+    private const val KEY_CHAIN_HOP_COUNT = "chain_hop_count"
     private const val KEY_LIVE_SELECTOR_READY = "live_selector_ready"
     private const val KEY_SELECTABLE_CONNECTION_FINGERPRINTS = "selectable_connection_fingerprints"
     private const val KEY_ALWAYS_ON = "always_on"
@@ -28,6 +29,7 @@ object VpnRuntimeStateStore {
         activeSubscriptionId: String = "",
         activeConnectionTag: String = "",
         activeConnectionFingerprint: String = "",
+        chainHopCount: Int = 0,
         liveSelectorReady: Boolean = false,
         selectableConnectionFingerprints: Set<String> = emptySet(),
         alwaysOn: Boolean = false,
@@ -50,6 +52,7 @@ object VpnRuntimeStateStore {
                 KEY_ACTIVE_CONNECTION_FINGERPRINT,
                 if (state == VpnState.Started) activeConnectionFingerprint else "",
             )
+            .putInt(KEY_CHAIN_HOP_COUNT, if (state == VpnState.Started) chainHopCount else 0)
             .putBoolean(KEY_LIVE_SELECTOR_READY, state == VpnState.Started && liveSelectorReady)
             .putStringSet(
                 KEY_SELECTABLE_CONNECTION_FINGERPRINTS,
@@ -110,6 +113,10 @@ object VpnRuntimeStateStore {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_ACTIVE_CONNECTION_FINGERPRINT, null)
             .orEmpty()
+
+    fun readChainHopCount(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_CHAIN_HOP_COUNT, 0)
 
     fun readLiveSelectorReady(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

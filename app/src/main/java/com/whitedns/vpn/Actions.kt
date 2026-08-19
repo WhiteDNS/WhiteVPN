@@ -27,6 +27,7 @@ object Actions {
     const val EXTRA_ACTIVE_SUBSCRIPTION_ID = "extra_active_subscription_id"
     const val EXTRA_ACTIVE_CONNECTION_TAG = "extra_active_connection_tag"
     const val EXTRA_ACTIVE_CONNECTION_FINGERPRINT = "extra_active_connection_fingerprint"
+    const val EXTRA_CHAIN_HOP_COUNT = "extra_chain_hop_count"
     const val EXTRA_LIVE_SELECTOR_READY = "extra_live_selector_ready"
     const val EXTRA_SELECTABLE_CONNECTION_FINGERPRINTS = "extra_selectable_connection_fingerprints"
     const val EXTRA_APP_INITIATED = "extra_app_initiated"

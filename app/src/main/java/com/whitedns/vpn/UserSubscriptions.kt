@@ -40,20 +40,24 @@ object UserSubscriptionImporter {
         val trimmed = content.trim()
         require(trimmed.isNotBlank()) { "سابسکریپشن خالی است" }
         require(trimmed.toByteArray().size <= MAX_SUBSCRIPTION_BYTES) { "حجم سابسکریپشن بیش از حد مجاز است" }
+        val normalized = SubConvConverter.decodeBase64Text(trimmed)
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: trimmed
 
-        JsonSubscriptionImporter.import(trimmed, nowMs)?.let { return it }
+        JsonSubscriptionImporter.import(normalized, nowMs)?.let { return it }
 
-        val mihomo = runCatching { MihomoConfigParser.parse(trimmed, nowMs) }.getOrNull()
+        val mihomo = runCatching { MihomoConfigParser.parse(normalized, nowMs) }.getOrNull()
         if (mihomo != null && mihomo.catalog.profiles.isNotEmpty()) {
             val yaml = if (mihomo.summary.groups.isEmpty()) {
-                MihomoLinkConfigBuilder.addDefaultGroups(trimmed, mihomo.catalog.profiles.map { it.tag })
+                MihomoLinkConfigBuilder.addDefaultGroups(normalized, mihomo.catalog.profiles.map { it.tag })
             } else {
-                trimmed
+                normalized
             }
             return ImportedUserSubscription(yaml, UserSubscriptionFormat.Mihomo, mihomo.catalog.profiles.size)
         }
 
-        val yaml = MihomoLinkConfigBuilder.build(SubConvConverter.convert(trimmed))
+        val yaml = MihomoLinkConfigBuilder.build(SubConvConverter.convert(normalized))
         val count = MihomoConfigParser.parse(yaml, nowMs).catalog.profiles.size
         require(count > 0) { "اتصال پشتیبانی‌شده‌ای پیدا نشد" }
         return ImportedUserSubscription(yaml, UserSubscriptionFormat.Links, count)
@@ -157,6 +161,9 @@ object JsonSubscriptionImporter {
                 settings.optInt("mtu").takeIf { it > 0 }?.let { put("mtu", it) }
                 peer.optString("preSharedKey").takeIf(String::isNotBlank)?.let { put("pre-shared-key", it) }
                 peer.optInt("keepAlive").takeIf { it > 0 }?.let { put("persistent-keepalive", it) }
+                listOf("amnezia-wg-option", "wireguard-dpi-option", "ip-stack").forEach { key ->
+                    settings.optJSONObject(key)?.let { put(key, it) }
+                }
             }
     }
 

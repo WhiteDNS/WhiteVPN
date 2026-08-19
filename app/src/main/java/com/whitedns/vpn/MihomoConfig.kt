@@ -205,7 +205,7 @@ object MihomoConfigParser {
         return content.substring(0, index).trim() to content.substring(index + 1).trim()
     }
 
-    private fun decodeScalar(value: String): String {
+    internal fun decodeScalar(value: String): String {
         val trimmed = value.trim().removeSuffix("\r")
         if (trimmed.length >= 2 && trimmed.first() == '"' && trimmed.last() == '"') {
             return decodeDoubleQuoted(trimmed.substring(1, trimmed.lastIndex))
