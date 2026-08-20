@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at https://mozilla.org/MPL/2.0/.
  *
- * Kotlin adaptation of the VLESS, VMess, Trojan, and Shadowsocks conversion
+ * Kotlin adaptation of the VLESS, VMess, Trojan, Hysteria2, and Shadowsocks conversion
  * flow from https://github.com/SubConv/SubConv.
  */
 package com.whitedns.vpn
@@ -39,6 +39,7 @@ internal object SubConvConverter {
                     "vless" -> parseVless(line, names)
                     "vmess" -> parseVmess(line, names)
                     "trojan" -> parseTrojan(line, names)
+                    "hysteria2", "hy2" -> parseHysteria2(line, names)
                     "ss" -> parseShadowsocks(line, names)
                     "wireguard" -> parseWireGuard(line, names)
                     else -> null
@@ -225,6 +226,25 @@ internal object SubConvConverter {
                 }
                 put("client-fingerprint", query["fp"].orEmpty().ifBlank { "chrome" })
                 query["pcs"]?.takeIf(String::isNotBlank)?.let { put("fingerprint", it) }
+            }
+    }
+
+    private fun parseHysteria2(line: String, names: NameRegistry): JSONObject {
+        val uri = parseUri(line)
+        val endpoint = endpoint(uri)
+        if (endpoint.userInfo.isBlank()) throw ParseError()
+        val query = parseQuery(uri.rawQuery)
+        return JSONObject()
+            .put("name", names.register(name(uri)))
+            .put("type", "hysteria2")
+            .put("server", endpoint.host)
+            .put("port", endpoint.port)
+            .put("password", endpoint.userInfo)
+            .put("skip-cert-verify", false)
+            .apply {
+                listOf("obfs", "obfs-password", "sni").forEach { key ->
+                    query[key]?.takeIf(String::isNotBlank)?.let { put(key, it) }
+                }
             }
     }
 

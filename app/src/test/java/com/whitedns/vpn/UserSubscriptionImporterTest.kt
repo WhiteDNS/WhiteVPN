@@ -160,6 +160,23 @@ class UserSubscriptionImporterTest {
     }
 
     @Test
+    fun importerConvertsHysteria2ShareLinks() {
+        val imported = UserSubscriptionImporter.import(
+            "hysteria2://password%21@hy2.example.com:10810?security=tls&obfs=salamander&obfs-password=obfs-password&insecure=0&sni=hy2.example.com#Hysteria2",
+            nowMs = 123L,
+        )
+        val snapshot = MihomoConfigParser.parse(imported.yaml, 123L)
+
+        assertEquals(UserSubscriptionFormat.Links, imported.format)
+        assertEquals("hysteria2", snapshot.catalog.profiles.single().type)
+        assertTrue(imported.yaml.contains("password: 'password!'"))
+        assertTrue(imported.yaml.contains("obfs: 'salamander'"))
+        assertTrue(imported.yaml.contains("obfs-password: 'obfs-password'"))
+        assertTrue(imported.yaml.contains("sni: 'hy2.example.com'"))
+        assertTrue(imported.yaml.contains("skip-cert-verify: false"))
+    }
+
+    @Test
     fun importerConvertsBase64WireGuardLinksAndTheirMihomoOptions() {
         val link = "wireguard://private%2Bkey%3D@engage.example.com:2408" +
             "?address=172.16.0.2%2F32%2C2606%3A4700%3A110%3A8765%3A%3A2%2F128" +
