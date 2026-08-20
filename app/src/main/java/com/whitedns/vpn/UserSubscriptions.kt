@@ -3,7 +3,9 @@ package com.whitedns.vpn
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
@@ -34,6 +36,17 @@ data class ImportedUserSubscription(
     val format: UserSubscriptionFormat,
     val connectionCount: Int,
 )
+
+internal fun InputStream.readAtMost(maxBytes: Int): ByteArray {
+    val output = ByteArrayOutputStream(minOf(maxBytes, 8 * 1024))
+    val buffer = ByteArray(minOf(maxBytes, 8 * 1024).coerceAtLeast(1))
+    while (output.size() < maxBytes) {
+        val count = read(buffer, 0, minOf(buffer.size, maxBytes - output.size()))
+        if (count <= 0) break
+        output.write(buffer, 0, count)
+    }
+    return output.toByteArray()
+}
 
 object UserSubscriptionImporter {
     fun import(content: String, nowMs: Long = System.currentTimeMillis()): ImportedUserSubscription {
@@ -455,7 +468,7 @@ class UserSubscriptionManager(
         connection.setRequestProperty("Accept", "text/yaml,text/plain,*/*;q=0.1")
         return try {
             if (connection.responseCode !in 200..299) throw IOException("سابسکریپشن پاسخ HTTP ${connection.responseCode} برگرداند")
-            val bytes = connection.inputStream.use { it.readNBytes(UserSubscriptionImporter.MAX_SUBSCRIPTION_BYTES + 1) }
+            val bytes = connection.inputStream.use { it.readAtMost(UserSubscriptionImporter.MAX_SUBSCRIPTION_BYTES + 1) }
             if (bytes.size > UserSubscriptionImporter.MAX_SUBSCRIPTION_BYTES) throw IOException("حجم سابسکریپشن بیش از حد مجاز است")
             bytes.toString(Charsets.UTF_8)
         } finally {

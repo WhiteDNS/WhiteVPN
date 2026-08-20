@@ -1,13 +1,23 @@
 package com.whitedns.vpn
 
 import org.json.JSONObject
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayInputStream
 import java.util.Base64
 
 class UserSubscriptionImporterTest {
+    @Test
+    fun boundedSubscriptionReadWorksBeforeAndroid33() {
+        val bytes = ByteArray(16) { it.toByte() }
+
+        assertArrayEquals(bytes.copyOf(7), ByteArrayInputStream(bytes).readAtMost(7))
+        assertArrayEquals(bytes, ByteArrayInputStream(bytes).readAtMost(32))
+    }
+
     @Test
     fun subConvPortProducesMihomoFieldsForEverySupportedLinkType() {
         val vmess = Base64.getEncoder().encodeToString(
