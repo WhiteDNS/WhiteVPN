@@ -101,13 +101,22 @@ class MainActivity : Activity() {
     private lateinit var lanSharingPreferenceStore: LanSharingPreferenceStore
     private lateinit var connectionSelectionPreferenceStore: ConnectionSelectionPreferenceStore
     private lateinit var connectionTestSettingsPreferenceStore: ConnectionTestSettingsPreferenceStore
+    private lateinit var connectionChainPreferenceStore: ConnectionChainPreferenceStore
     private lateinit var installedAppRepository: InstalledAppRepository
     private lateinit var userSubscriptionManager: UserSubscriptionManager
     private var privacyPolicyDialog: AlertDialog? = null
     private var connectionDelayTestListener: ((Intent) -> Unit)? = null
     private lateinit var appShellView: View
+    private lateinit var appTabs: TabLayout
     private lateinit var connectionTestingPageHost: ConnectionTestingPage
     private var connectionTestingPageVisible: Boolean = false
+    private var activeChainPickerSlot: ConnectionChainSlot? = null
+    private var activeChainPickerSubscriptionId: String? = null
+    private var renderChainSettingsPage: (() -> Unit)? = null
+    private var connectionChainCompatibilityIssue: ConnectionChainCompatibilityIssue? = null
+    private var connectionChainCompatibilityMessage: String? = null
+    private var pendingConnectionChainAccessibilityAnnouncement: String? = null
+    private var openConnectionChainSettingsPage: (() -> Unit)? = null
     private var advancedSettingsBackAction: (() -> Unit)? = null
     private var sessionStartedAtElapsedMs: Long = 0L
     private var connectFlowPending: Boolean = false
@@ -119,6 +128,7 @@ class MainActivity : Activity() {
     private var activeRuntimeSubscriptionId: String = ""
     private var activeConnectionTag: String = ""
     private var activeConnectionFingerprint: String = ""
+    private var activeChainHopCount: Int = 0
     private var liveSelectorReady: Boolean = false
     private var liveSelectableConnectionFingerprints: Set<String> = emptySet()
 
@@ -134,12 +144,15 @@ class MainActivity : Activity() {
     private lateinit var connectionCountryText: TextView
     private lateinit var locationSelectorRow: DashboardDataRowView
     private lateinit var connectionSelectorRow: DashboardDataRowView
+    private lateinit var homeChainAfterSelectorRow: DashboardDataRowView
+    private lateinit var homeChainSelectorRows: LinearLayout
     private lateinit var homeSubscriptionSelectorRow: DashboardDataRowView
     private var updateSplitTunnelControlsEnabled: ((Boolean) -> Unit)? = null
     private lateinit var connectionModeGroup: MaterialButtonToggleGroup
     private lateinit var vpnModeButton: MaterialButton
     private lateinit var proxyModeButton: MaterialButton
     private lateinit var dashboardLocalEndpointText: TextView
+    private lateinit var dashboardChainText: TextView
     private lateinit var dashboardConnectionMetadataSection: View
     private lateinit var tlsIntegrityCheckbox: MaterialSwitch
     private lateinit var alwaysOnStatusText: TextView
@@ -148,6 +161,19 @@ class MainActivity : Activity() {
     private lateinit var amneziaNoiseCountInput: EditText
     private lateinit var amneziaNoiseMinSizeInput: EditText
     private lateinit var amneziaNoiseMaxSizeInput: EditText
+    private lateinit var amneziaNoiseTtlInput: EditText
+    private lateinit var amneziaNoiseVersionInput: EditText
+    private lateinit var amneziaNoiseIpStackInput: EditText
+    private lateinit var amneziaNoiseCongestionInput: EditText
+    private lateinit var amneziaNoiseHeaderProtectionKeyInput: EditText
+    private lateinit var amneziaNoiseContentPaddingInput: EditText
+    private lateinit var amneziaNoiseRekeyAfterInput: EditText
+    private lateinit var amneziaNoiseRekeyTimeoutInput: EditText
+    private lateinit var amneziaNoiseRejectAfterInput: EditText
+    private lateinit var amneziaNoiseKeepaliveTimeoutInput: EditText
+    private lateinit var amneziaNoiseMaxHandshakeAttemptsInput: EditText
+    private lateinit var amneziaNoiseRandomTrailersInput: EditText
+    private lateinit var amneziaNoiseDisableCookiesInput: EditText
     private lateinit var amneziaNoiseApplyButton: MaterialButton
     private lateinit var amneziaNoiseErrorText: TextView
     private lateinit var lanSharingCheckbox: MaterialSwitch
@@ -253,6 +279,7 @@ class MainActivity : Activity() {
         lanSharingPreferenceStore = LanSharingPreferenceStore(this)
         connectionSelectionPreferenceStore = ConnectionSelectionPreferenceStore(this)
         connectionTestSettingsPreferenceStore = ConnectionTestSettingsPreferenceStore(this)
+        connectionChainPreferenceStore = ConnectionChainPreferenceStore(this)
         installedAppRepository = InstalledAppRepository(this)
         userSubscriptionManager = UserSubscriptionManager(this)
         DiagnosticLogger.info(this, "activity.onCreate")
@@ -261,7 +288,22 @@ class MainActivity : Activity() {
         renderState(VpnState.Stopped)
         refreshLocationOptions()
         if (savedInstanceState?.getBoolean(STATE_CONNECTION_TESTING_PAGE) == true) {
-            mainHandler.post { showConnectionTestingPage(animate = false) }
+            val chainSlot = ConnectionChainSlot.fromWireName(
+                savedInstanceState.getString(STATE_CHAIN_PICKER_SLOT),
+            )
+            if (chainSlot != ConnectionChainSlot.Before) {
+                if (chainSlot != null) {
+                    appTabs.getTabAt(0)?.select()
+                    openConnectionChainSettingsPage?.invoke()
+                }
+                mainHandler.post {
+                    showConnectionTestingPage(
+                        animate = false,
+                        chainSlot = chainSlot,
+                        pickerSubscriptionId = savedInstanceState.getString(STATE_CHAIN_PICKER_SUBSCRIPTION),
+                    )
+                }
+            }
         }
         mainHandler.post {
             val checkUpdatesAfterStartup = { if (savedInstanceState == null) checkForUpdates() }
@@ -270,9 +312,15 @@ class MainActivity : Activity() {
     }
 
     private fun buildAppShell(): View {
+        val (tvInsetX, tvInsetY) = televisionSafeInsets(
+            resources.configuration.uiMode,
+            resources.displayMetrics.widthPixels,
+            resources.displayMetrics.heightPixels,
+        )
         val root = FrameLayout(this).apply {
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             setBackgroundColor(BACKGROUND)
+            setPadding(tvInsetX, tvInsetY, tvInsetX, tvInsetY)
         }
 
         val shell = LinearLayout(this).apply {
@@ -342,6 +390,7 @@ class MainActivity : Activity() {
                 override fun onTabReselected(tab: TabLayout.Tab) = Unit
             })
         }
+        appTabs = tabs
         val tabsHost = FrameLayout(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
             setPadding(dp(18), 0, dp(18), dp(18))
@@ -358,7 +407,7 @@ class MainActivity : Activity() {
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             setBackgroundColor(BACKGROUND)
             visibility = View.GONE
-            onSwipeRight = { closeConnectionTestingPage() }
+            onSwipeBack = { closeConnectionTestingPage() }
         }
         ViewCompat.setOnApplyWindowInsetsListener(connectionTestingPageHost) { view, insets ->
             val systemBars = insets.getInsets(
@@ -378,7 +427,14 @@ class MainActivity : Activity() {
         connectionTestingPageHost.animate().cancel()
         appShellView.animate().cancel()
         val shouldAnimate = animate && ValueAnimator.areAnimatorsEnabled()
+        val slideDirection = if (connectionTestingPageHost.layoutDirection == View.LAYOUT_DIRECTION_RTL) -1f else 1f
+        fun restoreAppShellAccessibility() {
+            appShellView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+            pendingConnectionChainAccessibilityAnnouncement?.let { appShellView.announceAccessibility(it) }
+            pendingConnectionChainAccessibilityAnnouncement = null
+        }
         if (visible) {
+            appShellView.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
             connectionTestingPageHost.visibility = View.VISIBLE
             ViewCompat.requestApplyInsets(connectionTestingPageHost)
             if (!shouldAnimate) {
@@ -386,14 +442,14 @@ class MainActivity : Activity() {
                 appShellView.translationX = 0f
                 return
             }
-            connectionTestingPageHost.translationX = resources.displayMetrics.widthPixels.toFloat()
+            connectionTestingPageHost.translationX = resources.displayMetrics.widthPixels * slideDirection
             connectionTestingPageHost.animate()
                 .translationX(0f)
                 .setDuration(CONNECTION_TESTING_PAGE_ANIMATION_MS)
                 .setInterpolator(PathInterpolator(0.16f, 1f, 0.3f, 1f))
                 .start()
             appShellView.animate()
-                .translationX(-dp(20).toFloat())
+                .translationX(-dp(20) * slideDirection)
                 .setDuration(CONNECTION_TESTING_PAGE_ANIMATION_MS)
                 .setInterpolator(PathInterpolator(0.16f, 1f, 0.3f, 1f))
                 .start()
@@ -410,16 +466,18 @@ class MainActivity : Activity() {
             connectionTestingPageHost.translationX = 0f
             connectionTestingPageHost.visibility = View.GONE
             connectionTestingPageHost.removeAllViews()
+            restoreAppShellAccessibility()
             return
         }
         connectionTestingPageHost.animate()
-            .translationX(resources.displayMetrics.widthPixels.toFloat())
+            .translationX(resources.displayMetrics.widthPixels * slideDirection)
             .setDuration(CONNECTION_TESTING_PAGE_ANIMATION_MS)
             .setInterpolator(PathInterpolator(0.16f, 1f, 0.3f, 1f))
             .withEndAction {
                 if (!connectionTestingPageVisible) {
                     connectionTestingPageHost.visibility = View.GONE
                     connectionTestingPageHost.removeAllViews()
+                    restoreAppShellAccessibility()
                 }
             }
             .start()
@@ -428,6 +486,8 @@ class MainActivity : Activity() {
     private fun closeConnectionTestingPage(animate: Boolean = true) {
         if (!connectionTestingPageVisible) return
         setConnectionTestingPageVisible(visible = false, animate = animate)
+        activeChainPickerSlot = null
+        activeChainPickerSubscriptionId = null
     }
 
     private fun showAppTab(position: Int) {
@@ -436,6 +496,7 @@ class MainActivity : Activity() {
         subscriptionsTabContent.visibility = if (position == 0) View.VISIBLE else View.GONE
         advancedTabContent.visibility = if (position == 2) View.VISIBLE else View.GONE
         if (position == 0) renderSubscriptions()
+        if (position == 1) renderConnectionSelection()
         if (position == 2) renderAdvancedControls()
     }
 
@@ -592,6 +653,7 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
             )
         }
+        renderHomeConnectionRows()
     }
 
     /* Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4 */
@@ -1003,6 +1065,17 @@ class MainActivity : Activity() {
         connectionDetailsText.text = connectionDetails.takeIf { state == VpnState.Started }.orEmpty()
         connectionDetailsText.visibility =
             if (connectionDetailsText.text.isNotBlank()) View.VISIBLE else View.GONE
+        if (::dashboardChainText.isInitialized) {
+            dashboardChainText.text = when {
+                state == VpnState.Started && activeChainHopCount > 1 ->
+                    getString(R.string.connection_chain_active, activeChainHopCount)
+                connectionChainPreferenceStore.read().enabled ->
+                    getString(R.string.connection_chain_enabled)
+                else -> ""
+            }
+            dashboardChainText.visibility =
+                if (dashboardChainText.text.isNotBlank()) View.VISIBLE else View.GONE
+        }
         renderDashboardConnectionMetadataVisibility()
     }
 
@@ -1025,7 +1098,9 @@ class MainActivity : Activity() {
     private fun renderDashboardConnectionMetadataVisibility() {
         if (!::dashboardConnectionMetadataSection.isInitialized) return
         dashboardConnectionMetadataSection.visibility = if (
-            connectionDetailsText.text.isNotBlank() || dashboardLocalEndpointText.text.isNotBlank()
+            connectionDetailsText.text.isNotBlank() ||
+            dashboardLocalEndpointText.text.isNotBlank() ||
+            (::dashboardChainText.isInitialized && dashboardChainText.text.isNotBlank())
         ) {
             View.VISIBLE
         } else {
@@ -1061,13 +1136,19 @@ class MainActivity : Activity() {
             VpnRuntimeStateStore.readActiveSubscriptionId(this),
             VpnRuntimeStateStore.readActiveConnectionTag(this),
             VpnRuntimeStateStore.readActiveConnectionFingerprint(this),
+            VpnRuntimeStateStore.readChainHopCount(this),
             VpnRuntimeStateStore.readLiveSelectorReady(this),
             VpnRuntimeStateStore.readSelectableConnectionFingerprints(this),
             VpnRuntimeStateStore.readAlwaysOn(this),
             VpnRuntimeStateStore.readLockdown(this),
         )
         if (connectionTestingPageVisible) {
-            showConnectionTestingPage(animate = false, rebuild = true)
+            showConnectionTestingPage(
+                animate = false,
+                rebuild = true,
+                chainSlot = activeChainPickerSlot,
+                pickerSubscriptionId = activeChainPickerSubscriptionId,
+            )
         }
     }
 
@@ -1086,6 +1167,8 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(STATE_CONNECTION_TESTING_PAGE, connectionTestingPageVisible)
+        outState.putString(STATE_CHAIN_PICKER_SLOT, activeChainPickerSlot?.wireName)
+        outState.putString(STATE_CHAIN_PICKER_SUBSCRIPTION, activeChainPickerSubscriptionId)
         super.onSaveInstanceState(outState)
     }
 
@@ -1439,6 +1522,17 @@ class MainActivity : Activity() {
             ellipsize = TextUtils.TruncateAt.END
             visibility = View.GONE
         }
+        dashboardChainText = TextView(this).apply {
+            gravity = Gravity.START
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            textSize = 12f
+            typeface = WhiteDnsBodyBoldTypeface
+            setTextColor(TEAL)
+            includeFontPadding = false
+            maxLines = 1
+            visibility = View.GONE
+        }
 
         // Animated arrow icons for download/upload
         downloadArrowIcon = AnimatedArrowIcon(this, isDownload = true)
@@ -1572,7 +1666,32 @@ class MainActivity : Activity() {
         }
         connectionSelectorRow = DashboardDataRowView(this).apply {
             setRow(getString(R.string.connection_label), getString(R.string.option_automatic))
-            setOnRowClickListener { showConnectionTestingPage() }
+            setOnRowClickListener {
+                if (connectionChainPreferenceStore.read().enabled) {
+                    openConnectionChainSettingsFromHome()
+                } else {
+                    showConnectionTestingPage()
+                }
+            }
+        }
+        homeChainAfterSelectorRow = DashboardDataRowView(this).apply {
+            setRow(
+                getString(R.string.connection_chain_after),
+                getString(R.string.connection_chain_optional_detail),
+            )
+            setOnRowClickListener { openConnectionChainSettingsFromHome() }
+        }
+        homeChainSelectorRows = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            addView(
+                View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+                LinearLayout.LayoutParams(-1, dp(1)).apply {
+                    marginStart = dp(18)
+                    marginEnd = dp(18)
+                },
+            )
+            addView(homeChainAfterSelectorRow, LinearLayout.LayoutParams(-1, -2))
         }
         homeSubscriptionSelectorRow = DashboardDataRowView(this).apply {
             val subscriptionName = selectedSubscriptionName()
@@ -1596,6 +1715,10 @@ class MainActivity : Activity() {
                     layoutDirection = View.LAYOUT_DIRECTION_LOCALE
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(16), dp(10), dp(16), dp(12))
+                    addView(
+                        dashboardChainText,
+                        LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(12) },
+                    )
                     addView(connectionDetailsText, LinearLayout.LayoutParams(0, -2, 1f))
                     addView(
                         dashboardLocalEndpointText,
@@ -1622,6 +1745,7 @@ class MainActivity : Activity() {
                     marginEnd = dp(18)
                 })
             addView(connectionSelectorRow, LinearLayout.LayoutParams(-1, -2))
+            addView(homeChainSelectorRows, LinearLayout.LayoutParams(-1, -2))
             addView(View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
                 LinearLayout.LayoutParams(-1, dp(1)).apply {
                     marginStart = dp(18)
@@ -1697,6 +1821,7 @@ class MainActivity : Activity() {
         }
         val testingSettings = settingsContent()
         val connectionSettings = settingsContent()
+        val chainSettings = buildConnectionChainSettings()
         val splitTunnelSettings = settingsContent()
         val sharingSettings = settingsContent()
         val systemSettings = settingsContent()
@@ -1873,15 +1998,19 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(-1, -2),
         )
 
-        fun noiseNumberField(hint: String): Pair<EditText, TextInputLayout> {
+        fun noiseField(hint: String, numeric: Boolean = false): Pair<EditText, TextInputLayout> {
             val input = TextInputEditText(this).apply {
                 setSingleLine(true)
                 layoutDirection = View.LAYOUT_DIRECTION_LTR
                 textDirection = View.TEXT_DIRECTION_LTR
-                gravity = Gravity.CENTER
+                gravity = if (numeric) Gravity.CENTER else Gravity.START or Gravity.CENTER_VERTICAL
                 background = null
                 textSize = 14f
-                inputType = InputType.TYPE_CLASS_NUMBER
+                inputType = if (numeric) {
+                    InputType.TYPE_CLASS_NUMBER
+                } else {
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                }
                 imeOptions = EditorInfo.IME_ACTION_NEXT
                 setTextColor(TEXT_PRIMARY)
             }
@@ -1899,19 +2028,106 @@ class MainActivity : Activity() {
             return input to layout
         }
 
-        val (countInput, countLayout) = noiseNumberField(getString(R.string.amnezia_noise_count))
-        val (minSizeInput, minSizeLayout) = noiseNumberField(getString(R.string.amnezia_noise_min_size))
-        val (maxSizeInput, maxSizeLayout) = noiseNumberField(getString(R.string.amnezia_noise_max_size))
-        amneziaNoiseCountInput = countInput
-        amneziaNoiseMinSizeInput = minSizeInput
-        amneziaNoiseMaxSizeInput = maxSizeInput.apply { imeOptions = EditorInfo.IME_ACTION_DONE }
-        amneziaNoiseFields = LinearLayout(this).apply {
+        fun noiseFieldRow(vararg fields: TextInputLayout): LinearLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutDirection = View.LAYOUT_DIRECTION_LTR
             gravity = Gravity.CENTER_VERTICAL
-            addView(countLayout, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(minSizeLayout, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
-            addView(maxSizeLayout, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
+            fields.forEachIndexed { index, field ->
+                addView(
+                    field,
+                    LinearLayout.LayoutParams(0, -2, 1f).apply {
+                        if (index > 0) marginStart = dp(8)
+                    },
+                )
+            }
+        }
+
+        fun noiseGroupLabel(text: String): TextView = TextView(this).apply {
+            this.text = text
+            textSize = 12f
+            typeface = WhiteDnsBodyBoldTypeface
+            setTextColor(TEXT_SECONDARY)
+            includeFontPadding = false
+        }
+
+        val (countInput, countLayout) = noiseField(getString(R.string.amnezia_noise_count), numeric = true)
+        val (minSizeInput, minSizeLayout) = noiseField(getString(R.string.amnezia_noise_min_size), numeric = true)
+        val (maxSizeInput, maxSizeLayout) = noiseField(getString(R.string.amnezia_noise_max_size), numeric = true)
+        val (ttlInput, ttlLayout) = noiseField(getString(R.string.amnezia_noise_fake_ttl), numeric = true)
+        val (versionInput, versionLayout) = noiseField(getString(R.string.amnezia_noise_version), numeric = true)
+        val (ipStackInput, ipStackLayout) = noiseField(getString(R.string.amnezia_noise_ip_stack))
+        val (congestionInput, congestionLayout) = noiseField(getString(R.string.amnezia_noise_congestion))
+        val (headerProtectionKeyInput, headerProtectionKeyLayout) =
+            noiseField(getString(R.string.amnezia_noise_header_protection_key))
+        val (contentPaddingInput, contentPaddingLayout) =
+            noiseField(getString(R.string.amnezia_noise_content_padding))
+        val (rekeyAfterInput, rekeyAfterLayout) = noiseField(getString(R.string.amnezia_noise_rekey_after))
+        val (rekeyTimeoutInput, rekeyTimeoutLayout) = noiseField(getString(R.string.amnezia_noise_rekey_timeout))
+        val (rejectAfterInput, rejectAfterLayout) = noiseField(getString(R.string.amnezia_noise_reject_after))
+        val (keepaliveTimeoutInput, keepaliveTimeoutLayout) =
+            noiseField(getString(R.string.amnezia_noise_keepalive_timeout))
+        val (maxHandshakeAttemptsInput, maxHandshakeAttemptsLayout) =
+            noiseField(getString(R.string.amnezia_noise_max_handshake_attempts))
+        val (randomTrailersInput, randomTrailersLayout) =
+            noiseField(getString(R.string.amnezia_noise_random_trailers))
+        val (disableCookiesInput, disableCookiesLayout) =
+            noiseField(getString(R.string.amnezia_noise_disable_cookies))
+        amneziaNoiseCountInput = countInput
+        amneziaNoiseMinSizeInput = minSizeInput
+        amneziaNoiseMaxSizeInput = maxSizeInput
+        amneziaNoiseTtlInput = ttlInput
+        amneziaNoiseVersionInput = versionInput
+        amneziaNoiseIpStackInput = ipStackInput
+        amneziaNoiseCongestionInput = congestionInput
+        amneziaNoiseHeaderProtectionKeyInput = headerProtectionKeyInput
+        amneziaNoiseContentPaddingInput = contentPaddingInput
+        amneziaNoiseRekeyAfterInput = rekeyAfterInput
+        amneziaNoiseRekeyTimeoutInput = rekeyTimeoutInput
+        amneziaNoiseRejectAfterInput = rejectAfterInput
+        amneziaNoiseKeepaliveTimeoutInput = keepaliveTimeoutInput
+        amneziaNoiseMaxHandshakeAttemptsInput = maxHandshakeAttemptsInput
+        amneziaNoiseRandomTrailersInput = randomTrailersInput
+        amneziaNoiseDisableCookiesInput = disableCookiesInput.apply { imeOptions = EditorInfo.IME_ACTION_DONE }
+        amneziaNoiseFields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            addView(noiseGroupLabel(getString(R.string.amnezia_noise_packets_group)))
+            addView(noiseFieldRow(countLayout, minSizeLayout, maxSizeLayout), LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(8)
+            })
+            addView(noiseFieldRow(ttlLayout, versionLayout), LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(8)
+            })
+            addView(noiseGroupLabel(getString(R.string.amnezia_noise_stack_group)), LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(16)
+            })
+            addView(noiseFieldRow(ipStackLayout, congestionLayout), LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(8)
+            })
+            addView(noiseGroupLabel(getString(R.string.amnezia_noise_v3_group)), LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(16)
+            })
+            addView(headerProtectionKeyLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            addView(contentPaddingLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            addView(noiseFieldRow(rekeyAfterLayout, rekeyTimeoutLayout), LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(8)
+            })
+            addView(noiseFieldRow(rejectAfterLayout, keepaliveTimeoutLayout), LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(8)
+            })
+            addView(maxHandshakeAttemptsLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            addView(noiseFieldRow(randomTrailersLayout, disableCookiesLayout), LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(8)
+            })
+            addView(
+                TextView(this@MainActivity).apply {
+                    setText(R.string.amnezia_noise_optional_hint)
+                    textSize = 11f
+                    setTextColor(TEXT_SECONDARY)
+                    includeFontPadding = false
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
+            )
         }
         amneziaPanel.addView(
             amneziaNoiseFields,
@@ -2583,7 +2799,7 @@ class MainActivity : Activity() {
             advancedBody.addView(
                 LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    layoutDirection = View.LAYOUT_DIRECTION_LTR
+                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
                     gravity = Gravity.CENTER_VERTICAL
                     addView(backButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(8) })
                     addView(
@@ -2607,6 +2823,7 @@ class MainActivity : Activity() {
             )
             advancedBody.addView(content, LinearLayout.LayoutParams(-1, -2))
             indexScrollView.visibility = View.GONE
+            ViewCompat.setAccessibilityPaneTitle(scrollView, getString(titleRes))
             scrollView.visibility = View.VISIBLE
             scrollView.scrollTo(0, 0)
             ViewCompat.requestApplyInsets(scrollView)
@@ -2698,6 +2915,14 @@ class MainActivity : Activity() {
             R.string.settings_category_connections,
             R.string.settings_category_connections_detail,
             connectionSettings,
+        )
+        openConnectionChainSettingsPage = {
+            showCategory(R.string.connection_chain_title, chainSettings)
+        }
+        addCategory(
+            R.string.connection_chain_title,
+            R.string.connection_chain_category_detail,
+            chainSettings,
         )
         addCategory(
             R.string.split_tunnel_label,
@@ -2800,6 +3025,348 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun connectionChainFixedLabel(
+        ref: ConnectionChainProfileRef?,
+        options: List<ConnectionChainPickerOption>,
+    ): String {
+        if (ref == null) return getString(R.string.connection_chain_unavailable)
+        val option = options.firstOrNull {
+            it.subscriptionId == ref.subscriptionId && it.profile.fingerprint == ref.fingerprint
+        }
+        return if (option == null) {
+            getString(R.string.connection_chain_unavailable)
+        } else {
+            getString(
+                R.string.connection_chain_fixed_value,
+                option.subscriptionName,
+                option.profile.tag,
+            )
+        }
+    }
+
+    private fun buildConnectionChainSettings(): View {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+        }
+        content.addView(
+            advancedSectionLabel(getString(R.string.connection_chain_title)),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(32) },
+        )
+        val panel = advancedSettingsPanel()
+        val enabledSwitch = MaterialSwitch(this)
+        panel.addView(
+            advancedToggleRow(
+                title = getString(R.string.connection_chain_enable),
+                detail = getString(R.string.connection_chain_enable_detail),
+                toggle = enabledSwitch,
+            ),
+            LinearLayout.LayoutParams(-1, -2),
+        )
+        val hops = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+        }
+        panel.addView(hops, LinearLayout.LayoutParams(-1, -2))
+        content.addView(
+            panel,
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
+        )
+
+        fun hopRow(
+            slot: ConnectionChainSlot,
+            hop: ConnectionChainHop,
+            options: List<ConnectionChainPickerOption>,
+            controlsEnabled: Boolean,
+        ): View {
+            val optional = slot != ConnectionChainSlot.Base
+            val title = when {
+                hop.mode == ConnectionChainHopMode.Off && slot == ConnectionChainSlot.Before ->
+                    getString(R.string.connection_chain_add_before)
+                hop.mode == ConnectionChainHopMode.Off && slot == ConnectionChainSlot.After ->
+                    getString(R.string.connection_chain_add_after)
+                slot == ConnectionChainSlot.Before -> getString(R.string.connection_chain_before)
+                slot == ConnectionChainSlot.Base -> getString(R.string.connection_label)
+                else -> getString(R.string.connection_chain_after)
+            }
+            val detail = when (hop.mode) {
+                ConnectionChainHopMode.Off -> getString(R.string.connection_chain_optional_detail)
+                ConnectionChainHopMode.Automatic -> getString(R.string.connection_chain_automatic_detail)
+                ConnectionChainHopMode.Fixed -> connectionChainFixedLabel(hop.profileRef, options)
+            }
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(72)
+                setPadding(dp(16), dp(12), dp(12), dp(12))
+                setSelectableBackground()
+                isEnabled = controlsEnabled
+                isClickable = controlsEnabled
+                isFocusable = controlsEnabled
+                if (controlsEnabled) setOnClickListener { showConnectionTestingPage(chainSlot = slot) }
+                addView(
+                    LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                        addView(
+                            TextView(this@MainActivity).apply {
+                                text = title
+                                textSize = 15f
+                                typeface = WhiteDnsBodyBoldTypeface
+                                setTextColor(if (hop.mode == ConnectionChainHopMode.Off) TEAL else TEXT_PRIMARY)
+                                includeFontPadding = false
+                            },
+                        )
+                        addView(
+                            TextView(this@MainActivity).apply {
+                                text = detail
+                                textSize = 12f
+                                typeface = WhiteDnsBodyTypeface
+                                setTextColor(TEXT_SECONDARY)
+                                includeFontPadding = false
+                                maxLines = 2
+                                ellipsize = TextUtils.TruncateAt.END
+                            },
+                            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) },
+                        )
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f),
+                )
+                if (optional && hop.mode != ConnectionChainHopMode.Off) {
+                    addView(
+                        TextView(this@MainActivity).apply {
+                            text = "×"
+                            textSize = 24f
+                            gravity = Gravity.CENTER
+                            setTextColor(TEXT_SECONDARY)
+                            contentDescription = getString(
+                                R.string.connection_chain_remove_hop,
+                                getString(
+                                    when (slot) {
+                                        ConnectionChainSlot.Before -> R.string.connection_chain_before
+                                        ConnectionChainSlot.Base -> R.string.connection_chain_base
+                                        ConnectionChainSlot.After -> R.string.connection_chain_after
+                                    },
+                                ),
+                            )
+                            setSelectableBackground()
+                            isEnabled = controlsEnabled
+                            isClickable = controlsEnabled
+                            isFocusable = controlsEnabled
+                            if (controlsEnabled) {
+                                setOnClickListener {
+                                    updateConnectionChainSettings(
+                                        connectionChainPreferenceStore.read()
+                                            .withHop(slot, ConnectionChainHop.off()),
+                                    )
+                                }
+                            }
+                        },
+                        LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) },
+                    )
+                } else {
+                    addView(
+                        TextView(this@MainActivity).apply {
+                            setText(R.string.chevron_forward)
+                            textSize = 22f
+                            typeface = WhiteDnsBodyBoldTypeface
+                            setTextColor(TEAL)
+                            includeFontPadding = false
+                        },
+                        LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) },
+                    )
+                }
+            }
+        }
+
+        fun render() {
+            val settings = connectionChainPreferenceStore.read()
+            val controlsEnabled = buttonModel.state != VpnState.Starting &&
+                buttonModel.state != VpnState.Stopping
+            if (enabledSwitch.isChecked != settings.enabled) enabledSwitch.isChecked = settings.enabled
+            enabledSwitch.isEnabled = controlsEnabled
+            hops.removeAllViews()
+            hops.visibility = if (settings.enabled) View.VISIBLE else View.GONE
+            hops.alpha = if (controlsEnabled) 1f else 0.45f
+            if (!settings.enabled) {
+                connectionChainCompatibilityIssue = null
+                connectionChainCompatibilityMessage = null
+                pendingConnectionChainAccessibilityAnnouncement = null
+                return
+            }
+            if (!hops.isShown) return
+            val fixedSubscriptionIds = listOf(settings.base, settings.after)
+                .mapNotNull { hop ->
+                    hop.profileRef?.subscriptionId.takeIf {
+                        hop.mode == ConnectionChainHopMode.Fixed
+                    }
+                }
+                .toSet()
+            val fixedSources = cachedConnectionChainSources(fixedSubscriptionIds)
+            val options = connectionChainFixedOptions(settings, fixedSources)
+            hops.addView(
+                advancedSectionDetail(getString(R.string.connection_chain_order_detail)),
+                LinearLayout.LayoutParams(-1, -2).apply {
+                    marginStart = dp(16)
+                    marginEnd = dp(16)
+                    topMargin = dp(10)
+                    bottomMargin = dp(4)
+                },
+            )
+            val compatibilityIssue = ConnectionChainPlanner.selectedCompatibilityIssue(settings, fixedSources)
+            val compatibilityChanged = compatibilityIssue != connectionChainCompatibilityIssue
+            connectionChainCompatibilityIssue = compatibilityIssue
+            if (compatibilityIssue == null) {
+                connectionChainCompatibilityMessage = null
+                pendingConnectionChainAccessibilityAnnouncement = null
+            }
+            compatibilityIssue?.let { issue ->
+                val message = getString(
+                    when (issue) {
+                        ConnectionChainCompatibilityIssue.SelectedConnectionUnavailable ->
+                            R.string.connection_chain_error_unavailable
+                        ConnectionChainCompatibilityIssue.SameConnection ->
+                            R.string.connection_chain_error_same
+                        ConnectionChainCompatibilityIssue.SharedProxyDependency ->
+                            R.string.connection_chain_error_shared_proxy
+                        ConnectionChainCompatibilityIssue.DownstreamRequiresUdpCapableUpstream ->
+                            R.string.connection_chain_error_udp
+                    },
+                )
+                connectionChainCompatibilityMessage = message
+                hops.addView(
+                    TextView(this).apply {
+                        text = "⚠  $message"
+                        textSize = 12f
+                        typeface = WhiteDnsBodyTypeface
+                        setTextColor(ERROR)
+                        includeFontPadding = false
+                        gravity = Gravity.START
+                        setPadding(dp(12), dp(10), dp(12), dp(10))
+                        contentDescription = message
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(8).toFloat()
+                            setColor(withAlpha(ERROR, 18))
+                            setStroke(dp(1), withAlpha(ERROR, 110))
+                        }
+                    },
+                    LinearLayout.LayoutParams(-1, -2).apply {
+                        marginStart = dp(16)
+                        marginEnd = dp(16)
+                        topMargin = dp(8)
+                        bottomMargin = dp(4)
+                    },
+                )
+                if (compatibilityChanged) {
+                    if (connectionTestingPageVisible) {
+                        pendingConnectionChainAccessibilityAnnouncement = message
+                    } else {
+                        hops.post { if (hops.isShown) hops.announceAccessibility(message) }
+                    }
+                }
+            }
+            listOf(ConnectionChainSlot.Base, ConnectionChainSlot.After).forEachIndexed { index, slot ->
+                if (index > 0) {
+                    hops.addView(
+                        View(this).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+                        LinearLayout.LayoutParams(-1, dp(1)).apply {
+                            marginStart = dp(16)
+                            marginEnd = dp(16)
+                        },
+                    )
+                }
+                hops.addView(
+                    hopRow(slot, settings.hop(slot), options, controlsEnabled),
+                    LinearLayout.LayoutParams(-1, -2),
+                )
+            }
+        }
+        renderChainSettingsPage = ::render
+        enabledSwitch.setOnCheckedChangeListener { _, enabled ->
+            val current = connectionChainPreferenceStore.read()
+            if (current.enabled != enabled) updateConnectionChainSettings(current.copy(enabled = enabled))
+        }
+        render()
+        return content
+    }
+
+    private fun updateConnectionChainSettings(settings: ConnectionChainSettings) {
+        if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) {
+            renderChainSettingsPage?.invoke()
+            return
+        }
+        val previous = connectionChainPreferenceStore.read()
+        val normalized = settings.copy(before = ConnectionChainHop.off()).normalized()
+        if (previous == normalized) return
+        connectionChainPreferenceStore.save(normalized)
+        renderChainSettingsPage?.invoke()
+        renderConnectionDetails(buttonModel.state)
+        renderConnectionSelection()
+        if (
+            buttonModel.state == VpnState.Started &&
+            (previous.isActive || normalized.isActive) &&
+            connectionChainCompatibilityIssue == null
+        ) {
+            reconnectForConnectionOptionChange()
+        }
+    }
+
+    private fun openConnectionChainSettingsFromHome() {
+        appTabs.getTabAt(0)?.select()
+        openConnectionChainSettingsPage?.invoke()
+    }
+
+    private fun cachedConnectionChainPickerOptions(
+        subscriptionIds: Set<String>? = null,
+    ): List<ConnectionChainPickerOption> =
+        connectionChainPickerOptions(cachedConnectionChainSources(subscriptionIds))
+
+    private fun cachedConnectionChainSources(
+        subscriptionIds: Set<String>? = null,
+    ): List<ConnectionChainSource> {
+        val subscriptions = userSubscriptionManager.list()
+        val repository = ConfigRepository(this)
+        return buildList {
+            add(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID to getString(R.string.app_name))
+            addAll(subscriptions.map { it.id to it.name })
+        }.filter { (subscriptionId, _) -> subscriptionIds == null || subscriptionId in subscriptionIds }
+            .mapNotNull { (subscriptionId, subscriptionName) ->
+                val snapshot = repository.readCachedMihomoConfigOrNullNow(subscriptionId)
+                    ?: return@mapNotNull null
+                ConnectionChainSource(subscriptionId, subscriptionName, snapshot)
+            }
+    }
+
+    private fun connectionChainPickerOptions(
+        sources: List<ConnectionChainSource>,
+    ): List<ConnectionChainPickerOption> = sources.flatMap { source ->
+        val selectable = ConnectionChainPlanner.selectableFingerprints(source.snapshot)
+        source.snapshot.catalog.profiles.filter { it.fingerprint in selectable }.map { profile ->
+            ConnectionChainPickerOption(
+                subscriptionId = source.subscriptionId,
+                subscriptionName = source.subscriptionName,
+                profile = profile,
+            )
+        }
+    }
+
+    private fun connectionChainFixedOptions(
+        settings: ConnectionChainSettings,
+        sources: List<ConnectionChainSource>,
+    ): List<ConnectionChainPickerOption> {
+        val refs = listOf(settings.base, settings.after).mapNotNull { hop ->
+            hop.profileRef.takeIf { hop.mode == ConnectionChainHopMode.Fixed }
+        }
+        return sources.flatMap { source ->
+            val fingerprints = refs.filter { it.subscriptionId == source.subscriptionId }
+                .mapTo(mutableSetOf(), ConnectionChainProfileRef::fingerprint)
+            source.snapshot.catalog.profiles.filter { it.fingerprint in fingerprints }.map { profile ->
+                ConnectionChainPickerOption(source.subscriptionId, source.subscriptionName, profile)
+            }
+        }
+    }
+
     private fun advancedSectionDetail(value: String): TextView {
         return TextView(this).apply {
             text = value
@@ -2852,6 +3419,7 @@ class MainActivity : Activity() {
         val textColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
             addView(
                 TextView(this@MainActivity).apply {
                     text = title
@@ -2886,8 +3454,9 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(12), dp(16), dp(12))
             setSelectableBackground()
             isClickable = true
-            isFocusable = true
-            contentDescription = "$title. $detail"
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            toggle.contentDescription = "$title. $detail"
             setOnClickListener {
                 if (toggle.isEnabled) toggle.performClick()
             }
@@ -3031,6 +3600,7 @@ class MainActivity : Activity() {
             intent.getStringExtra(Actions.EXTRA_ACTIVE_SUBSCRIPTION_ID).orEmpty(),
             intent.getStringExtra(Actions.EXTRA_ACTIVE_CONNECTION_TAG).orEmpty(),
             intent.getStringExtra(Actions.EXTRA_ACTIVE_CONNECTION_FINGERPRINT).orEmpty(),
+            intent.getIntExtra(Actions.EXTRA_CHAIN_HOP_COUNT, 0),
             intent.getBooleanExtra(Actions.EXTRA_LIVE_SELECTOR_READY, false),
             intent.getStringArrayListExtra(Actions.EXTRA_SELECTABLE_CONNECTION_FINGERPRINTS)
                 .orEmpty()
@@ -3052,6 +3622,7 @@ class MainActivity : Activity() {
         runtimeSubscriptionId: String = "",
         runtimeConnectionTag: String = "",
         runtimeConnectionFingerprint: String = "",
+        chainHopCount: Int = 0,
         selectorReady: Boolean = false,
         selectableConnectionFingerprints: Set<String> = emptySet(),
         alwaysOn: Boolean = false,
@@ -3064,6 +3635,7 @@ class MainActivity : Activity() {
             activeRuntimeSubscriptionId = runtimeSubscriptionId
             activeConnectionTag = runtimeConnectionTag
             activeConnectionFingerprint = runtimeConnectionFingerprint
+            activeChainHopCount = chainHopCount
             liveSelectorReady = selectorReady
             liveSelectableConnectionFingerprints = selectableConnectionFingerprints
             connectionCountryFlag = countryFlag
@@ -3078,6 +3650,7 @@ class MainActivity : Activity() {
             activeRuntimeSubscriptionId = ""
             activeConnectionTag = ""
             activeConnectionFingerprint = ""
+            activeChainHopCount = 0
             liveSelectorReady = false
             liveSelectableConnectionFingerprints = emptySet()
             connectionCountryFlag = ""
@@ -3092,7 +3665,7 @@ class MainActivity : Activity() {
         }
         renderAlwaysOnStatus()
         renderState(state)
-        renderConnectionSelection()
+        if (!connectionChainPreferenceStore.read().enabled) renderConnectionSelection()
     }
 
     private fun handleButtonClick() {
@@ -3198,29 +3771,68 @@ class MainActivity : Activity() {
         renderConnectionSelection()
     }
 
-    private fun showConnectionTestingPage(animate: Boolean = true, rebuild: Boolean = false) {
+    private fun showConnectionTestingPage(
+        animate: Boolean = true,
+        rebuild: Boolean = false,
+        chainSlot: ConnectionChainSlot? = null,
+        pickerSubscriptionId: String? = null,
+    ) {
         if (connectionTestingPageVisible && !rebuild) return
         if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
         val subscriptionStore = SubscriptionStore(this)
-        val selectedSubscriptionId = subscriptionStore.readSelectedSubscriptionId()
-        val usesActiveRuntime = buttonModel.state == VpnState.Started &&
+        val pickerMode = chainSlot != null
+        val pickerOptions = if (pickerMode) cachedConnectionChainPickerOptions() else emptyList()
+        val configuredHop = chainSlot?.let { connectionChainPreferenceStore.read().hop(it) }
+        val requestedSubscriptionId = if (pickerMode) {
+            pickerSubscriptionId
+                ?: configuredHop?.profileRef?.subscriptionId
+                ?: subscriptionStore.readSelectedSubscriptionId()
+        } else {
+            subscriptionStore.readSelectedSubscriptionId()
+        }
+        val selectedSubscriptionId = if (
+            pickerMode && pickerOptions.none { it.subscriptionId == requestedSubscriptionId }
+        ) {
+            pickerOptions.firstOrNull()?.subscriptionId ?: requestedSubscriptionId
+        } else {
+            requestedSubscriptionId
+        }
+        activeChainPickerSlot = chainSlot
+        activeChainPickerSubscriptionId = selectedSubscriptionId.takeIf { pickerMode }
+        val pageProfiles = if (pickerMode) {
+            pickerOptions.filter { it.subscriptionId == selectedSubscriptionId }.map { it.profile }
+        } else {
+            connectionProfiles
+        }
+        val usesActiveRuntime = !pickerMode && buttonModel.state == VpnState.Started &&
             activeRuntimeSubscriptionId == selectedSubscriptionId
+        val canRunConnectionTests = buttonModel.state != VpnState.Started ||
+            (activeChainHopCount <= 1 && activeRuntimeSubscriptionId == selectedSubscriptionId)
         if (usesActiveRuntime && !liveSelectorReady) {
             Toast.makeText(this, R.string.connection_selector_loading, Toast.LENGTH_SHORT).show()
             return
         }
         val selectorProfiles = if (usesActiveRuntime) {
-            connectionProfiles.filter { it.fingerprint in liveSelectableConnectionFingerprints }
+            pageProfiles.filter { it.fingerprint in liveSelectableConnectionFingerprints }
         } else {
-            connectionProfiles
+            pageProfiles
         }
+        val udpSupportByFingerprint = ConfigRepository(this)
+            .readCachedMihomoConfigOrNullNow(selectedSubscriptionId)
+            ?.let(ConnectionChainPlanner::udpSupportByFingerprint)
+            .orEmpty()
         connectionDelayRecords = subscriptionStore
             .readConnectionDelayRecords(selectedSubscriptionId, selectorProfiles)
             .associateBy(ConnectionDelayRecord::fingerprint)
-        val selectedProfile = connectionSelectionPreferenceStore.readSelectedProfile(
-            selectedSubscriptionId,
-            selectorProfiles,
-        )
+        val selectedProfile = if (pickerMode) {
+            configuredHop
+                ?.takeIf { it.mode == ConnectionChainHopMode.Fixed }
+                ?.profileRef
+                ?.takeIf { it.subscriptionId == selectedSubscriptionId }
+                ?.let { ref -> selectorProfiles.firstOrNull { it.fingerprint == ref.fingerprint } }
+        } else {
+            connectionSelectionPreferenceStore.readSelectedProfile(selectedSubscriptionId, selectorProfiles)
+        }
         val displayLocale = resources.configuration.locales[0]
         val allCountriesLabel = getString(R.string.connection_filter_all_countries)
         val countryOptions = ConnectionLocationPolicy.selectorOptions(
@@ -3312,6 +3924,8 @@ class MainActivity : Activity() {
             val title: TextView,
             val detail: TextView,
             val delayBadge: TextView,
+            val protocolBadges: LinearLayout,
+            val udpBadge: TextView,
             val checkIcon: View,
             val speedAction: FrameLayout,
             val speedButton: TextView,
@@ -3329,12 +3943,17 @@ class MainActivity : Activity() {
             imageTintList = ColorStateList.valueOf(TEXT_PRIMARY)
             setBackgroundColor(Color.TRANSPARENT)
             setSelectableBackground()
-            contentDescription = getString(R.string.connection_testing_back)
+            contentDescription = getString(
+                if (pickerMode) R.string.connection_chain_picker_back else R.string.connection_testing_back,
+            )
             setPadding(dp(12), dp(12), dp(12), dp(12))
             setOnClickListener { closeConnectionTestingPage() }
         }
         val pageTitle = TextView(this).apply {
-            setText(R.string.connection_testing_page_title)
+            setText(
+                if (pickerMode) R.string.connection_chain_picker_title
+                else R.string.connection_testing_page_title,
+            )
             textSize = 24f
             typeface = WhiteDnsDisplayTypeface
             setTextColor(TEXT_PRIMARY)
@@ -3342,12 +3961,16 @@ class MainActivity : Activity() {
         }
         val settings = connectionTestSettingsPreferenceStore.read()
         val pageConfig = TextView(this).apply {
-            text = getString(
-                R.string.connection_testing_page_config,
-                settings.timeoutSeconds,
-                settings.concurrency,
-                settings.speedTestMegabytes,
-            )
+            text = if (pickerMode) {
+                getString(R.string.connection_chain_picker_detail)
+            } else {
+                getString(
+                    R.string.connection_testing_page_config,
+                    settings.timeoutSeconds,
+                    settings.concurrency,
+                    settings.speedTestMegabytes,
+                )
+            }
             textSize = 12f
             typeface = WhiteDnsDataTypeface
             setTextColor(TEAL)
@@ -3361,7 +3984,7 @@ class MainActivity : Activity() {
         }
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             gravity = Gravity.TOP
             addView(backButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(8) })
             addView(headerCopy, LinearLayout.LayoutParams(0, -2, 1f))
@@ -3393,9 +4016,47 @@ class MainActivity : Activity() {
 
         val countryFilterButton = filterChip(allCountriesLabel)
         val typeFilterButton = filterChip(getString(R.string.connection_filter_all_types))
+        val pickerSubscriptions = pickerOptions.distinctBy(ConnectionChainPickerOption::subscriptionId)
+        val subscriptionFilterButton = if (pickerMode) {
+            filterChip(
+                getString(
+                    R.string.connection_chain_subscription,
+                    pickerSubscriptions.firstOrNull { it.subscriptionId == selectedSubscriptionId }
+                        ?.subscriptionName
+                        ?: selectedSubscriptionId,
+                ),
+            ).apply {
+                isClickable = pickerSubscriptions.size > 1
+                isFocusable = pickerSubscriptions.size > 1
+                alpha = if (pickerSubscriptions.size > 1) 1f else 0.7f
+                if (pickerSubscriptions.size > 1) setOnClickListener {
+                    val labels = pickerSubscriptions.map(ConnectionChainPickerOption::subscriptionName).toTypedArray()
+                    val checked = pickerSubscriptions.indexOfFirst {
+                        it.subscriptionId == selectedSubscriptionId
+                    }.coerceAtLeast(0)
+                    MaterialAlertDialogBuilder(this@MainActivity)
+                        .setTitle(R.string.connection_chain_subscription_title)
+                        .setSingleChoiceItems(labels, checked) { dialog, which ->
+                            val selected = pickerSubscriptions[which]
+                            dialog.dismiss()
+                            showConnectionTestingPage(
+                                animate = false,
+                                rebuild = true,
+                                chainSlot = chainSlot,
+                                pickerSubscriptionId = selected.subscriptionId,
+                            )
+                        }
+                        .setNegativeButton(R.string.split_tunnel_cancel, null)
+                        .create()
+                        .showWhiteDnsDialog()
+                }
+            }
+        } else {
+            null
+        }
 
-        filterRow.addView(countryFilterButton, LinearLayout.LayoutParams(0, dp(44), 1f))
-        filterRow.addView(typeFilterButton, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) })
+        filterRow.addView(countryFilterButton, LinearLayout.LayoutParams(0, dp(48), 1f))
+        filterRow.addView(typeFilterButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
 
         // Progress section
         val progressSection = LinearLayout(this).apply {
@@ -3432,11 +4093,11 @@ class MainActivity : Activity() {
             typeface = WhiteDnsBodyBoldTypeface
             minWidth = 0
             minimumWidth = 0
-            minHeight = dp(44)
-            minimumHeight = dp(44)
+            minHeight = dp(48)
+            minimumHeight = dp(48)
             insetTop = 0
             insetBottom = 0
-            cornerRadius = dp(22)
+            cornerRadius = dp(24)
             backgroundTintList = ColorStateList.valueOf(TEAL)
             setTextColor(BACKGROUND)
             setAllCaps(false)
@@ -3454,17 +4115,18 @@ class MainActivity : Activity() {
             iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
             iconPadding = 0
             text = ""
-            minWidth = dp(44)
-            minimumWidth = dp(44)
-            minHeight = dp(44)
-            minimumHeight = dp(44)
+            minWidth = dp(48)
+            minimumWidth = dp(48)
+            minHeight = dp(48)
+            minimumHeight = dp(48)
             insetTop = 0
             insetBottom = 0
-            cornerRadius = dp(22)
+            cornerRadius = dp(24)
             strokeWidth = dp(1)
             strokeColor = ColorStateList.valueOf(OUTLINE)
             backgroundTintList = ColorStateList.valueOf(SURFACE)
             visibility = View.GONE
+            contentDescription = getString(R.string.connection_test_pause)
             setPadding(0, 0, 0, 0)
         }
 
@@ -3474,11 +4136,11 @@ class MainActivity : Activity() {
             typeface = WhiteDnsBodyBoldTypeface
             minWidth = 0
             minimumWidth = 0
-            minHeight = dp(44)
-            minimumHeight = dp(44)
+            minHeight = dp(48)
+            minimumHeight = dp(48)
             insetTop = 0
             insetBottom = 0
-            cornerRadius = dp(22)
+            cornerRadius = dp(24)
             strokeWidth = dp(1)
             strokeColor = ColorStateList.valueOf(ERROR)
             backgroundTintList = ColorStateList.valueOf(SURFACE)
@@ -3488,9 +4150,9 @@ class MainActivity : Activity() {
         }
 
         stopButton.setPadding(dp(20), 0, dp(20), 0)
-        controlRow.addView(testButton, LinearLayout.LayoutParams(0, dp(44), 1f))
-        controlRow.addView(pauseButton, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(8) })
-        controlRow.addView(stopButton, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(8) })
+        controlRow.addView(testButton, LinearLayout.LayoutParams(0, dp(48), 1f))
+        controlRow.addView(pauseButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
+        controlRow.addView(stopButton, LinearLayout.LayoutParams(-2, dp(48)).apply { marginStart = dp(8) })
 
         // Server list with better styling
         val list = ListView(this).apply {
@@ -3499,6 +4161,24 @@ class MainActivity : Activity() {
             isVerticalScrollBarEnabled = true
             clipToPadding = false
             setPadding(0, dp(4), 0, dp(4))
+        }
+
+        fun protocolBadge(@StringRes label: Int) = TextView(this).apply {
+            setText(label)
+            textSize = 10f
+            typeface = WhiteDnsDataTypeface
+            setTextColor(TEAL)
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+            textDirection = View.TEXT_DIRECTION_LTR
+            setPadding(dp(6), dp(2), dp(6), dp(2))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            background = GradientDrawable().apply {
+                cornerRadius = dp(8).toFloat()
+                setColor(withAlpha(TEAL, 24))
+                setStroke(dp(1), withAlpha(TEAL, 90))
+            }
         }
 
         val adapter = object : BaseAdapter() {
@@ -3542,6 +4222,19 @@ class MainActivity : Activity() {
                         maxLines = 1
                         setPadding(dp(7), dp(3), dp(7), dp(3))
                         visibility = View.GONE
+                    }
+                    val tcpBadge = protocolBadge(R.string.connection_protocol_tcp)
+                    val udpBadge = protocolBadge(R.string.connection_protocol_udp)
+                    val protocolBadges = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        layoutDirection = View.LAYOUT_DIRECTION_LTR
+                        gravity = Gravity.CENTER_VERTICAL
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                        addView(tcpBadge, LinearLayout.LayoutParams(-2, -2))
+                        addView(
+                            udpBadge,
+                            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4) },
+                        )
                     }
                     val speedButton = TextView(this@MainActivity).apply {
                         setText(R.string.connection_speed_test_label)
@@ -3590,13 +4283,20 @@ class MainActivity : Activity() {
                                 orientation = LinearLayout.HORIZONTAL
                                 layoutDirection = View.LAYOUT_DIRECTION_LOCALE
                                 gravity = Gravity.CENTER_VERTICAL
-                                addView(delayBadge, LinearLayout.LayoutParams(-2, -2))
+                                addView(
+                                    protocolBadges,
+                                    LinearLayout.LayoutParams(-2, -2),
+                                )
                                 addView(
                                     detail,
-                                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) },
+                                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) },
                                 )
                             },
                             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(3) },
+                        )
+                        addView(
+                            delayBadge,
+                            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(3) },
                         )
                     }
                     container.addView(checkIcon, LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(10) })
@@ -3618,6 +4318,8 @@ class MainActivity : Activity() {
                         title,
                         detail,
                         delayBadge,
+                        protocolBadges,
+                        udpBadge,
                         checkIcon,
                         speedAction,
                         speedButton,
@@ -3631,7 +4333,11 @@ class MainActivity : Activity() {
 
                 val profile = getItem(position) as? ConnectionProfile
                 val isSelected = if (profile == null) {
-                    selectedProfile == null
+                    if (pickerMode) {
+                        configuredHop?.mode == ConnectionChainHopMode.Automatic
+                    } else {
+                        selectedProfile == null
+                    }
                 } else {
                     selectedProfile?.fingerprint == profile.fingerprint
                 }
@@ -3645,10 +4351,14 @@ class MainActivity : Activity() {
                     dp(1),
                     if (isSelected) TEAL else OUTLINE
                 )
+                row.isSelected = isSelected
+                var protocolDescription: String? = null
 
                 if (profile == null) {
                     holder.title.setText(R.string.option_automatic)
-                    val automaticDetail = if (selectedTypes.size == availableTypes.size) {
+                    val automaticDetail = if (pickerMode) {
+                        getString(R.string.connection_chain_automatic_detail)
+                    } else if (selectedTypes.size == availableTypes.size) {
                         getString(R.string.connection_automatic_detail)
                     } else {
                         getString(R.string.connection_automatic_types_detail, selectedTypesLabel())
@@ -3660,9 +4370,37 @@ class MainActivity : Activity() {
                     holder.delayBadge.text = ""
                     holder.delayBadge.visibility = View.GONE
                     holder.delayBadge.background = null
+                    holder.protocolBadges.visibility = View.GONE
                     holder.speedAction.visibility = View.GONE
                 } else {
                     holder.title.text = profile.tag
+                    holder.protocolBadges.visibility = View.VISIBLE
+                    val udpSupport = udpSupportByFingerprint[profile.fingerprint]
+                    val udpColor = when (udpSupport) {
+                        true -> TEAL
+                        false -> TEXT_SECONDARY
+                        null -> AMBER
+                    }
+                    holder.udpBadge.setText(
+                        when (udpSupport) {
+                            true -> R.string.connection_protocol_udp
+                            false -> R.string.connection_protocol_udp_unavailable
+                            null -> R.string.connection_protocol_udp_unknown
+                        },
+                    )
+                    holder.udpBadge.setTextColor(udpColor)
+                    holder.udpBadge.background = GradientDrawable().apply {
+                        cornerRadius = dp(8).toFloat()
+                        setColor(withAlpha(udpColor, 24))
+                        setStroke(dp(1), withAlpha(udpColor, 90))
+                    }
+                    protocolDescription = getString(
+                        when (udpSupport) {
+                            true -> R.string.connection_protocol_support_tcp_udp
+                            false -> R.string.connection_protocol_support_tcp_only
+                            null -> R.string.connection_protocol_support_udp_unknown
+                        },
+                    )
                     holder.detail.text = if (
                         selectedSubscriptionId == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID
                     ) {
@@ -3720,16 +4458,18 @@ class MainActivity : Activity() {
                     holder.speedAction.visibility = if (delayMs != null) View.VISIBLE else View.GONE
                     holder.speedButton.visibility = if (delayMs != null && !isSpeedTesting) View.VISIBLE else View.GONE
                     holder.speedProgress.visibility = if (isSpeedTesting) View.VISIBLE else View.GONE
-                    holder.speedAction.isEnabled = delayMs != null && !testRunning && !speedTestRunning
+                    holder.speedAction.isEnabled = canRunConnectionTests &&
+                        delayMs != null && !testRunning && !speedTestRunning
                     holder.speedAction.alpha = if (holder.speedAction.isEnabled) 1f else 0.45f
                     holder.speedAction.contentDescription = getString(
                         R.string.connection_speed_test_action,
                         profile.tag,
                     )
                     holder.speedAction.setOnClickListener {
-                        if (testRunning || speedTestRunning || delayMs == null) return@setOnClickListener
+                        if (!canRunConnectionTests || testRunning || speedTestRunning || delayMs == null) {
+                            return@setOnClickListener
+                        }
                         delayRecord?.copy(speedKbps = null)?.let { clearedRecord ->
-                            subscriptionStore.saveConnectionDelayRecord(clearedRecord)
                             connectionDelayRecords = connectionDelayRecords +
                                 (profile.fingerprint to clearedRecord)
                         }
@@ -3754,10 +4494,31 @@ class MainActivity : Activity() {
                     }
                 }
 
+                row.contentDescription = listOfNotNull(
+                    holder.title.text?.toString()?.takeIf(String::isNotBlank),
+                    holder.detail.text?.toString()?.takeIf(String::isNotBlank),
+                    protocolDescription,
+                    holder.delayBadge.text?.toString()?.takeIf(String::isNotBlank),
+                ).joinToString(". ")
                 row.isEnabled = !speedTestRunning
                 row.setOnClickListener {
                     if (speedTestRunning) return@setOnClickListener
-                    handleConnectionSelected(profile, selectedTypes)
+                    if (pickerMode) {
+                        val hop = if (profile == null) {
+                            ConnectionChainHop.automatic()
+                        } else {
+                            ConnectionChainHop.fixed(selectedSubscriptionId, profile.fingerprint)
+                        }
+                        val current = connectionChainPreferenceStore.read()
+                        val updated = current.withHop(chainSlot!!, hop)
+                        updateConnectionChainSettings(updated)
+                        if (current != updated) {
+                            pendingConnectionChainAccessibilityAnnouncement =
+                                connectionChainCompatibilityMessage
+                        }
+                    } else {
+                        handleConnectionSelected(profile, selectedTypes)
+                    }
                     closeConnectionTestingPage()
                 }
                 return row
@@ -3767,7 +4528,8 @@ class MainActivity : Activity() {
 
         fun updateTestControls() {
             // Test button state
-            testButton.isEnabled = filteredProfiles.isNotEmpty() && !speedTestRunning && (!testRunning || testPaused)
+            testButton.isEnabled = canRunConnectionTests && filteredProfiles.isNotEmpty() &&
+                !speedTestRunning && (!testRunning || testPaused)
             testButton.alpha = if (testButton.isEnabled) 1f else 0.5f
             val hasResults = filteredProfiles.any { it.fingerprint in connectionDelayRecords }
             testButton.setText(
@@ -3779,6 +4541,9 @@ class MainActivity : Activity() {
             // Pause button
             pauseButton.visibility = if (testRunning) View.VISIBLE else View.GONE
             pauseButton.setIconResource(if (testPaused) R.drawable.ic_play else R.drawable.ic_pause)
+            pauseButton.contentDescription = getString(
+                if (testPaused) R.string.connection_test_resume else R.string.connection_test_pause,
+            )
 
             // Stop button
             stopButton.visibility = if (testRunning) View.VISIBLE else View.GONE
@@ -3840,11 +4605,11 @@ class MainActivity : Activity() {
             setAllCaps(false)
             minWidth = 0
             minimumWidth = 0
-            minHeight = dp(44)
-            minimumHeight = dp(44)
+            minHeight = dp(48)
+            minimumHeight = dp(48)
             insetTop = 0
             insetBottom = 0
-            cornerRadius = dp(22)
+            cornerRadius = dp(24)
             strokeWidth = dp(1)
             strokeColor = ColorStateList.valueOf(OUTLINE)
             backgroundTintList = ColorStateList.valueOf(SURFACE)
@@ -3868,7 +4633,7 @@ class MainActivity : Activity() {
                             typeChecks.forEach { it.isChecked = true }
                         }
                     },
-                    LinearLayout.LayoutParams(0, dp(44), 1f),
+                    LinearLayout.LayoutParams(0, dp(48), 1f),
                 )
                 addView(
                     filterBulkButton(R.string.connection_filter_deselect_all).apply {
@@ -3877,7 +4642,7 @@ class MainActivity : Activity() {
                             typeChecks.forEach { it.isChecked = false }
                         }
                     },
-                    LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) },
+                    LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) },
                 )
             }
             availableTypes.forEach { type ->
@@ -3910,7 +4675,7 @@ class MainActivity : Activity() {
             val dialogContent = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(8), 0, dp(8), 0)
-                addView(bulkActions, LinearLayout.LayoutParams(-1, dp(44)))
+                addView(bulkActions, LinearLayout.LayoutParams(-1, dp(48)))
                 addView(
                     ScrollView(this@MainActivity).apply { addView(choices) },
                     LinearLayout.LayoutParams(
@@ -3955,7 +4720,7 @@ class MainActivity : Activity() {
                             countryChecks.forEach { it.isChecked = true }
                         }
                     },
-                    LinearLayout.LayoutParams(0, dp(44), 1f),
+                    LinearLayout.LayoutParams(0, dp(48), 1f),
                 )
                 addView(
                     filterBulkButton(R.string.connection_filter_deselect_all).apply {
@@ -3964,7 +4729,7 @@ class MainActivity : Activity() {
                             countryChecks.forEach { it.isChecked = false }
                         }
                     },
-                    LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) },
+                    LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) },
                 )
             }
             selectableCountryOptions.forEach { option ->
@@ -3995,7 +4760,7 @@ class MainActivity : Activity() {
             val dialogContent = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(8), 0, dp(8), 0)
-                addView(bulkActions, LinearLayout.LayoutParams(-1, dp(44)))
+                addView(bulkActions, LinearLayout.LayoutParams(-1, dp(48)))
                 addView(
                     ScrollView(this@MainActivity).apply { addView(choices) },
                     LinearLayout.LayoutParams(
@@ -4023,7 +4788,9 @@ class MainActivity : Activity() {
         }
 
         testButton.setOnClickListener {
-            if (speedTestRunning || testRunning && !testPaused) return@setOnClickListener
+            if (!canRunConnectionTests || speedTestRunning || testRunning && !testPaused) {
+                return@setOnClickListener
+            }
             val targets = filteredProfiles.toList()
             if (targets.isEmpty()) return@setOnClickListener
             testRunning = true
@@ -4035,7 +4802,6 @@ class MainActivity : Activity() {
             lastTestError = ""
             delayTestId = SystemClock.elapsedRealtimeNanos().toString()
             val targetFingerprints = targets.map { it.fingerprint }.toSet()
-            connectionDelayRecords = connectionDelayRecords.filterKeys { it !in targetFingerprints }
             testingFingerprints.clear()
             testingFingerprints += targetFingerprints
             ConnectionDelayTestState.replace(
@@ -4056,6 +4822,7 @@ class MainActivity : Activity() {
                     .setAction(Actions.TEST_CONNECTION_DELAYS)
                     .putExtra(Actions.EXTRA_APP_INITIATED, true)
                     .putExtra(Actions.EXTRA_DELAY_TEST_ID, delayTestId)
+                    .putExtra(Actions.EXTRA_SUBSCRIPTION_ID, selectedSubscriptionId)
                     .putStringArrayListExtra(
                         Actions.EXTRA_CONNECTION_TYPES,
                         ArrayList(selectedTypes.sorted()),
@@ -4143,6 +4910,12 @@ class MainActivity : Activity() {
             lastTestStatus = status
             lastTestError = session.error
             testPaused = session.paused
+            if (status == Actions.DELAY_TEST_STARTED) {
+                connectionDelayRecords = connectionDelayRecords.filterKeys {
+                    it !in session.targetFingerprints
+                }
+                filteredProfiles = visibleProfiles()
+            }
             if (status == Actions.DELAY_TEST_PROGRESS || status == Actions.DELAY_TEST_COMPLETED) {
                 connectionDelayRecords = subscriptionStore
                     .readConnectionDelayRecords(
@@ -4203,14 +4976,20 @@ class MainActivity : Activity() {
                 bottomMargin = dp(16)
             },
         )
-        content.addView(filterRow, LinearLayout.LayoutParams(-1, dp(44)))
+        subscriptionFilterButton?.let { button ->
+            content.addView(
+                button,
+                LinearLayout.LayoutParams(-1, dp(48)).apply { bottomMargin = dp(10) },
+            )
+        }
+        content.addView(filterRow, LinearLayout.LayoutParams(-1, dp(48)))
         content.addView(
             progressSection,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
         content.addView(
             controlRow,
-            LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(12) },
+            LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(12) },
         )
         content.addView(
             list,
@@ -4218,6 +4997,7 @@ class MainActivity : Activity() {
         )
 
         connectionTestingPageHost.removeAllViews()
+        ViewCompat.setAccessibilityPaneTitle(connectionTestingPageHost, pageTitle.text)
         connectionTestingPageHost.addView(
             content,
             FrameLayout.LayoutParams(-1, -1, Gravity.CENTER_HORIZONTAL),
@@ -4324,6 +5104,41 @@ class MainActivity : Activity() {
         } ?: configuredValue
         connectionSelectorRow.setValue(value)
         connectionSelectorRow.contentDescription = getString(R.string.connection_content_description, value)
+        renderHomeConnectionRows()
+    }
+
+    private fun renderHomeConnectionRows() {
+        if (!::homeChainSelectorRows.isInitialized) return
+        val settings = connectionChainPreferenceStore.read()
+        homeChainSelectorRows.visibility = if (settings.enabled) View.VISIBLE else View.GONE
+        if (!settings.enabled) return
+
+        val fixedSubscriptionIds = listOf(settings.base, settings.after)
+            .filter { it.mode == ConnectionChainHopMode.Fixed }
+            .mapNotNull { it.profileRef?.subscriptionId }
+            .toSet()
+        val options = if (fixedSubscriptionIds.isNotEmpty()) {
+            connectionChainFixedOptions(settings, cachedConnectionChainSources(fixedSubscriptionIds))
+        } else {
+            emptyList()
+        }
+        fun value(hop: ConnectionChainHop): String = when (hop.mode) {
+            ConnectionChainHopMode.Off -> getString(R.string.connection_chain_not_set)
+            ConnectionChainHopMode.Automatic -> getString(R.string.option_automatic)
+            ConnectionChainHopMode.Fixed -> connectionChainFixedLabel(hop.profileRef, options)
+        }
+        fun render(row: DashboardDataRowView, @StringRes labelRes: Int, hop: ConnectionChainHop) {
+            val label = getString(labelRes)
+            val hopValue = value(hop)
+            row.setValue(hopValue)
+            row.contentDescription = getString(
+                R.string.connection_chain_home_content_description,
+                label,
+                hopValue,
+            )
+        }
+        render(connectionSelectorRow, R.string.connection_label, settings.base)
+        render(homeChainAfterSelectorRow, R.string.connection_chain_after, settings.after)
     }
 
     private fun showLocationSelector() {
@@ -5303,7 +6118,9 @@ class MainActivity : Activity() {
         DiagnosticLogger.info(
             this,
             "activity.amneziaNoise.saved",
-            "enabled=$enabled count=${settings.count} min=${settings.minSize} max=${settings.maxSize}",
+            "enabled=$enabled count=${settings.count} min=${settings.minSize} max=${settings.maxSize} " +
+                "ttl=${settings.fakeTtl ?: "default"} version=${settings.version ?: "default"} " +
+                "stack=${settings.ipStackMode ?: "default"}",
         )
         renderConnectionOptionsControls(settingsEnabled = true)
         if (previous.amneziaNoiseEnabled != enabled) reconnectForConnectionOptionChange()
@@ -5321,7 +6138,9 @@ class MainActivity : Activity() {
             DiagnosticLogger.info(
                 this,
                 "activity.amneziaNoise.applied",
-                "count=${settings.count} min=${settings.minSize} max=${settings.maxSize}",
+                "count=${settings.count} min=${settings.minSize} max=${settings.maxSize} " +
+                    "ttl=${settings.fakeTtl ?: "default"} version=${settings.version ?: "default"} " +
+                    "stack=${settings.ipStackMode ?: "default"}",
             )
             reconnectForConnectionOptionChange()
         }
@@ -5335,8 +6154,39 @@ class MainActivity : Activity() {
                 ?: throw IllegalArgumentException(getString(R.string.amnezia_noise_min_size_invalid)),
             maxSize = amneziaNoiseMaxSizeInput.text.toString().toIntOrNull()
                 ?: throw IllegalArgumentException(getString(R.string.amnezia_noise_max_size_invalid)),
+            fakeTtl = optionalAmneziaInt(amneziaNoiseTtlInput),
+            version = optionalAmneziaInt(amneziaNoiseVersionInput),
+            ipStackMode = optionalAmneziaText(amneziaNoiseIpStackInput),
+            congestionController = optionalAmneziaText(amneziaNoiseCongestionInput),
+            headerProtectionKey = amneziaNoiseHeaderProtectionKeyInput.text.toString(),
+            contentPaddingAddition = amneziaNoiseContentPaddingInput.text.toString(),
+            rekeyAfterTime = amneziaNoiseRekeyAfterInput.text.toString(),
+            rekeyTimeout = amneziaNoiseRekeyTimeoutInput.text.toString(),
+            rejectAfterTime = amneziaNoiseRejectAfterInput.text.toString(),
+            keepaliveTimeout = amneziaNoiseKeepaliveTimeoutInput.text.toString(),
+            maxHandshakeAttempts = amneziaNoiseMaxHandshakeAttemptsInput.text.toString(),
+            randomTrailers = optionalAmneziaBoolean(amneziaNoiseRandomTrailersInput),
+            disableCookies = optionalAmneziaBoolean(amneziaNoiseDisableCookiesInput),
         )
         return MihomoConnectionOptionsPolicy.validateNoise(settings)
+    }
+
+    private fun optionalAmneziaInt(input: EditText): Int? {
+        val value = input.text.toString().trim()
+        if (value.isEmpty()) return null
+        return value.toIntOrNull() ?: throw IllegalArgumentException(getString(R.string.amnezia_noise_invalid))
+    }
+
+    private fun optionalAmneziaText(input: EditText): String? =
+        input.text.toString().trim().takeIf(String::isNotEmpty)
+
+    private fun optionalAmneziaBoolean(input: EditText): Boolean? {
+        return when (input.text.toString().trim().lowercase()) {
+            "" -> null
+            "true", "on", "1" -> true
+            "false", "off", "0" -> false
+            else -> throw IllegalArgumentException(getString(R.string.amnezia_noise_invalid))
+        }
     }
 
     private fun showAmneziaNoiseError(message: String) {
@@ -5357,15 +6207,51 @@ class MainActivity : Activity() {
         amneziaNoiseCheckbox.isChecked = options.amneziaNoiseEnabled
         amneziaNoiseCheckbox.isEnabled = settingsEnabled
         val noiseFieldsEnabled = settingsEnabled && options.amneziaNoiseEnabled
-        listOf(amneziaNoiseCountInput, amneziaNoiseMinSizeInput, amneziaNoiseMaxSizeInput).forEach {
+        val noiseInputs = listOf(
+            amneziaNoiseCountInput,
+            amneziaNoiseMinSizeInput,
+            amneziaNoiseMaxSizeInput,
+            amneziaNoiseTtlInput,
+            amneziaNoiseVersionInput,
+            amneziaNoiseIpStackInput,
+            amneziaNoiseCongestionInput,
+            amneziaNoiseHeaderProtectionKeyInput,
+            amneziaNoiseContentPaddingInput,
+            amneziaNoiseRekeyAfterInput,
+            amneziaNoiseRekeyTimeoutInput,
+            amneziaNoiseRejectAfterInput,
+            amneziaNoiseKeepaliveTimeoutInput,
+            amneziaNoiseMaxHandshakeAttemptsInput,
+            amneziaNoiseRandomTrailersInput,
+            amneziaNoiseDisableCookiesInput,
+        )
+        noiseInputs.forEach {
             it.isEnabled = noiseFieldsEnabled
         }
         amneziaNoiseFields.alpha = if (noiseFieldsEnabled) 1f else 0.45f
         amneziaNoiseApplyButton.visibility = if (options.amneziaNoiseEnabled) View.VISIBLE else View.GONE
         amneziaNoiseApplyButton.isEnabled = noiseFieldsEnabled
-        if (!amneziaNoiseCountInput.hasFocus()) amneziaNoiseCountInput.setText(options.amneziaNoise.count.toString())
-        if (!amneziaNoiseMinSizeInput.hasFocus()) amneziaNoiseMinSizeInput.setText(options.amneziaNoise.minSize.toString())
-        if (!amneziaNoiseMaxSizeInput.hasFocus()) amneziaNoiseMaxSizeInput.setText(options.amneziaNoise.maxSize.toString())
+        fun renderInput(input: EditText, value: Any?) {
+            if (!input.hasFocus()) input.setText(value?.toString().orEmpty())
+        }
+        with(options.amneziaNoise) {
+            renderInput(amneziaNoiseCountInput, count)
+            renderInput(amneziaNoiseMinSizeInput, minSize)
+            renderInput(amneziaNoiseMaxSizeInput, maxSize)
+            renderInput(amneziaNoiseTtlInput, fakeTtl)
+            renderInput(amneziaNoiseVersionInput, version)
+            renderInput(amneziaNoiseIpStackInput, ipStackMode)
+            renderInput(amneziaNoiseCongestionInput, congestionController)
+            renderInput(amneziaNoiseHeaderProtectionKeyInput, headerProtectionKey)
+            renderInput(amneziaNoiseContentPaddingInput, contentPaddingAddition)
+            renderInput(amneziaNoiseRekeyAfterInput, rekeyAfterTime)
+            renderInput(amneziaNoiseRekeyTimeoutInput, rekeyTimeout)
+            renderInput(amneziaNoiseRejectAfterInput, rejectAfterTime)
+            renderInput(amneziaNoiseKeepaliveTimeoutInput, keepaliveTimeout)
+            renderInput(amneziaNoiseMaxHandshakeAttemptsInput, maxHandshakeAttempts)
+            renderInput(amneziaNoiseRandomTrailersInput, randomTrailers)
+            renderInput(amneziaNoiseDisableCookiesInput, disableCookies)
+        }
         if (noiseFieldsEnabled) amneziaNoiseErrorText.visibility = View.GONE
     }
 
@@ -5472,6 +6358,7 @@ class MainActivity : Activity() {
         }
         renderConnectionOptionsControls(settingsEnabled)
         renderLanSharingControls(settingsEnabled)
+        renderChainSettingsPage?.invoke()
         renderRoutingModeSelection()
         if (::routingModeRow.isInitialized) {
             routingModeRow.isEnabled = settingsEnabled
@@ -5621,10 +6508,12 @@ class MainActivity : Activity() {
         val settingsEnabled = state != VpnState.Starting && state != VpnState.Stopping
         locationSelectorRow.isEnabled = settingsEnabled
         connectionSelectorRow.isEnabled = settingsEnabled
+        homeChainAfterSelectorRow.isEnabled = settingsEnabled
         updateSplitTunnelControlsEnabled?.invoke(settingsEnabled)
         if (::tlsIntegrityCheckbox.isInitialized) tlsIntegrityCheckbox.isEnabled = settingsEnabled
         renderConnectionOptionsControls(settingsEnabled)
         renderLanSharingControls(settingsEnabled)
+        renderChainSettingsPage?.invoke()
         if (::routingModeRow.isInitialized) {
             routingModeRow.isEnabled = settingsEnabled
             routingModeRow.alpha = if (settingsEnabled) 1f else 0.45f
@@ -5871,6 +6760,9 @@ class MainActivity : Activity() {
         }
     }
 
+    @Suppress("DEPRECATION")
+    private fun View.announceAccessibility(message: String) = announceForAccessibility(message)
+
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun accentFor(tone: DashboardTone): Int = when (tone) {
@@ -5888,6 +6780,8 @@ class MainActivity : Activity() {
         const val KEYBOARD_SCROLL_DELAY_MS = 250L
         const val CONNECTION_TESTING_PAGE_ANIMATION_MS = 300L
         const val STATE_CONNECTION_TESTING_PAGE = "connection_testing_page"
+        const val STATE_CHAIN_PICKER_SLOT = "chain_picker_slot"
+        const val STATE_CHAIN_PICKER_SUBSCRIPTION = "chain_picker_subscription"
         const val HOME_MENU_THEME_ID = 100
         const val HOME_MENU_LANGUAGE_ID = 101
         const val HOME_MENU_SUBSCRIPTION_ID = 102

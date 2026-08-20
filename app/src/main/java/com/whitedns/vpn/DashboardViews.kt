@@ -481,7 +481,7 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         textDirection = View.TEXT_DIRECTION_FIRST_STRONG
     }
     private val chevronText = TextView(context).apply {
-        text = "‹"  // Left-pointing chevron for RTL-friendly design
+        text = context.getString(R.string.chevron_forward)
         textSize = 16f
         layoutDirection = View.LAYOUT_DIRECTION_LTR
         textDirection = View.TEXT_DIRECTION_LTR

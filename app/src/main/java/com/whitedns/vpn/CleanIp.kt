@@ -31,6 +31,19 @@ data class AmneziaNoiseSettings(
     val count: Int,
     val minSize: Int,
     val maxSize: Int,
+    val fakeTtl: Int? = null,
+    val version: Int? = null,
+    val ipStackMode: String? = null,
+    val congestionController: String? = null,
+    val headerProtectionKey: String = "",
+    val contentPaddingAddition: String = "",
+    val rekeyAfterTime: String = "",
+    val rekeyTimeout: String = "",
+    val rejectAfterTime: String = "",
+    val keepaliveTimeout: String = "",
+    val maxHandshakeAttempts: String = "",
+    val randomTrailers: Boolean? = null,
+    val disableCookies: Boolean? = null,
 )
 
 data class ConnectionProfile(

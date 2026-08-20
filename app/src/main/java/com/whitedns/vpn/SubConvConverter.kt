@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at https://mozilla.org/MPL/2.0/.
  *
- * Kotlin adaptation of the VLESS, VMess, Trojan, and Shadowsocks conversion
+ * Kotlin adaptation of the VLESS, VMess, Trojan, Hysteria2, and Shadowsocks conversion
  * flow from https://github.com/SubConv/SubConv.
  */
 package com.whitedns.vpn
@@ -39,7 +39,9 @@ internal object SubConvConverter {
                     "vless" -> parseVless(line, names)
                     "vmess" -> parseVmess(line, names)
                     "trojan" -> parseTrojan(line, names)
+                    "hysteria2", "hy2" -> parseHysteria2(line, names)
                     "ss" -> parseShadowsocks(line, names)
+                    "wireguard" -> parseWireGuard(line, names)
                     else -> null
                 }
             } catch (_: ParseError) {
@@ -227,6 +229,25 @@ internal object SubConvConverter {
             }
     }
 
+    private fun parseHysteria2(line: String, names: NameRegistry): JSONObject {
+        val uri = parseUri(line)
+        val endpoint = endpoint(uri)
+        if (endpoint.userInfo.isBlank()) throw ParseError()
+        val query = parseQuery(uri.rawQuery)
+        return JSONObject()
+            .put("name", names.register(name(uri)))
+            .put("type", "hysteria2")
+            .put("server", endpoint.host)
+            .put("port", endpoint.port)
+            .put("password", endpoint.userInfo)
+            .put("skip-cert-verify", false)
+            .apply {
+                listOf("obfs", "obfs-password", "sni").forEach { key ->
+                    query[key]?.takeIf(String::isNotBlank)?.let { put(key, it) }
+                }
+            }
+    }
+
     private fun parseShadowsocks(line: String, names: NameRegistry): JSONObject {
         val content = line.removePrefix("ss://")
         val fragmentSplit = content.split('#', limit = 2)
@@ -258,6 +279,108 @@ internal object SubConvConverter {
             proxy.put("udp-over-tcp", true)
         }
         return proxy
+    }
+
+    private fun parseWireGuard(line: String, names: NameRegistry): JSONObject {
+        val uri = parseUri(line)
+        val endpoint = endpoint(uri)
+        val query = parseQuery(uri.rawQuery)
+        val publicKey = (query["publickey"] ?: query["public-key"])
+            ?.takeIf(String::isNotBlank) ?: throw ParseError()
+        val addresses = splitCsv(query["address"].orEmpty()).orEmpty()
+            .map { it.substringBefore('/').trim() }
+        val ipv4 = addresses.firstOrNull { ':' !in it } ?: throw ParseError()
+        val ipv6 = addresses.firstOrNull { ':' in it }
+        if (endpoint.userInfo.isBlank()) throw ParseError()
+
+        return JSONObject()
+            .put("name", names.register(name(uri).ifBlank { "WireGuard" }))
+            .put("type", "wireguard")
+            .put("server", endpoint.host)
+            .put("port", endpoint.port)
+            .put("ip", ipv4)
+            .put("ip-version", if (ipv6 == null) "ipv4" else "ipv4-prefer")
+            .put("private-key", endpoint.userInfo)
+            .put("public-key", publicKey)
+            .put(
+                "allowed-ips",
+                JSONArray(splitCsv(query["allowed-ips"] ?: query["allowedips"].orEmpty())
+                    ?: listOf("0.0.0.0/0", "::/0")),
+            )
+            .put("udp", true)
+            .apply {
+                ipv6?.let { put("ipv6", it) }
+                splitCsv(query["reserved"].orEmpty())
+                    ?.mapNotNull(String::toIntOrNull)
+                    ?.takeIf { it.size == 3 && it.all { byte -> byte in 0..255 } }
+                    ?.let { put("reserved", JSONArray(it)) }
+                query["mtu"]?.toIntOrNull()?.takeIf { it > 0 }?.let { put("mtu", it) }
+                (query["keepalive"] ?: query["persistent-keepalive"])
+                    ?.toIntOrNull()?.takeIf { it > 0 }?.let { put("persistent-keepalive", it) }
+                (query["presharedkey"] ?: query["pre-shared-key"])
+                    ?.takeIf(String::isNotBlank)?.let { put("pre-shared-key", it) }
+                wireGuardAmneziaOptions(query)?.let { put("amnezia-wg-option", it) }
+                wireGuardDpiOptions(query)?.let { put("wireguard-dpi-option", it) }
+                wireGuardIpStackOptions(query)?.let { put("ip-stack", it) }
+            }
+    }
+
+    private fun wireGuardAmneziaOptions(query: Map<String, String>): JSONObject? = JSONObject().apply {
+        listOf("version", "jc", "jmin", "jmax").forEach { key ->
+            query[key]?.toIntOrNull()?.let { put(key, it) }
+        }
+        listOf(
+            "header-protection-key",
+            "content-padding-addition",
+            "rekey-after-time",
+            "rekey-timeout",
+            "reject-after-time",
+            "keepalive-timeout",
+            "max-handshake-attempts",
+        ).forEach { key ->
+            query[key]?.takeIf(String::isNotBlank)?.let { put(key, it) }
+        }
+        listOf("random-trailers", "disable-cookies").forEach { key ->
+            query[key]?.lowercase()?.let { value ->
+                if (value == "true" || value == "false") put(key, value.toBoolean())
+            }
+        }
+    }.takeIf { it.length() > 0 }
+
+    private fun wireGuardDpiOptions(query: Map<String, String>): JSONObject? {
+        val legacyNoiseEnabled = !query["wnoise"].equals("none", ignoreCase = true) &&
+            ("wnoisecount" in query || "wpayloadsize" in query)
+        val payloadRange = query["wpayloadsize"]?.let(::integerRange)
+        val explicitCount = query["fake-count"]?.toIntOrNull()?.takeIf { it in 1..20 }
+        val count = explicitCount
+            ?: query["wnoisecount"]?.let(::integerRange)?.first?.coerceAtMost(20)?.takeIf { it > 0 }
+        val minSize = query["fake-min-size"]?.toIntOrNull()?.takeIf { it in 1..1280 }
+            ?: payloadRange?.first?.takeIf { legacyNoiseEnabled && it in 1..1280 }
+        val maxSize = query["fake-max-size"]?.toIntOrNull()?.takeIf { it in 1..1280 }
+            ?: payloadRange?.second?.takeIf { legacyNoiseEnabled && it in 1..1280 }
+        val ttl = query["fake-ttl"]?.toIntOrNull()?.takeIf { it in 0..255 }
+            ?: 3.takeIf { legacyNoiseEnabled }
+        // ponytail: Mihomo has no noise header/delay fields; preserve its supported count/size/TTL subset.
+        return JSONObject().apply {
+            count?.takeIf { explicitCount != null || legacyNoiseEnabled }?.let { put("fake-count", it) }
+            minSize?.let { put("fake-min-size", it) }
+            maxSize?.takeIf { minSize == null || it >= minSize }?.let { put("fake-max-size", it) }
+            ttl?.let { put("fake-ttl", it) }
+        }.takeIf { it.length() > 0 }
+    }
+
+    private fun wireGuardIpStackOptions(query: Map<String, String>): JSONObject? = JSONObject().apply {
+        (query["ip-stack"] ?: query["ip-stack-mode"])
+            ?.takeIf(String::isNotBlank)?.let { put("mode", it) }
+        query["congestion-controller"]?.takeIf(String::isNotBlank)
+            ?.let { put("congestion-controller", it) }
+    }.takeIf { it.length() > 0 }
+
+    private fun integerRange(value: String): Pair<Int, Int>? {
+        val parts = value.split('-', limit = 2).map(String::trim)
+        val min = parts.firstOrNull()?.toIntOrNull() ?: return null
+        val max = parts.getOrNull(1)?.toIntOrNull() ?: min
+        return (min to max).takeIf { min <= max }
     }
 
     private fun applyPlugin(proxy: JSONObject, plugin: String) {
@@ -506,7 +629,7 @@ internal object SubConvConverter {
         value.split(',').map(String::trim).filter(String::isNotBlank).takeIf(List<String>::isNotEmpty)
 
     @OptIn(ExperimentalEncodingApi::class)
-    private fun decodeBase64Text(value: String): String? {
+    internal fun decodeBase64Text(value: String): String? {
         val compact = value.filterNot(Char::isWhitespace)
         val padded = compact + "=".repeat((4 - compact.length % 4) % 4)
         return runCatching { Base64.Default.decode(padded) }

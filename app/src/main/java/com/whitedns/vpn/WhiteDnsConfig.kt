@@ -107,6 +107,27 @@ class ConfigRepository(private val context: Context) {
         }.getOrNull()
     }
 
+    suspend fun readCachedMihomoConfigOrNull(subscriptionId: String): MihomoSubscriptionSnapshot? {
+        if (subscriptionId == subscriptionStore.readSelectedSubscriptionId()) {
+            return readCachedMihomoConfigOrNull()
+        }
+        return withContext(Dispatchers.IO) { readCachedMihomoConfigOrNullNow(subscriptionId) }
+    }
+
+    internal fun readCachedMihomoConfigOrNullNow(subscriptionId: String): MihomoSubscriptionSnapshot? {
+        if (subscriptionId != SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
+            return runCatching { userSubscriptionManager.cachedSnapshot(subscriptionId) }.getOrNull()
+        }
+        val yaml = readCachedYaml()
+        if (yaml.isBlank()) return null
+        val fetchedAt = subscriptionStore.readCatalog()?.fetchedAt
+            ?: cachedYamlFile().lastModified().takeIf { it > 0L }
+            ?: System.currentTimeMillis()
+        return runCatching { MihomoConfigParser.parse(yaml, fetchedAt) }
+            .getOrNull()
+            ?.takeIf { it.catalog.profiles.isNotEmpty() }
+    }
+
     suspend fun fetchOrCachedMihomoConfig(): MihomoSubscriptionSnapshot = withContext(Dispatchers.IO) {
         val selectedId = subscriptionStore.readSelectedSubscriptionId()
         if (selectedId != SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {

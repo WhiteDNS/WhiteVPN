@@ -8,7 +8,7 @@ import kotlin.math.abs
 /* Hallmark · macrostructure: Workbench · navigation: edge-aligned slide page · tone: technical, restrained */
 /* Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4 · contrast: pass (40–41) · nav: N9 · footer: none · slop: pass */
 internal class ConnectionTestingPage(context: Context) : FrameLayout(context) {
-    var onSwipeRight: (() -> Unit)? = null
+    var onSwipeBack: (() -> Unit)? = null
     private var downX = 0f
     private var downY = 0f
 
@@ -25,9 +25,16 @@ internal class ConnectionTestingPage(context: Context) : FrameLayout(context) {
                     distanceY = event.y - downY,
                     pageWidth = width.toFloat(),
                     density = resources.displayMetrics.density,
+                    isRtl = layoutDirection == LAYOUT_DIRECTION_RTL,
                 )
             ) {
-                post { onSwipeRight?.invoke() }
+                MotionEvent.obtain(event).also { cancel ->
+                    cancel.action = MotionEvent.ACTION_CANCEL
+                    super.dispatchTouchEvent(cancel)
+                    cancel.recycle()
+                }
+                post { onSwipeBack?.invoke() }
+                return true
             }
         }
         return super.dispatchTouchEvent(event)
@@ -35,7 +42,15 @@ internal class ConnectionTestingPage(context: Context) : FrameLayout(context) {
 }
 
 internal object ConnectionTestingSwipePolicy {
-    fun shouldClose(distanceX: Float, distanceY: Float, pageWidth: Float, density: Float): Boolean =
-        distanceX >= maxOf(72f * density, pageWidth * 0.18f) &&
-            distanceX >= abs(distanceY) * 1.25f
+    fun shouldClose(
+        distanceX: Float,
+        distanceY: Float,
+        pageWidth: Float,
+        density: Float,
+        isRtl: Boolean = false,
+    ): Boolean {
+        val backDistance = if (isRtl) -distanceX else distanceX
+        return backDistance >= maxOf(72f * density, pageWidth * 0.18f) &&
+            backDistance >= abs(distanceY) * 1.25f
+    }
 }

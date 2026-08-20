@@ -81,20 +81,68 @@ object MihomoConnectionOptionsPolicy {
     const val MAX_NOISE_COUNT = 20
     const val MIN_NOISE_SIZE = 1
     const val MAX_NOISE_SIZE = 1280
+    const val MIN_FAKE_TTL = 0
+    const val MAX_FAKE_TTL = 255
     val DEFAULT_NOISE = AmneziaNoiseSettings(count = 5, minSize = 50, maxSize = 100)
 
     fun validateNoise(settings: AmneziaNoiseSettings): AmneziaNoiseSettings {
-        require(settings.count in MIN_NOISE_COUNT..MAX_NOISE_COUNT) {
+        val normalized = settings.copy(
+            ipStackMode = settings.ipStackMode?.trim()?.lowercase()?.takeIf(String::isNotEmpty),
+            congestionController = settings.congestionController?.trim()?.lowercase()?.takeIf(String::isNotEmpty),
+            headerProtectionKey = settings.headerProtectionKey.trim(),
+            contentPaddingAddition = settings.contentPaddingAddition.trim(),
+            rekeyAfterTime = settings.rekeyAfterTime.trim(),
+            rekeyTimeout = settings.rekeyTimeout.trim(),
+            rejectAfterTime = settings.rejectAfterTime.trim(),
+            keepaliveTimeout = settings.keepaliveTimeout.trim(),
+            maxHandshakeAttempts = settings.maxHandshakeAttempts.trim(),
+        )
+        require(normalized.count in MIN_NOISE_COUNT..MAX_NOISE_COUNT) {
             "Count must be between $MIN_NOISE_COUNT and $MAX_NOISE_COUNT"
         }
-        require(settings.minSize in MIN_NOISE_SIZE..MAX_NOISE_SIZE) {
+        require(normalized.minSize in MIN_NOISE_SIZE..MAX_NOISE_SIZE) {
             "Minimum size must be between $MIN_NOISE_SIZE and $MAX_NOISE_SIZE"
         }
-        require(settings.maxSize in MIN_NOISE_SIZE..MAX_NOISE_SIZE) {
+        require(normalized.maxSize in MIN_NOISE_SIZE..MAX_NOISE_SIZE) {
             "Maximum size must be between $MIN_NOISE_SIZE and $MAX_NOISE_SIZE"
         }
-        require(settings.minSize <= settings.maxSize) { "Minimum size cannot exceed maximum size" }
-        return settings
+        require(normalized.minSize <= normalized.maxSize) { "Minimum size cannot exceed maximum size" }
+        normalized.fakeTtl?.let {
+            require(it in MIN_FAKE_TTL..MAX_FAKE_TTL) {
+                "Fake TTL must be between $MIN_FAKE_TTL and $MAX_FAKE_TTL"
+            }
+        }
+        normalized.version?.let { require(it == 0 || it == 3) { "Version must be 0 or 3" } }
+        normalized.ipStackMode?.let {
+            require(it in setOf("auto", "gvisor", "mips")) { "IP stack must be auto, gvisor, or mips" }
+        }
+        normalized.congestionController?.let {
+            require(it in setOf("cubic", "reno", "bbr", "bbr3")) {
+                "Congestion controller must be cubic, reno, bbr, or bbr3"
+            }
+        }
+        val v3Configured = listOf(
+            normalized.headerProtectionKey,
+            normalized.contentPaddingAddition,
+            normalized.rekeyAfterTime,
+            normalized.rekeyTimeout,
+            normalized.rejectAfterTime,
+            normalized.keepaliveTimeout,
+            normalized.maxHandshakeAttempts,
+        ).any(String::isNotEmpty) || normalized.randomTrailers != null || normalized.disableCookies != null
+        require(!v3Configured || normalized.version == 3) { "AmneziaWG v3 options require version 3" }
+        require(
+            listOf(
+                normalized.headerProtectionKey,
+                normalized.contentPaddingAddition,
+                normalized.rekeyAfterTime,
+                normalized.rekeyTimeout,
+                normalized.rejectAfterTime,
+                normalized.keepaliveTimeout,
+                normalized.maxHandshakeAttempts,
+            ).none { '\n' in it || '\r' in it },
+        ) { "AmneziaWG values must fit on one line" }
+        return normalized
     }
 
     fun isValidNoise(settings: AmneziaNoiseSettings): Boolean =
@@ -128,6 +176,21 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
             count = prefs.getInt(KEY_NOISE_COUNT, MihomoConnectionOptionsPolicy.DEFAULT_NOISE.count),
             minSize = prefs.getInt(KEY_NOISE_MIN_SIZE, MihomoConnectionOptionsPolicy.DEFAULT_NOISE.minSize),
             maxSize = prefs.getInt(KEY_NOISE_MAX_SIZE, MihomoConnectionOptionsPolicy.DEFAULT_NOISE.maxSize),
+            fakeTtl = prefs.getInt(KEY_FAKE_TTL, 0).takeIf { prefs.contains(KEY_FAKE_TTL) },
+            version = prefs.getInt(KEY_VERSION, 0).takeIf { prefs.contains(KEY_VERSION) },
+            ipStackMode = prefs.getString(KEY_IP_STACK_MODE, null),
+            congestionController = prefs.getString(KEY_CONGESTION_CONTROLLER, null),
+            headerProtectionKey = prefs.getString(KEY_HEADER_PROTECTION_KEY, "").orEmpty(),
+            contentPaddingAddition = prefs.getString(KEY_CONTENT_PADDING_ADDITION, "").orEmpty(),
+            rekeyAfterTime = prefs.getString(KEY_REKEY_AFTER_TIME, "").orEmpty(),
+            rekeyTimeout = prefs.getString(KEY_REKEY_TIMEOUT, "").orEmpty(),
+            rejectAfterTime = prefs.getString(KEY_REJECT_AFTER_TIME, "").orEmpty(),
+            keepaliveTimeout = prefs.getString(KEY_KEEPALIVE_TIMEOUT, "").orEmpty(),
+            maxHandshakeAttempts = prefs.getString(KEY_MAX_HANDSHAKE_ATTEMPTS, "").orEmpty(),
+            randomTrailers = prefs.getBoolean(KEY_RANDOM_TRAILERS, false)
+                .takeIf { prefs.contains(KEY_RANDOM_TRAILERS) },
+            disableCookies = prefs.getBoolean(KEY_DISABLE_COOKIES, false)
+                .takeIf { prefs.contains(KEY_DISABLE_COOKIES) },
         ).takeIf(MihomoConnectionOptionsPolicy::isValidNoise) ?: MihomoConnectionOptionsPolicy.DEFAULT_NOISE
         return MihomoConnectionOptions(
             amneziaNoiseEnabled = prefs.getBoolean(KEY_AMNEZIA_NOISE_ENABLED, false),
@@ -137,12 +200,37 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
 
     fun saveAmneziaNoise(enabled: Boolean, settings: AmneziaNoiseSettings) {
         val valid = MihomoConnectionOptionsPolicy.validateNoise(settings)
-        prefs.edit()
+        val editor = prefs.edit()
             .putBoolean(KEY_AMNEZIA_NOISE_ENABLED, enabled)
             .putInt(KEY_NOISE_COUNT, valid.count)
             .putInt(KEY_NOISE_MIN_SIZE, valid.minSize)
             .putInt(KEY_NOISE_MAX_SIZE, valid.maxSize)
-            .apply()
+        if (valid.fakeTtl == null) editor.remove(KEY_FAKE_TTL) else editor.putInt(KEY_FAKE_TTL, valid.fakeTtl)
+        if (valid.version == null) editor.remove(KEY_VERSION) else editor.putInt(KEY_VERSION, valid.version)
+        if (valid.ipStackMode == null) editor.remove(KEY_IP_STACK_MODE) else editor.putString(KEY_IP_STACK_MODE, valid.ipStackMode)
+        if (valid.congestionController == null) {
+            editor.remove(KEY_CONGESTION_CONTROLLER)
+        } else {
+            editor.putString(KEY_CONGESTION_CONTROLLER, valid.congestionController)
+        }
+        editor.putString(KEY_HEADER_PROTECTION_KEY, valid.headerProtectionKey)
+            .putString(KEY_CONTENT_PADDING_ADDITION, valid.contentPaddingAddition)
+            .putString(KEY_REKEY_AFTER_TIME, valid.rekeyAfterTime)
+            .putString(KEY_REKEY_TIMEOUT, valid.rekeyTimeout)
+            .putString(KEY_REJECT_AFTER_TIME, valid.rejectAfterTime)
+            .putString(KEY_KEEPALIVE_TIMEOUT, valid.keepaliveTimeout)
+            .putString(KEY_MAX_HANDSHAKE_ATTEMPTS, valid.maxHandshakeAttempts)
+        if (valid.randomTrailers == null) {
+            editor.remove(KEY_RANDOM_TRAILERS)
+        } else {
+            editor.putBoolean(KEY_RANDOM_TRAILERS, valid.randomTrailers)
+        }
+        if (valid.disableCookies == null) {
+            editor.remove(KEY_DISABLE_COOKIES)
+        } else {
+            editor.putBoolean(KEY_DISABLE_COOKIES, valid.disableCookies)
+        }
+        editor.apply()
     }
 
     private companion object {
@@ -150,6 +238,19 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
         const val KEY_NOISE_COUNT = "noise_count"
         const val KEY_NOISE_MIN_SIZE = "noise_min_size"
         const val KEY_NOISE_MAX_SIZE = "noise_max_size"
+        const val KEY_FAKE_TTL = "noise_fake_ttl"
+        const val KEY_VERSION = "amnezia_version"
+        const val KEY_IP_STACK_MODE = "wireguard_ip_stack_mode"
+        const val KEY_CONGESTION_CONTROLLER = "wireguard_congestion_controller"
+        const val KEY_HEADER_PROTECTION_KEY = "amnezia_header_protection_key"
+        const val KEY_CONTENT_PADDING_ADDITION = "amnezia_content_padding_addition"
+        const val KEY_REKEY_AFTER_TIME = "amnezia_rekey_after_time"
+        const val KEY_REKEY_TIMEOUT = "amnezia_rekey_timeout"
+        const val KEY_REJECT_AFTER_TIME = "amnezia_reject_after_time"
+        const val KEY_KEEPALIVE_TIMEOUT = "amnezia_keepalive_timeout"
+        const val KEY_MAX_HANDSHAKE_ATTEMPTS = "amnezia_max_handshake_attempts"
+        const val KEY_RANDOM_TRAILERS = "amnezia_random_trailers"
+        const val KEY_DISABLE_COOKIES = "amnezia_disable_cookies"
     }
 }
 
@@ -898,15 +999,48 @@ object MihomoConnectionOptionsPatcher {
         var patched = lines
         if (options.amneziaNoiseEnabled && type.equals("wireguard", true)) {
             val noise = options.amneziaNoise
+            val amneziaFields = linkedMapOf(
+                "jc" to noise.count.toString(),
+                "jmin" to noise.minSize.toString(),
+                "jmax" to noise.maxSize.toString(),
+            )
+            noise.version?.let { amneziaFields["version"] = it.toString() }
+            listOf(
+                "header-protection-key" to noise.headerProtectionKey,
+                "content-padding-addition" to noise.contentPaddingAddition,
+                "rekey-after-time" to noise.rekeyAfterTime,
+                "rekey-timeout" to noise.rekeyTimeout,
+                "reject-after-time" to noise.rejectAfterTime,
+                "keepalive-timeout" to noise.keepaliveTimeout,
+                "max-handshake-attempts" to noise.maxHandshakeAttempts,
+            ).forEach { (field, value) ->
+                if (value.isNotBlank()) amneziaFields[field] = yamlSingleQuoted(value)
+            }
+            noise.randomTrailers?.let { amneziaFields["random-trailers"] = it.toString() }
+            noise.disableCookies?.let { amneziaFields["disable-cookies"] = it.toString() }
             patched = upsertNestedOptions(
                 patched,
                 "amnezia-wg-option",
-                linkedMapOf(
-                    "jc" to noise.count.toString(),
-                    "jmin" to noise.minSize.toString(),
-                    "jmax" to noise.maxSize.toString(),
-                ),
+                amneziaFields,
             )
+            noise.fakeTtl?.let { ttl ->
+                patched = upsertNestedOptions(
+                    patched,
+                    "wireguard-dpi-option",
+                    linkedMapOf(
+                        "fake-count" to noise.count.toString(),
+                        "fake-min-size" to noise.minSize.toString(),
+                        "fake-max-size" to noise.maxSize.toString(),
+                        "fake-ttl" to ttl.toString(),
+                    ),
+                )
+            }
+            val ipStackFields = linkedMapOf<String, String>()
+            noise.ipStackMode?.let { ipStackFields["mode"] = it }
+            noise.congestionController?.let { ipStackFields["congestion-controller"] = it }
+            if (ipStackFields.isNotEmpty()) {
+                patched = upsertNestedOptions(patched, "ip-stack", ipStackFields)
+            }
         }
         return patched
     }
@@ -992,6 +1126,8 @@ object MihomoConnectionOptionsPatcher {
 
     private fun yamlScalar(value: String): String =
         value.substringBefore(" #").trim().removeSurrounding("\"").removeSurrounding("'")
+
+    private fun yamlSingleQuoted(value: String): String = "'${value.replace("'", "''")}'"
 
     private fun topLevelKey(line: String): String? {
         if (line.isBlank() || line.first().isWhitespace() || line.trimStart().startsWith("#")) return null
