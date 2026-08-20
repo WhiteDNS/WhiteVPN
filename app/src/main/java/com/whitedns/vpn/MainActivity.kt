@@ -312,9 +312,15 @@ class MainActivity : Activity() {
     }
 
     private fun buildAppShell(): View {
+        val (tvInsetX, tvInsetY) = televisionSafeInsets(
+            resources.configuration.uiMode,
+            resources.displayMetrics.widthPixels,
+            resources.displayMetrics.heightPixels,
+        )
         val root = FrameLayout(this).apply {
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             setBackgroundColor(BACKGROUND)
+            setPadding(tvInsetX, tvInsetY, tvInsetX, tvInsetY)
         }
 
         val shell = LinearLayout(this).apply {

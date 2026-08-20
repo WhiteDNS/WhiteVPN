@@ -10,6 +10,7 @@ import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RadialGradient
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.SweepGradient
@@ -64,6 +65,11 @@ class ConnectionOrbView(context: Context) : View(context) {
         strokeWidth = dp(2f)
         strokeCap = Paint.Cap.ROUND
     }
+    private val focusPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(4f)
+        color = palette.teal
+    }
 
     private val orbPath = Path()
     private val clipPath = Path()
@@ -72,7 +78,8 @@ class ConnectionOrbView(context: Context) : View(context) {
     // State
     private var state: VpnState = VpnState.Stopped
     private var transitionProgress = 1f
-    private var isPressed = false
+    private var orbPressed = false
+    private val isTelevision = isTelevisionUiMode(resources.configuration.uiMode)
 
     // Animation phases (0-1, smooth looping)
     private var blobPhase = 0f           // 9s - gentle blob morphing
@@ -206,29 +213,34 @@ class ConnectionOrbView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
-                isPressed = true
-                animatePress(0.94f)
-                animateShade(1f)
-                postDelayed({ if (isPressed) emitDustBurst() }, 80)
+                setOrbPressed(true)
+                postDelayed({ if (orbPressed) emitDustBurst() }, 80)
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (isPressed) {
-                    isPressed = false
-                    animatePressRelease()
-                    animateShade(0f)
+                if (orbPressed) {
+                    setOrbPressed(false)
                     performClick()
                 }
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
-                isPressed = false
-                animatePressRelease()
-                animateShade(0f)
+                setOrbPressed(false)
                 return true
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    override fun setPressed(pressed: Boolean) {
+        val changed = pressed != isPressed
+        super.setPressed(pressed)
+        if (isTelevision && changed) setOrbPressed(pressed)
+    }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        if (isTelevision) invalidate()
     }
 
     override fun performClick(): Boolean {
@@ -278,7 +290,7 @@ class ConnectionOrbView(context: Context) : View(context) {
 
         canvas.save()
         canvas.scale(pressScale, pressScale, cx, cy)
-        if (isPressed) {
+        if (orbPressed) {
             canvas.translate(0f, dp(3f) * (1f - pressScale) / 0.06f)
         }
 
@@ -309,6 +321,22 @@ class ConnectionOrbView(context: Context) : View(context) {
         drawLabel(canvas, cx, cy + dp(36f))
 
         canvas.restore()
+
+        if (isTelevision && isFocused) {
+            canvas.drawCircle(cx, cy, orbRadius + dp(10f), focusPaint)
+        }
+    }
+
+    private fun setOrbPressed(pressed: Boolean) {
+        if (orbPressed == pressed) return
+        orbPressed = pressed
+        if (pressed) {
+            animatePress(0.94f)
+            animateShade(1f)
+        } else {
+            animatePressRelease()
+            animateShade(0f)
+        }
     }
 
     /**
