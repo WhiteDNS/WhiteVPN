@@ -211,31 +211,15 @@ class ConnectionOrbView(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                setOrbPressed(true)
-                postDelayed({ if (orbPressed) emitDustBurst() }, 80)
-                return true
-            }
-            MotionEvent.ACTION_UP -> {
-                if (orbPressed) {
-                    setOrbPressed(false)
-                    performClick()
-                }
-                return true
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                setOrbPressed(false)
-                return true
-            }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            postDelayed({ if (isPressed) emitDustBurst() }, 80)
         }
         return super.onTouchEvent(event)
     }
 
     override fun setPressed(pressed: Boolean) {
-        val changed = pressed != isPressed
         super.setPressed(pressed)
-        if (isTelevision && changed) setOrbPressed(pressed)
+        setOrbPressed(pressed)
     }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {

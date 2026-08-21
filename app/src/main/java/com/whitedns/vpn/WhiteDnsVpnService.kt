@@ -193,6 +193,7 @@ class WhiteDnsVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        DiagnosticLogger.beginCapture(this)
         configRepository = ConfigRepository(this)
         subscriptionStore = SubscriptionStore(this)
         scanStateStore = WhiteDnsScanStateStore(this)
@@ -319,9 +320,9 @@ class WhiteDnsVpnService : VpnService() {
             return
         }
         lastPostConnectRecoveryElapsedMs = 0L
+        startForeground(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_starting)))
         DiagnosticLogger.info(this, "connect.start")
         publishState(VpnState.Starting)
-        startForeground(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_starting)))
         launchConnectionStartup("connect")
     }
 
@@ -3417,7 +3418,8 @@ class WhiteDnsVpnService : VpnService() {
             lockdown = lockdownActive,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            WhiteDnsTileService.requestTileRefresh(this)
+            runCatching { WhiteDnsTileService.requestTileRefresh(this) }
+                .onFailure { DiagnosticLogger.warn(this, "tile.refresh.failed", error = it) }
         }
         DiagnosticLogger.info(this, "state.publish", "state=${newState.wireName} debugFrontingIp=${debugFrontingIp}")
         val intent = Intent(Actions.STATE_CHANGED)

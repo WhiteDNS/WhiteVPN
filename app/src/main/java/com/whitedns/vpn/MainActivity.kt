@@ -282,7 +282,13 @@ class MainActivity : Activity() {
         connectionChainPreferenceStore = ConnectionChainPreferenceStore(this)
         installedAppRepository = InstalledAppRepository(this)
         userSubscriptionManager = UserSubscriptionManager(this)
-        DiagnosticLogger.info(this, "activity.onCreate")
+        connectFlowPending = savedInstanceState?.getBoolean(STATE_CONNECT_FLOW_PENDING) == true
+        connectFlowAction = savedInstanceState?.getString(STATE_CONNECT_FLOW_ACTION) ?: Actions.CONNECT
+        DiagnosticLogger.info(
+            this,
+            "activity.onCreate",
+            "restored=${savedInstanceState != null} connectPending=$connectFlowPending action=$connectFlowAction",
+        )
         configureSystemBars()
         setContentView(buildAppShell())
         renderState(VpnState.Stopped)
@@ -1169,6 +1175,8 @@ class MainActivity : Activity() {
         outState.putBoolean(STATE_CONNECTION_TESTING_PAGE, connectionTestingPageVisible)
         outState.putString(STATE_CHAIN_PICKER_SLOT, activeChainPickerSlot?.wireName)
         outState.putString(STATE_CHAIN_PICKER_SUBSCRIPTION, activeChainPickerSubscriptionId)
+        outState.putBoolean(STATE_CONNECT_FLOW_PENDING, connectFlowPending)
+        outState.putString(STATE_CONNECT_FLOW_ACTION, connectFlowAction)
         super.onSaveInstanceState(outState)
     }
 
@@ -3669,7 +3677,18 @@ class MainActivity : Activity() {
     }
 
     private fun handleButtonClick() {
-        val nextAction = buttonModel.nextAction() ?: return
+        DiagnosticLogger.beginCapture(this)
+        val nextAction = buttonModel.nextAction()
+        if (nextAction == null) {
+            DiagnosticLogger.info(
+                this,
+                "button.click.ignored",
+                "currentState=${buttonModel.state.wireName} " +
+                    "storedState=${VpnRuntimeStateStore.read(this).wireName} " +
+                    "alwaysOn=$alwaysOnMode lockdown=$lockdownMode",
+            )
+            return
+        }
         DiagnosticLogger.info(
             this,
             "button.click",
@@ -6468,7 +6487,9 @@ class MainActivity : Activity() {
         val presentation = DashboardStatePresenter.forState(state)
         val accent = accentFor(presentation.tone)
         connectionOrb.setVpnState(state)
-        connectionOrb.isEnabled = buttonModel.isEnabled()
+        // Keep long-press diagnostics available even when the connection action is unavailable.
+        connectionOrb.isEnabled = true
+        connectionOrb.isClickable = buttonModel.isEnabled()
         connectionOrb.contentDescription = getString(buttonModel.labelRes())
         // Update status dot color based on state
         (statusDot.background as? GradientDrawable)?.setColor(
@@ -6631,8 +6652,10 @@ class MainActivity : Activity() {
         val clipboard = getSystemService(ClipboardManager::class.java)
         val clip = ClipData.newPlainText("WhiteVPN diagnostics", diagnostics).apply {
             // Keeps the clipboard preview toast from rendering the log on screen (Android 13+).
-            description.extras = PersistableBundle().apply {
-                putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                description.extras = PersistableBundle().apply {
+                    putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+                }
             }
         }
         clipboard.setPrimaryClip(clip)
@@ -6782,6 +6805,8 @@ class MainActivity : Activity() {
         const val STATE_CONNECTION_TESTING_PAGE = "connection_testing_page"
         const val STATE_CHAIN_PICKER_SLOT = "chain_picker_slot"
         const val STATE_CHAIN_PICKER_SUBSCRIPTION = "chain_picker_subscription"
+        const val STATE_CONNECT_FLOW_PENDING = "connect_flow_pending"
+        const val STATE_CONNECT_FLOW_ACTION = "connect_flow_action"
         const val HOME_MENU_THEME_ID = 100
         const val HOME_MENU_LANGUAGE_ID = 101
         const val HOME_MENU_SUBSCRIPTION_ID = 102
