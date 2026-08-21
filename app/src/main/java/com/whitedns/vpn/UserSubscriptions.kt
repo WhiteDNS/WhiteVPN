@@ -257,6 +257,9 @@ object JsonSubscriptionImporter {
         }
 
         when (stream.optString("network")) {
+            "tcp" -> xrayTcpHttpOptions(stream.optJSONObject("tcpSettings"))?.let { options ->
+                proxy.put("network", "http").put("http-opts", options)
+            }
             "ws" -> {
                 val ws = stream.optJSONObject("wsSettings") ?: JSONObject()
                 val options = JSONObject().put("path", ws.optString("path"))
@@ -274,6 +277,28 @@ object JsonSubscriptionImporter {
             }
         }
         return proxy.takeIf(::isSupportedMihomoProxy)
+    }
+
+    private fun xrayTcpHttpOptions(tcpSettings: JSONObject?): JSONObject? {
+        val header = tcpSettings?.optJSONObject("header") ?: return null
+        if (!header.optString("type").equals("http", ignoreCase = true)) return null
+        val request = header.optJSONObject("request") ?: JSONObject()
+        val paths = request.optJSONArray("path")?.takeIf { it.length() > 0 }
+            ?: JSONArray().put("/")
+        val headers = JSONObject().apply {
+            request.optJSONObject("headers")?.let { source ->
+                source.keys().forEach { key ->
+                    when (val value = source.opt(key)) {
+                        is JSONArray -> if (value.length() > 0) put(key, value)
+                        is String -> if (value.isNotBlank()) put(key, JSONArray().put(value))
+                    }
+                }
+            }
+        }
+        return JSONObject()
+            .apply { request.optString("method").takeIf(String::isNotBlank)?.let { put("method", it) } }
+            .put("path", paths)
+            .apply { if (headers.length() > 0) put("headers", headers) }
     }
 
     private fun isSupportedMihomoProxy(proxy: JSONObject): Boolean =
