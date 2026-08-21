@@ -340,6 +340,49 @@ class UserSubscriptionImporterTest {
     }
 
     @Test
+    fun importerPreservesXrayTcpHttpHeaderCamouflage() {
+        val imported = UserSubscriptionImporter.import(
+            """
+            [{
+              "remarks": "Xray TCP HTTP",
+              "outbounds": [{
+                "protocol": "vless",
+                "settings": {"vnext": [{
+                  "address": "vless.example.com",
+                  "port": 443,
+                  "users": [{"id": "00000000-0000-0000-0000-000000000001", "encryption": "none"}]
+                }]},
+                "streamSettings": {
+                  "network": "tcp",
+                  "tcpSettings": {"header": {
+                    "type": "http",
+                    "request": {
+                      "method": "POST",
+                      "path": ["/edge", "/backup"],
+                      "headers": {
+                        "Host": ["cdn.example.com"],
+                        "Connection": "keep-alive",
+                        "User-Agent": []
+                      }
+                    }
+                  }}
+                }
+              }]
+            }]
+            """.trimIndent(),
+            nowMs = 123L,
+        )
+
+        assertEquals(1, imported.connectionCount)
+        assertTrue(imported.yaml.contains("network: 'http'"))
+        assertTrue(imported.yaml.contains("'method': 'POST'"))
+        assertTrue(imported.yaml.contains("'path': ['/edge', '/backup']"))
+        assertTrue(imported.yaml.contains("'Host': ['cdn.example.com']"))
+        assertTrue(imported.yaml.contains("'Connection': ['keep-alive']"))
+        assertFalse(imported.yaml.contains("'User-Agent'"))
+    }
+
+    @Test
     fun importerNormalizesXrayWireGuardAndChains() {
         val imported = UserSubscriptionImporter.import(
             """
