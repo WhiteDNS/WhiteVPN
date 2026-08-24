@@ -62,7 +62,7 @@
     <string name="subscription_action_delete">Delete</string>
     <string name="subscription_name_hint">Subscription name</string>
     <string name="subscription_source_hint">URL, YAML, JSON, or proxy links</string>
-    <string name="subscription_source_helper">Supports Clash/Xray JSON and vless, vmess, trojan, ss</string>
+    <string name="subscription_source_helper">Supported: subscription URLs, Mihomo YAML, Clash/Xray JSON, and VLESS, VMess, Trojan, Hysteria2/Hy2, Shadowsocks (SS), WireGuard, or SOCKS/SOCKS5 link lists (plain or Base64).</string>
     <string name="subscription_add_title">Add subscription</string>
     <string name="subscription_edit_title">Edit subscription</string>
     <string name="subscription_fields_required">Name and subscription are required.</string>
@@ -148,6 +148,7 @@
     <string name="connection_switch_unavailable">Connection is not available.</string>
     <string name="connection_switch_failed">Could not switch connection.</string>
     <string name="connection_switching">Switching connection…</string>
+    <string name="connection_quick_fastest_reconnecting">Finding a faster connection — uses up to 3 MB of test data.</string>
     <string name="split_tunnel_label">Split tunneling</string>
     <string name="value_inactive">Inactive</string>
     <string name="action_reconnect">Reconnect</string>
@@ -170,6 +171,10 @@
     <string name="settings_category_system">System protection</string>
     <string name="settings_category_system_detail">Always-on VPN and the Android kill switch.</string>
     <string name="settings_category_back">Back to settings</string>
+    <string name="settings_reset">Reset settings</string>
+    <string name="settings_reset_message">All app settings will return to their original defaults. Your subscriptions and saved test results will be kept. Android Always-on VPN and the kill switch will not change. If connected, the current connection will keep running; the defaults apply next time.</string>
+    <string name="settings_reset_confirm">Reset</string>
+    <string name="settings_reset_done">Settings reset.</string>
     <string name="config_test_section">Config Test</string>
     <string name="config_test_timeout_title">Delay timeout</string>
     <string name="config_test_timeout_detail">Maximum time for each connection; applies to the next test.</string>

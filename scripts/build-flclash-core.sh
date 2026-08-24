@@ -2,24 +2,22 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FLCLASH_DIR="${FLCLASH_DIR:-${ROOT_DIR}/FlClash}"
-CORE_DIR="${FLCLASH_DIR}/core"
-SUBMODULE_DIR="${CORE_DIR}/Clash.Meta"
+SOURCE_FLCLASH_DIR="${FLCLASH_DIR:-${ROOT_DIR}/FlClash}"
 FLCLASH_REPOSITORY="https://github.com/chen08209/FlClash.git"
 FLCLASH_COMMIT="ac2f6b919ec1ad395b61b4bb1e714a39c750babe"
-FLCLASH_PATCH="${ROOT_DIR}/scripts/patches/flclash-v1.19.30.patch"
-MIHOMO_PATCH="${ROOT_DIR}/scripts/patches/mihomo-v1.19.30-flclash.patch"
+MIHOMO_COMMIT="7bdcd60da9db10b681d7507af96d4fad797f3774"
+MIHOMO_VERSION="v1.19.25-1-g7bdcd60"
 OUT_JNI_DIR="${ROOT_DIR}/app/src/main/jniLibs"
 OUT_INCLUDE_DIR="${ROOT_DIR}/app/src/main/cpp/includes"
 VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
-MIHOMO_TAG="v1.19.30"
+CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}"
 API_LEVEL="${ANDROID_API_LEVEL:-26}"
 ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
 
 outputs_exist() {
   local abi
   [[ -f "${VERSION_FILE}" ]] || return 1
-  [[ "$(<"${VERSION_FILE}")" == "${MIHOMO_TAG}" ]] || return 1
+  [[ "$(<"${VERSION_FILE}")" == "${CORE_BUILD_ID}" ]] || return 1
   for abi in "${ABIS[@]}"; do
     [[ -f "${OUT_JNI_DIR}/${abi}/libclash.so" ]] || return 1
     [[ -f "${OUT_INCLUDE_DIR}/${abi}/libclash.h" ]] || return 1
@@ -32,56 +30,50 @@ if [[ "${FORCE_FLCLASH_CORE_BUILD:-0}" != "1" ]] && outputs_exist; then
   exit 0
 fi
 
-if [[ ! -d "${FLCLASH_DIR}/.git" ]]; then
-  if [[ -e "${FLCLASH_DIR}" && -n "$(find "${FLCLASH_DIR}" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
-    echo "FlClash path exists but is not a git checkout: ${FLCLASH_DIR}" >&2
+if [[ ! -d "${SOURCE_FLCLASH_DIR}/.git" ]]; then
+  if [[ -e "${SOURCE_FLCLASH_DIR}" && -n "$(find "${SOURCE_FLCLASH_DIR}" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
+    echo "FlClash path exists but is not a git checkout: ${SOURCE_FLCLASH_DIR}" >&2
     exit 1
   fi
-  mkdir -p "${FLCLASH_DIR}"
-  git -C "${FLCLASH_DIR}" init
-  git -C "${FLCLASH_DIR}" remote add origin "${FLCLASH_REPOSITORY}"
-  git -C "${FLCLASH_DIR}" fetch --depth 1 origin "${FLCLASH_COMMIT}"
-  git -C "${FLCLASH_DIR}" checkout --detach "${FLCLASH_COMMIT}"
+  mkdir -p "${SOURCE_FLCLASH_DIR}"
+  git -C "${SOURCE_FLCLASH_DIR}" init
+  git -C "${SOURCE_FLCLASH_DIR}" remote add origin "${FLCLASH_REPOSITORY}"
+  git -C "${SOURCE_FLCLASH_DIR}" fetch --depth 1 origin "${FLCLASH_COMMIT}"
+  git -C "${SOURCE_FLCLASH_DIR}" checkout --detach "${FLCLASH_COMMIT}"
 fi
 
-if [[ "$(git -C "${FLCLASH_DIR}" rev-parse HEAD)" != "${FLCLASH_COMMIT}" ]]; then
-  echo "FlClash checkout must be pinned to ${FLCLASH_COMMIT}: ${FLCLASH_DIR}" >&2
+if [[ "$(git -C "${SOURCE_FLCLASH_DIR}" rev-parse HEAD)" != "${FLCLASH_COMMIT}" ]]; then
+  echo "FlClash checkout must be pinned to ${FLCLASH_COMMIT}: ${SOURCE_FLCLASH_DIR}" >&2
   exit 1
 fi
 
-if git -C "${FLCLASH_DIR}" apply --unidiff-zero --reverse --check "${FLCLASH_PATCH}" 2>/dev/null; then
-  :
-elif git -C "${FLCLASH_DIR}" apply --unidiff-zero --check "${FLCLASH_PATCH}"; then
-  git -C "${FLCLASH_DIR}" apply --unidiff-zero "${FLCLASH_PATCH}"
+if [[ -n "$(git -C "${SOURCE_FLCLASH_DIR}" status --porcelain --ignore-submodules=none)" ]]; then
+  echo "FlClash checkout must be clean; the build uses its exact pinned source: ${SOURCE_FLCLASH_DIR}" >&2
+  exit 1
+fi
+
+BUILD_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${BUILD_TMP_DIR}"' EXIT
+FLCLASH_DIR="${BUILD_TMP_DIR}/FlClash"
+CORE_DIR="${FLCLASH_DIR}/core"
+SUBMODULE_DIR="${CORE_DIR}/Clash.Meta"
+SOURCE_SUBMODULE_DIR="${SOURCE_FLCLASH_DIR}/core/Clash.Meta"
+
+git clone --no-hardlinks --no-checkout "${SOURCE_FLCLASH_DIR}" "${FLCLASH_DIR}"
+git -C "${FLCLASH_DIR}" checkout --detach "${FLCLASH_COMMIT}"
+
+rm -rf "${SUBMODULE_DIR}"
+if git -C "${SOURCE_SUBMODULE_DIR}" rev-parse --git-dir >/dev/null 2>&1 &&
+  git -C "${SOURCE_SUBMODULE_DIR}" cat-file -e "${MIHOMO_COMMIT}^{commit}" 2>/dev/null; then
+  git clone --no-hardlinks --no-checkout "${SOURCE_SUBMODULE_DIR}" "${SUBMODULE_DIR}"
+  git -C "${SUBMODULE_DIR}" checkout --detach "${MIHOMO_COMMIT}"
 else
-  echo "Unable to apply the pinned FlClash compatibility patch: ${FLCLASH_PATCH}" >&2
-  exit 1
+  echo "Fetching FlClash's pinned Mihomo commit..."
+  git -C "${FLCLASH_DIR}" submodule update --init --depth 1 core/Clash.Meta
 fi
 
-if [[ ! -f "${SUBMODULE_DIR}/go.mod" ]]; then
-  if [[ -e "${SUBMODULE_DIR}" && -n "$(find "${SUBMODULE_DIR}" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
-    echo "FlClash Clash.Meta submodule is present but incomplete: ${SUBMODULE_DIR}" >&2
-    exit 1
-  fi
-  echo "Fetching Mihomo ${MIHOMO_TAG} with FlClash compatibility..."
-  rm -rf "${SUBMODULE_DIR}"
-  git clone --depth 1 --branch "${MIHOMO_TAG}" \
-    https://github.com/MetaCubeX/mihomo.git \
-    "${SUBMODULE_DIR}"
-fi
-
-if ! git -C "${SUBMODULE_DIR}" rev-parse --verify "${MIHOMO_TAG}^{commit}" >/dev/null 2>&1 ||
-  ! git -C "${SUBMODULE_DIR}" merge-base --is-ancestor "${MIHOMO_TAG}" HEAD; then
-  echo "FlClash Mihomo source is not based on ${MIHOMO_TAG}: ${SUBMODULE_DIR}" >&2
-  exit 1
-fi
-
-if git -C "${SUBMODULE_DIR}" apply --reverse --check "${MIHOMO_PATCH}" 2>/dev/null; then
-  :
-elif git -C "${SUBMODULE_DIR}" apply --check "${MIHOMO_PATCH}"; then
-  git -C "${SUBMODULE_DIR}" apply "${MIHOMO_PATCH}"
-else
-  echo "Unable to apply the pinned Mihomo FlClash patch: ${MIHOMO_PATCH}" >&2
+if [[ "$(git -C "${SUBMODULE_DIR}" rev-parse HEAD)" != "${MIHOMO_COMMIT}" ]]; then
+  echo "FlClash Mihomo checkout must be pinned to ${MIHOMO_COMMIT}: ${SUBMODULE_DIR}" >&2
   exit 1
 fi
 
@@ -133,11 +125,6 @@ if [[ -z "${TOOLCHAIN_BIN}" || ! -d "${TOOLCHAIN_BIN}" ]]; then
   exit 1
 fi
 
-(cd "${CORE_DIR}" && go mod tidy)
-
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
-
 build_abi() {
   local abi="$1"
   local goarch=""
@@ -174,7 +161,7 @@ build_abi() {
     return 1
   fi
 
-  local tmp_out="${TMP_DIR}/${abi}"
+  local tmp_out="${BUILD_TMP_DIR}/outputs/${abi}"
   local jni_out="${OUT_JNI_DIR}/${abi}"
   local include_out="${OUT_INCLUDE_DIR}/${abi}"
   mkdir -p "${tmp_out}" "${jni_out}" "${include_out}"
@@ -190,7 +177,7 @@ build_abi() {
       CC="${cc}" \
       CFLAGS="-O3 -Werror" \
       go build \
-        -ldflags="-X github.com/metacubex/mihomo/constant.Version=${MIHOMO_TAG} -w -s" \
+        -ldflags="-X github.com/metacubex/mihomo/constant.Version=${MIHOMO_VERSION} -w -s" \
         -tags=with_gvisor \
         -buildmode=c-shared \
         -o "${tmp_out}/libclash.so" \
@@ -206,5 +193,5 @@ for abi in "${ABIS[@]}"; do
   build_abi "${abi}"
 done
 
-printf '%s\n' "${MIHOMO_TAG}" > "${VERSION_FILE}"
+printf '%s\n' "${CORE_BUILD_ID}" > "${VERSION_FILE}"
 echo "FlClash Mihomo core generated under app/src/main/jniLibs."

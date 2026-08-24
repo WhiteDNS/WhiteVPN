@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at https://mozilla.org/MPL/2.0/.
  *
- * Kotlin adaptation of the VLESS, VMess, Trojan, Hysteria2, and Shadowsocks conversion
+ * Kotlin adaptation of the VLESS, VMess, Trojan, Hysteria2, Shadowsocks, and SOCKS conversion
  * flow from https://github.com/SubConv/SubConv.
  */
 package com.whitedns.vpn
@@ -40,6 +40,7 @@ internal object SubConvConverter {
                     "vmess" -> parseVmess(line, names)
                     "trojan" -> parseTrojan(line, names)
                     "hysteria2", "hy2" -> parseHysteria2(line, names)
+                    "socks", "socks5" -> parseSocks(line, names)
                     "ss" -> parseShadowsocks(line, names)
                     "wireguard" -> parseWireGuard(line, names)
                     else -> null
@@ -246,6 +247,53 @@ internal object SubConvConverter {
                     query[key]?.takeIf(String::isNotBlank)?.let { put(key, it) }
                 }
             }
+    }
+
+    private fun parseSocks(line: String, names: NameRegistry): JSONObject {
+        val uri = parseUri(line)
+        val authority = uri.rawAuthority ?: throw ParseError()
+        val at = authority.lastIndexOf('@')
+        val endpoint = parseHostPort(authority.substring(at + 1)) ?: throw ParseError()
+        val query = parseQuery(uri.rawQuery)
+        val proxyName = runCatching { name(uri) }.getOrElse { throw ParseError() }
+            .ifBlank { "${endpoint.host}:${endpoint.port}" }
+        val proxy = JSONObject()
+            .put("name", names.register(proxyName))
+            .put("type", "socks5")
+            .put("server", endpoint.host)
+            .put("port", endpoint.port)
+            .put("udp", query["udp"]?.lowercase() !in setOf("false", "0"))
+        if (at >= 0) {
+            val (username, password) = socksCredentials(authority.substring(0, at))
+            proxy.put("username", username)
+            password?.let { proxy.put("password", it) }
+        }
+        return proxy
+    }
+
+    private fun socksCredentials(rawUserInfo: String): Pair<String, String?> {
+        val separator = rawUserInfo.indexOf(':')
+        if (separator >= 0) {
+            val username = decodeSocksUserInfo(rawUserInfo.substring(0, separator))
+                .takeIf(String::isNotBlank) ?: throw ParseError()
+            return username to decodeSocksUserInfo(rawUserInfo.substring(separator + 1))
+        }
+
+        val userInfo = decodeSocksUserInfo(rawUserInfo).takeIf(String::isNotBlank) ?: throw ParseError()
+        val decoded = decodeBase64Text(userInfo)
+        val decodedSeparator = decoded?.indexOf(':') ?: -1
+        if (decoded != null && decodedSeparator >= 0) {
+            val username = decoded.substring(0, decodedSeparator).takeIf(String::isNotBlank)
+                ?: throw ParseError()
+            return username to decoded.substring(decodedSeparator + 1)
+        }
+        return userInfo to null
+    }
+
+    private fun decodeSocksUserInfo(value: String): String = try {
+        decode(value.replace("+", "%2B"))
+    } catch (_: IllegalArgumentException) {
+        throw ParseError()
     }
 
     private fun parseShadowsocks(line: String, names: NameRegistry): JSONObject {

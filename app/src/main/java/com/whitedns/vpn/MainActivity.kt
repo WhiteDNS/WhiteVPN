@@ -36,6 +36,7 @@ import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.ContextThemeWrapper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.PathInterpolator
@@ -79,6 +80,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.text.DateFormat
+
+internal object ConnectionDelayUiRefreshPolicy {
+    const val MIN_REFRESH_INTERVAL_MS = 500L
+
+    fun delayUntilNextRefresh(nowMs: Long, lastRefreshAtMs: Long?): Long {
+        if (lastRefreshAtMs == null) return 0L
+        val elapsedMs = (nowMs - lastRefreshAtMs).coerceAtLeast(0L)
+        return (MIN_REFRESH_INTERVAL_MS - elapsedMs).coerceAtLeast(0L)
+    }
+}
 
 /* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app · tone: utilitarian · anchor hue: green */
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 · contrast: pass (40–41) · slop: pass */
@@ -234,21 +245,6 @@ class MainActivity : Activity() {
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppLocale.wrap(AppTheme.wrap(newBase)))
-    }
-
-    private val disconnectTimeoutRunnable = Runnable {
-        if (buttonModel.state == VpnState.Stopping) {
-            DiagnosticLogger.warn(
-                this,
-                "activity.disconnect.timeout",
-                "No stopped broadcast received after ${DISCONNECT_UI_TIMEOUT_MS}ms; resetting UI",
-            )
-            sessionStartedAtElapsedMs = 0L
-            mainHandler.removeCallbacks(timerRunnable)
-            resetTransferSpeeds()
-            buttonModel.onStateChanged(VpnState.Stopped)
-            renderState(VpnState.Stopped)
-        }
     }
 
     private val stateReceiver = object : BroadcastReceiver() {
@@ -1177,7 +1173,6 @@ class MainActivity : Activity() {
         // Pause orb animation when app goes to background to save battery
         if (::connectionOrb.isInitialized) connectionOrb.pauseAnimation()
         mainHandler.removeCallbacks(timerRunnable)
-        mainHandler.removeCallbacks(disconnectTimeoutRunnable)
         privacyPolicyDialog?.dismiss()
         privacyPolicyDialog = null
         connectionDelayTestListener = null
@@ -2979,7 +2974,26 @@ class MainActivity : Activity() {
             R.string.settings_category_system,
             R.string.settings_category_system_detail,
             systemSettings,
-            addDivider = false,
+        )
+        categoriesPanel.addView(
+            MaterialButton(this).apply {
+                setText(R.string.settings_reset)
+                setAllCaps(false)
+                textSize = 16f
+                typeface = WhiteDnsBodyBoldTypeface
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                minHeight = dp(64)
+                insetTop = 0
+                insetBottom = 0
+                cornerRadius = 0
+                backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+                rippleColor = ColorStateList.valueOf(withAlpha(ERROR, 24))
+                setTextColor(ERROR)
+                elevation = 0f
+                stateListAnimator = null
+                setOnClickListener { showResetSettingsDialog() }
+            },
+            LinearLayout.LayoutParams(-1, dp(64)),
         )
         indexBody.addView(
             categoriesPanel,
@@ -3030,6 +3044,21 @@ class MainActivity : Activity() {
         root.addView(scrollView, FrameLayout.LayoutParams(-1, -1))
         renderAdvancedControls()
         return root
+    }
+
+    private fun showResetSettingsDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.settings_reset)
+            .setMessage(R.string.settings_reset_message)
+            .setNegativeButton(R.string.split_tunnel_cancel, null)
+            .setPositiveButton(R.string.settings_reset_confirm) { _, _ ->
+                AppSettingsResetter.reset(this)
+                WhiteDnsTileService.requestTileRefresh(this)
+                Toast.makeText(this, R.string.settings_reset_done, Toast.LENGTH_SHORT).show()
+                recreate()
+            }
+            .create()
+            .showWhiteDnsDialog(positiveColor = ERROR)
     }
 
     private fun scrollFieldIntoView(
@@ -3746,6 +3775,27 @@ class MainActivity : Activity() {
         if (buttonModel.state != VpnState.Started) return
         if (!commitFrontingIpInput(reconnectIfChanged = false, focusOnError = true)) return
         if (!commitDnsPrivacyEndpoint(reconnectIfChanged = false, focusOnError = true)) return
+        val selectedSubscriptionId = SubscriptionStore(this).readSelectedSubscriptionId()
+        val quickSpeedEligible =
+            connectionProfiles.isNotEmpty() &&
+                locationPreferenceStore.readSelectedCountryCode() == null &&
+                connectionSelectionPreferenceStore.readSelectedProfile(
+                    selectedSubscriptionId,
+                    connectionProfiles,
+                ) == null &&
+                connectionSelectionPreferenceStore.readAutomaticTypes(
+                    selectedSubscriptionId,
+                    connectionProfiles,
+                ).isEmpty() &&
+                !connectionChainPreferenceStore.read().isActive &&
+                frontingIpPreferenceStore.readFrontingIps().isEmpty()
+        if (quickSpeedEligible) {
+            Toast.makeText(
+                this,
+                R.string.connection_quick_fastest_reconnecting,
+                Toast.LENGTH_LONG,
+            ).show()
+        }
         DiagnosticLogger.info(this, "button.refresh", "currentState=${buttonModel.state.wireName}")
         connectFlowPending = false
         buttonModel.onStateChanged(VpnState.Starting)
@@ -4914,7 +4964,49 @@ class MainActivity : Activity() {
             )
         }
 
-        connectionDelayTestListener = listener@{ intent ->
+        lateinit var pageDelayTestListener: (Intent) -> Unit
+        var lastDelayResultsRefreshAtMs: Long? = null
+        var delayResultsRefreshScheduled = false
+
+        fun reloadDelayResults() {
+            connectionDelayRecords = subscriptionStore
+                .readConnectionDelayRecords(
+                    subscriptionId = selectedSubscriptionId,
+                    profiles = selectorProfiles,
+                )
+                .associateBy(ConnectionDelayRecord::fingerprint)
+            filteredProfiles = visibleProfiles()
+            adapter.notifyDataSetChanged()
+            lastDelayResultsRefreshAtMs = SystemClock.elapsedRealtime()
+        }
+
+        val delayedResultsRefresh = Runnable {
+            delayResultsRefreshScheduled = false
+            if (connectionDelayTestListener !== pageDelayTestListener) return@Runnable
+            reloadDelayResults()
+        }
+
+        fun scheduleDelayResultsRefresh() {
+            if (delayResultsRefreshScheduled) return
+            val delayMs = ConnectionDelayUiRefreshPolicy.delayUntilNextRefresh(
+                nowMs = SystemClock.elapsedRealtime(),
+                lastRefreshAtMs = lastDelayResultsRefreshAtMs,
+            )
+            if (delayMs == 0L) {
+                reloadDelayResults()
+            } else {
+                delayResultsRefreshScheduled = true
+                mainHandler.postDelayed(delayedResultsRefresh, delayMs)
+            }
+        }
+
+        fun reloadFinalDelayResults() {
+            mainHandler.removeCallbacks(delayedResultsRefresh)
+            delayResultsRefreshScheduled = false
+            scheduleDelayResultsRefresh()
+        }
+
+        pageDelayTestListener = listener@{ intent ->
             if (intent.action == Actions.CONNECTION_SPEED_TEST_CHANGED) {
                 val broadcastTestId = intent.getStringExtra(Actions.EXTRA_SPEED_TEST_ID) ?: return@listener
                 if (broadcastTestId != speedTestId) return@listener
@@ -4966,28 +5058,22 @@ class MainActivity : Activity() {
                     it !in session.targetFingerprints
                 }
                 filteredProfiles = visibleProfiles()
-            }
-            if (status == Actions.DELAY_TEST_PROGRESS || status == Actions.DELAY_TEST_COMPLETED) {
-                connectionDelayRecords = subscriptionStore
-                    .readConnectionDelayRecords(
-                        subscriptionId = selectedSubscriptionId,
-                        profiles = selectorProfiles,
-                    )
-                    .associateBy(ConnectionDelayRecord::fingerprint)
+                lastDelayResultsRefreshAtMs = SystemClock.elapsedRealtime()
             }
             testingFingerprints.clear()
             if (session.isRunning) {
                 testingFingerprints += session.targetFingerprints - session.finishedFingerprints
             }
-            if (status == Actions.DELAY_TEST_PROGRESS || status == Actions.DELAY_TEST_COMPLETED) {
-                filteredProfiles = visibleProfiles()
-            }
             when (status) {
-                Actions.DELAY_TEST_STARTED,
-                Actions.DELAY_TEST_PROGRESS,
-                -> {
+                Actions.DELAY_TEST_STARTED -> {
                     testRunning = true
                     adapter.notifyDataSetChanged()
+                    updateTestControls()
+                }
+
+                Actions.DELAY_TEST_PROGRESS -> {
+                    testRunning = true
+                    scheduleDelayResultsRefresh()
                     updateTestControls()
                 }
 
@@ -4995,8 +5081,7 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    filteredProfiles = visibleProfiles()
-                    adapter.notifyDataSetChanged()
+                    reloadFinalDelayResults()
                     updateTestControls()
                 }
 
@@ -5004,7 +5089,7 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    adapter.notifyDataSetChanged()
+                    reloadFinalDelayResults()
                     updateTestControls()
                 }
 
@@ -5012,11 +5097,12 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    adapter.notifyDataSetChanged()
+                    reloadFinalDelayResults()
                     updateTestControls()
                 }
             }
         }
+        connectionDelayTestListener = pageDelayTestListener
 
         // Assemble layout
         content.addView(headerRow, LinearLayout.LayoutParams(-1, -2))
@@ -5642,7 +5728,12 @@ class MainActivity : Activity() {
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG
         }
         val appListHeight = minOf(dp(520), resources.displayMetrics.heightPixels * 55 / 100)
-        val appList = ListView(this).apply {
+        val appList = object : ListView(this) {
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                parent.requestDisallowInterceptTouchEvent(true)
+                return super.dispatchTouchEvent(event)
+            }
+        }.apply {
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             divider = ColorDrawable(OUTLINE)
             dividerHeight = dp(1)
@@ -6482,7 +6573,6 @@ class MainActivity : Activity() {
     }
 
     private fun renderState(state: VpnState) {
-        scheduleDisconnectTimeout(state)
         val presentation = DashboardStatePresenter.forState(state)
         val accent = accentFor(presentation.tone)
         connectionOrb.setVpnState(state)
@@ -6568,13 +6658,6 @@ class MainActivity : Activity() {
             (state == VpnState.Started && sessionStartedAtElapsedMs <= 0L)
         ) {
             setTimerText(0L)
-        }
-    }
-
-    private fun scheduleDisconnectTimeout(state: VpnState) {
-        mainHandler.removeCallbacks(disconnectTimeoutRunnable)
-        if (state == VpnState.Stopping) {
-            mainHandler.postDelayed(disconnectTimeoutRunnable, DISCONNECT_UI_TIMEOUT_MS)
         }
     }
 
@@ -6798,7 +6881,6 @@ class MainActivity : Activity() {
         const val REQUEST_VPN_PERMISSION = 10
         const val REQUEST_NOTIFICATION_PERMISSION = 11
         const val TIMER_TICK_MS = 1_000L
-        const val DISCONNECT_UI_TIMEOUT_MS = 7_000L
         const val KEYBOARD_SCROLL_DELAY_MS = 250L
         const val CONNECTION_TESTING_PAGE_ANIMATION_MS = 300L
         const val STATE_CONNECTION_TESTING_PAGE = "connection_testing_page"

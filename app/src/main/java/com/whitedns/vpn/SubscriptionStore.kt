@@ -201,28 +201,22 @@ class SubscriptionStore(private val context: Context) {
             )
     }
 
-    fun saveConnectionDelayRecord(record: ConnectionDelayRecord) {
-        if (record.subscriptionId.isBlank() || record.fingerprint.isBlank() || record.testedAt <= 0L) return
+    fun saveConnectionDelayRecord(record: ConnectionDelayRecord) =
+        saveConnectionDelayRecords(listOf(record))
+
+    fun saveConnectionDelayRecords(records: List<ConnectionDelayRecord>) {
+        val normalizedUpdates = ConnectionDelayRecordPolicy.latest(
+            records.mapNotNull(::normalizeConnectionDelayRecord),
+        )
+        if (normalizedUpdates.isEmpty()) return
         synchronized(DELAY_RECORDS_LOCK) {
-            val validDelayMs = record.delayMs?.takeIf {
-                record.status == ConnectionDelayStatus.Success && it > 0
+            val updatedFingerprints = normalizedUpdates.mapTo(mutableSetOf()) { it.fingerprint }
+            val existing = readDelayRecords().filterNot { record ->
+                record.subscriptionId.isBlank() && record.fingerprint in updatedFingerprints
             }
-            val normalized = record.copy(
-                delayMs = validDelayMs,
-                speedKbps = record.speedKbps?.takeIf { validDelayMs != null && it > 0 },
-                status = if (validDelayMs != null) {
-                    ConnectionDelayStatus.Success
-                } else {
-                    ConnectionDelayStatus.Failure
-                },
+            writeDelayRecords(
+                ConnectionDelayRecordPolicy.latest(normalizedUpdates + existing),
             )
-            val records = readDelayRecords()
-                .filterNot {
-                    it.fingerprint == normalized.fingerprint &&
-                        (it.subscriptionId == normalized.subscriptionId || it.subscriptionId.isBlank())
-                }
-                .plus(normalized)
-            writeDelayRecords(ConnectionDelayRecordPolicy.latest(records))
         }
     }
 
@@ -316,6 +310,24 @@ class SubscriptionStore(private val context: Context) {
         }.getOrDefault(emptyList())
     }
 
+    private fun normalizeConnectionDelayRecord(record: ConnectionDelayRecord): ConnectionDelayRecord? {
+        if (record.subscriptionId.isBlank() || record.fingerprint.isBlank() || record.testedAt <= 0L) {
+            return null
+        }
+        val validDelayMs = record.delayMs?.takeIf {
+            record.status == ConnectionDelayStatus.Success && it > 0
+        }
+        return record.copy(
+            delayMs = validDelayMs,
+            speedKbps = record.speedKbps?.takeIf { validDelayMs != null && it > 0 },
+            status = if (validDelayMs != null) {
+                ConnectionDelayStatus.Success
+            } else {
+                ConnectionDelayStatus.Failure
+            },
+        )
+    }
+
     private fun writeDelayRecords(records: List<ConnectionDelayRecord>) {
         val items = JSONArray()
         records.forEach { record ->
@@ -329,7 +341,7 @@ class SubscriptionStore(private val context: Context) {
                     .put("testedAt", record.testedAt),
             )
         }
-        writeFile(delaysFile(), items.toString())
+        writeTextAtomically(delaysFile(), items.toString())
     }
 
     private fun catalogFile(): File = File(context.filesDir, CATALOG_FILE)

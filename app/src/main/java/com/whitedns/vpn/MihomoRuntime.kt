@@ -475,17 +475,57 @@ internal object MihomoGeoDataInstaller {
     }
 }
 
-class MihomoRuntimeConfigBuilder(private val context: Context) {
+internal data class ProfileTestRuntimePlan(
+    val rawYaml: String,
+    val routingMode: RoutingMode,
+    val dns: DnsRuntimeSettings,
+)
+
+internal data class MihomoRuntimeDocument(
+    val rawYaml: String,
+    val splitTunnelPlan: SplitTunnelRuntimePlan,
+    val lanSharing: LanSharingSettings,
+    val routingMode: RoutingMode,
+    val dns: DnsRuntimeSettings,
+    val selectedMap: Map<String, String>,
+)
+
+internal fun SessionPlan.toMihomoRuntimeDocument(): MihomoRuntimeDocument = MihomoRuntimeDocument(
+    rawYaml = runtimeYaml,
+    splitTunnelPlan = splitTunnelPlan,
+    lanSharing = lanSharing,
+    routingMode = routingMode,
+    dns = dns,
+    selectedMap = selectedMap,
+)
+
+internal class MihomoRuntimeConfigBuilder(private val context: Context) {
     fun write(
-        rawYaml: String,
-        splitTunnelPlan: SplitTunnelRuntimePlan,
-        lanSharing: LanSharingSettings = LanSharingSettings(),
-        routingMode: RoutingMode = RoutingMode.Subscription,
-        dnsPrivacyMode: DnsPrivacyMode = DnsPrivacyMode.Automatic,
-        dohUrl: String = DnsPrivacyPolicy.DEFAULT_DOH_URL,
-        dotEndpoint: String = DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
+        plan: SessionPlan,
         secret: String = MihomoControllerSecret.generate(),
-        selectedMap: Map<String, String> = emptyMap(),
+    ): MihomoRuntimePaths = write(
+        document = plan.toMihomoRuntimeDocument(),
+        secret = secret,
+    )
+
+    fun writeProfileTest(
+        plan: ProfileTestRuntimePlan,
+        secret: String = MihomoControllerSecret.generate(),
+    ): MihomoRuntimePaths = write(
+        document = MihomoRuntimeDocument(
+            rawYaml = plan.rawYaml,
+            splitTunnelPlan = SplitTunnelRuntimePlan.off(),
+            lanSharing = LanSharingSettings(),
+            routingMode = plan.routingMode,
+            dns = plan.dns,
+            selectedMap = emptyMap(),
+        ),
+        secret = secret,
+    )
+
+    private fun write(
+        document: MihomoRuntimeDocument,
+        secret: String,
     ): MihomoRuntimePaths {
         val baseDir = File(context.filesDir, "mihomo").apply { mkdirs() }
         val cacheDir = File(context.cacheDir, "mihomo").apply { mkdirs() }
@@ -503,21 +543,28 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             "selected=$controlPort bindable=${MihomoControllerPort.canBind(controlPort)} fallback=${controlPort == MihomoRuntimeDefaults.FALLBACK_CONTROL_PORT}",
         )
 
-        profileYaml.writeText(rawYaml)
+        profileYaml.writeText(document.rawYaml)
         runtimeConfigYaml.writeText(
             flClashRuntimeYaml(
-                rawYaml = rawYaml,
+                rawYaml = document.rawYaml,
                 secret = secret,
                 controlPort = controlPort,
-                lanSharing = lanSharing,
-                routingMode = routingMode,
-                dnsPrivacyMode = dnsPrivacyMode,
-                dohUrl = dohUrl,
-                dotEndpoint = dotEndpoint,
+                lanSharing = document.lanSharing,
+                routingMode = document.routingMode,
+                dnsPrivacyMode = document.dns.mode,
+                dohUrl = document.dns.dohUrl,
+                dotEndpoint = document.dns.dotEndpoint,
             ),
         )
-        patchFinal.writeText(corePatchJson(splitTunnelPlan, secret, controlPort, lanSharing).toString(2))
-        setupParams.writeText(setupParamsJson(selectedMap).toString(2))
+        patchFinal.writeText(
+            corePatchJson(
+                document.splitTunnelPlan,
+                secret,
+                controlPort,
+                document.lanSharing,
+            ).toString(2),
+        )
+        setupParams.writeText(setupParamsJson(document.selectedMap).toString(2))
         serviceJson.writeText(
             serviceJson(
                 appName = context.getString(R.string.app_name),
@@ -683,10 +730,8 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             val proxySuffix = dnsProxyGroup?.let { "#$it" }.orEmpty()
             val dnsServers = when (dnsPrivacyMode) {
                 DnsPrivacyMode.Automatic -> DOH_SERVERS + DOT_SERVERS
-                DnsPrivacyMode.DoH ->
-                    (listOf(DnsPrivacyPolicy.normalizeDohUrl(dohUrl)) + DOH_SERVERS).distinct()
-                DnsPrivacyMode.DoT ->
-                    (listOf(DnsPrivacyPolicy.normalizeDotEndpoint(dotEndpoint)) + DOT_SERVERS).distinct()
+                DnsPrivacyMode.DoH -> listOf(DnsPrivacyPolicy.normalizeDohUrl(dohUrl))
+                DnsPrivacyMode.DoT -> listOf(DnsPrivacyPolicy.normalizeDotEndpoint(dotEndpoint))
             }
             return buildString {
                 if (subscriptionYaml.isNotBlank()) {
@@ -846,6 +891,415 @@ class MihomoRuntimeConfigBuilder(private val context: Context) {
             "100.64.0.0/10",
         )
     }
+}
+
+data class MihomoAutomaticRoutingBridgeResult(
+    val yaml: String,
+    val applied: Boolean,
+    val rootName: String?,
+    val targetName: String?,
+    val reason: String,
+)
+
+object MihomoAutomaticRoutingBridge {
+    fun patch(rawYaml: String): MihomoAutomaticRoutingBridgeResult {
+        val normalized = rawYaml.replace("\r\n", "\n").replace('\r', '\n')
+        val lines = normalized.split('\n')
+        val blocks = parseGroupBlocks(lines)
+        val summary = runCatching { MihomoConfigParser.parseSummary(rawYaml) }.getOrNull()
+            ?: return result(rawYaml, reason = "invalid-config")
+        val rawTrafficBlocks = blocks.filter { it.name?.contains("WhiteDNS Proxy", ignoreCase = true) == true }
+        if (rawTrafficBlocks.size > 1) {
+            return result(rawYaml, reason = "root-layout-ambiguous")
+        }
+        if (rawTrafficBlocks.singleOrNull()?.inline == true) {
+            return result(
+                rawYaml,
+                rootName = rawTrafficBlocks.single().name,
+                reason = "root-layout-unsupported",
+            )
+        }
+        val root = MihomoSelectionPolicy.trafficProbeGroup(summary)
+            ?: MihomoSelectionPolicy.mainSelectorGroup(summary)
+            ?: return result(rawYaml, reason = "root-not-found")
+        if (!root.type.equals("select", ignoreCase = true)) {
+            return result(rawYaml, rootName = root.name, reason = "root-not-selector")
+        }
+
+        val target = MihomoSelectionPolicy.autoGroup(summary)
+            ?: return result(rawYaml, rootName = root.name, reason = "auto-group-not-found")
+        if (normalizeType(target.type) != URL_TEST_TYPE) {
+            return result(
+                rawYaml,
+                rootName = root.name,
+                targetName = target.name,
+                reason = "auto-group-not-url-test",
+            )
+        }
+        if (target.name == root.name) {
+            return result(
+                rawYaml,
+                rootName = root.name,
+                targetName = target.name,
+                reason = "target-is-root",
+            )
+        }
+
+        val rootBlocks = blocks.filter { it.name == root.name }
+        val targetBlocks = blocks.filter { it.name == target.name }
+        if (rootBlocks.size != 1 || targetBlocks.size != 1) {
+            return result(
+                rawYaml,
+                rootName = root.name,
+                targetName = target.name,
+                reason = "group-layout-ambiguous",
+            )
+        }
+
+        val blocksByName = blocks.filter { it.name != null }.groupBy { requireNotNull(it.name) }
+        val knownGroupNames = summary.groups.mapTo(mutableSetOf(), MihomoProxyGroup::name).apply {
+            addAll(blocks.mapNotNull(GroupBlock::name))
+        }
+        val reachability = targetReachability(
+            lines = lines,
+            blocksByName = blocksByName,
+            knownGroupNames = knownGroupNames,
+            rootName = root.name,
+            targetName = target.name,
+        )
+        if (reachability == TargetReachability.Reachable) {
+            return result(
+                rawYaml,
+                rootName = root.name,
+                targetName = target.name,
+                reason = "already-reachable",
+            )
+        }
+        if (reachability == TargetReachability.Unsupported) {
+            return result(
+                rawYaml,
+                rootName = root.name,
+                targetName = target.name,
+                reason = "membership-layout-unsupported",
+            )
+        }
+
+        val rootProxiesIndex = groupMembership(lines, rootBlocks.single())?.proxiesIndex
+        if (rootProxiesIndex == null) {
+            return result(
+                rawYaml,
+                rootName = root.name,
+                targetName = target.name,
+                reason = "root-proxies-unsupported",
+            )
+        }
+
+        val patched = lines.toMutableList()
+        patched.add(rootProxiesIndex + 1, "      - ${yamlSingleQuoted(target.name)}")
+        val patchedYaml = patched.joinToString("\n")
+        val patchedSummary = runCatching { MihomoConfigParser.parseSummary(patchedYaml) }.getOrNull()
+        val postPatchValid = patchedSummary != null &&
+            nameTypeCounts(summary.proxies.map { it.name to it.type }) ==
+            nameTypeCounts(patchedSummary.proxies.map { it.name to it.type }) &&
+            nameTypeCounts(summary.groups.map { it.name to it.type }) ==
+            nameTypeCounts(patchedSummary.groups.map { it.name to it.type }) &&
+            patchedSummary.groups.any { it.name == root.name && it.type == root.type } &&
+            patchedSummary.groups.any { it.name == target.name && it.type == target.type }
+        if (!postPatchValid) {
+            return result(
+                rawYaml,
+                rootName = root.name,
+                targetName = target.name,
+                reason = "post-patch-validation-failed",
+            )
+        }
+        return MihomoAutomaticRoutingBridgeResult(
+            yaml = patchedYaml,
+            applied = true,
+            rootName = root.name,
+            targetName = target.name,
+            reason = "inserted",
+        )
+    }
+
+    private data class GroupBlock(
+        val start: Int,
+        val endExclusive: Int,
+        val name: String?,
+        val inline: Boolean,
+    )
+
+    private data class GroupMembership(
+        val proxiesIndex: Int?,
+        val members: List<String>,
+    )
+
+    private data class PendingGroup(
+        val name: String,
+        val depth: Int,
+        val path: Set<String>,
+    )
+
+    private enum class TargetReachability {
+        Reachable,
+        Unreachable,
+        Unsupported,
+    }
+
+    private fun parseGroupBlocks(lines: List<String>): List<GroupBlock> {
+        val sectionIndexes = lines.indices.filter { index -> topLevelKey(lines[index]) == "proxy-groups" }
+        if (sectionIndexes.size != 1) return emptyList()
+        val sectionStart = sectionIndexes.single()
+        val sectionEnd = (sectionStart + 1 until lines.size).firstOrNull { index ->
+            topLevelKey(lines[index]) != null
+        } ?: lines.size
+        val starts = (sectionStart + 1 until sectionEnd).filter { index ->
+            indentation(lines[index]) == 2 && lines[index].trimStart().startsWith("- ")
+        }
+        return starts.mapIndexed { blockIndex, start ->
+            val endExclusive = starts.getOrNull(blockIndex + 1) ?: sectionEnd
+            val inline = lines[start].trimStart().startsWith("- {")
+            GroupBlock(
+                start = start,
+                endExclusive = endExclusive,
+                name = groupName(lines, start, endExclusive, inline),
+                inline = inline,
+            )
+        }
+    }
+
+    private fun groupName(lines: List<String>, start: Int, endExclusive: Int, inline: Boolean): String? {
+        if (inline) {
+            return Regex("""(?:^|[,{]\s*)['\"]?name['\"]?\s*:\s*([^,}]+)""")
+                .find(lines[start].trimStart().removePrefix("- "))
+                ?.groupValues
+                ?.get(1)
+                ?.let(::decodeYamlScalar)
+        }
+        for (index in start until endExclusive) {
+            val content = lines[index].trimStart()
+            val value = when {
+                index == start && content.startsWith("- name:") -> content.substringAfter("- name:")
+                indentation(lines[index]) == 4 && content.startsWith("name:") -> content.substringAfter("name:")
+                else -> null
+            }
+            value?.let { return decodeYamlScalar(it) }
+        }
+        return null
+    }
+
+    private fun targetReachability(
+        lines: List<String>,
+        blocksByName: Map<String, List<GroupBlock>>,
+        knownGroupNames: Set<String>,
+        rootName: String,
+        targetName: String,
+    ): TargetReachability {
+        val pending = mutableListOf(PendingGroup(rootName, depth = 0, path = setOf(rootName)))
+        val visited = mutableSetOf<String>()
+        var unsupported = false
+        var pendingIndex = 0
+        while (pendingIndex < pending.size) {
+            val current = pending[pendingIndex++]
+            if (!visited.add(current.name)) continue
+            val blocks = blocksByName[current.name]
+            if (blocks?.size != 1) {
+                unsupported = true
+                continue
+            }
+            val membership = groupMembership(lines, blocks.single())
+            if (membership == null) {
+                unsupported = true
+                continue
+            }
+            for (member in membership.members) {
+                if (member == targetName) return TargetReachability.Reachable
+                if (member !in knownGroupNames) continue
+                if (member in current.path || current.depth + 1 >= MAX_GROUP_DEPTH) {
+                    unsupported = true
+                    continue
+                }
+                pending += PendingGroup(
+                    name = member,
+                    depth = current.depth + 1,
+                    path = current.path + member,
+                )
+            }
+        }
+        return if (unsupported) TargetReachability.Unsupported else TargetReachability.Unreachable
+    }
+
+    private fun groupMembership(lines: List<String>, block: GroupBlock): GroupMembership? {
+        if (block.inline) return null
+        val proxiesFields = (block.start until block.endExclusive).filter { index ->
+            indentation(lines[index]) == 4 && fieldName(lines[index]) == "proxies"
+        }
+        if (proxiesFields.size > 1) return null
+        if (proxiesFields.size == 1) {
+            val proxiesIndex = proxiesFields.single()
+            if (fieldValue(lines[proxiesIndex]).isNotEmpty()) return null
+            val members = blockListValues(lines, proxiesIndex, block.endExclusive) ?: return null
+            return GroupMembership(proxiesIndex = proxiesIndex, members = members)
+        }
+
+        val includeAllFields = (block.start until block.endExclusive).filter { index ->
+            indentation(lines[index]) == 4 && fieldName(lines[index]) == "include-all"
+        }
+        val useFields = (block.start until block.endExclusive).filter { index ->
+            indentation(lines[index]) == 4 && fieldName(lines[index]) == "use"
+        }
+        if (includeAllFields.size > 1 || useFields.size > 1) return null
+        val includesAll = includeAllFields.singleOrNull()?.let { index ->
+            if (!fieldValue(lines[index]).equals("true", ignoreCase = true)) return null
+            true
+        } ?: false
+        val hasProviderUse = useFields.singleOrNull()?.let { index ->
+            if (fieldValue(lines[index]).isNotEmpty()) return null
+            val providers = blockListValues(lines, index, block.endExclusive) ?: return null
+            if (providers.isEmpty()) return null
+            true
+        } ?: false
+        if (!includesAll && !hasProviderUse) return null
+        return GroupMembership(proxiesIndex = null, members = emptyList())
+    }
+
+    private fun blockListValues(lines: List<String>, fieldIndex: Int, blockEndExclusive: Int): List<String>? {
+        val listEnd = (fieldIndex + 1 until blockEndExclusive).firstOrNull { index ->
+            val line = lines[index]
+            line.isNotBlank() && !line.trimStart().startsWith("#") && indentation(line) <= 4
+        } ?: blockEndExclusive
+        val significantLines = (fieldIndex + 1 until listEnd).filter { index ->
+            lines[index].isNotBlank() && !lines[index].trimStart().startsWith("#")
+        }
+        if (significantLines.any { index ->
+                indentation(lines[index]) != 6 || !lines[index].trimStart().startsWith("- ")
+            }
+        ) {
+            return null
+        }
+        val members = significantLines.map { index ->
+            decodeYamlScalar(lines[index].trimStart().removePrefix("- ")) ?: return null
+        }
+        if (members.any(String::isBlank)) return null
+        return members
+    }
+
+    private fun fieldValue(line: String): String =
+        line.substringAfter(':', "").substringBefore(" #").trim()
+
+    private fun normalizeType(type: String): String = type.lowercase().filter(Char::isLetterOrDigit)
+
+    private fun decodeYamlScalar(value: String): String? {
+        val trimmed = value.trim().substringBefore(" #").trim()
+        if (trimmed.length >= 2 && trimmed.first() == '\'' && trimmed.last() == '\'') {
+            return trimmed.substring(1, trimmed.lastIndex).replace("''", "'")
+        }
+        if (trimmed.length >= 2 && trimmed.first() == '"' && trimmed.last() == '"') {
+            return decodeDoubleQuotedYamlScalar(trimmed.substring(1, trimmed.lastIndex))
+        }
+        if (trimmed.startsWith('"') || trimmed.startsWith('\'')) return null
+        return trimmed
+    }
+
+    private fun decodeDoubleQuotedYamlScalar(value: String): String? {
+        val output = StringBuilder(value.length)
+        var index = 0
+        while (index < value.length) {
+            val char = value[index]
+            if (char != '\\') {
+                output.append(char)
+                index += 1
+                continue
+            }
+            if (index == value.lastIndex) return null
+            when (value[index + 1]) {
+                '"' -> output.append('"')
+                '\\' -> output.append('\\')
+                '/' -> output.append('/')
+                'b' -> output.append('\b')
+                'f' -> output.append('\u000C')
+                'n' -> output.append('\n')
+                'r' -> output.append('\r')
+                't' -> output.append('\t')
+                'u' -> {
+                    val high = unicodeEscape(value, index + 2, 4) ?: return null
+                    if (high in HIGH_SURROGATE_RANGE) {
+                        val lowEscapeIndex = index + 6
+                        if (
+                            lowEscapeIndex + 6 > value.length ||
+                            value[lowEscapeIndex] != '\\' ||
+                            value[lowEscapeIndex + 1] != 'u'
+                        ) {
+                            return null
+                        }
+                        val low = unicodeEscape(value, lowEscapeIndex + 2, 4) ?: return null
+                        if (low !in LOW_SURROGATE_RANGE) return null
+                        output.append(high.toChar()).append(low.toChar())
+                        index += 12
+                        continue
+                    }
+                    if (high in LOW_SURROGATE_RANGE) return null
+                    output.append(high.toChar())
+                    index += 6
+                    continue
+                }
+                'U' -> {
+                    val codePoint = unicodeEscape(value, index + 2, 8) ?: return null
+                    if (codePoint > MAX_UNICODE_CODE_POINT || codePoint in SURROGATE_RANGE) return null
+                    output.appendCodePoint(codePoint)
+                    index += 10
+                    continue
+                }
+                else -> return null
+            }
+            index += 2
+        }
+        return output.toString()
+    }
+
+    private fun unicodeEscape(value: String, start: Int, length: Int): Int? {
+        val end = start + length
+        if (end > value.length) return null
+        return value.substring(start, end).toIntOrNull(16)
+    }
+
+    private fun yamlSingleQuoted(value: String): String = "'${value.replace("'", "''")}'"
+
+    private fun nameTypeCounts(values: List<Pair<String, String>>): Map<Pair<String, String>, Int> =
+        values.groupingBy { it }.eachCount()
+
+    private fun fieldName(line: String): String =
+        line.trimStart().substringBefore(':').trim().removeSurrounding("\"").removeSurrounding("'")
+
+    private fun topLevelKey(line: String): String? {
+        if (line.isBlank() || line.first().isWhitespace() || line.trimStart().startsWith("#")) return null
+        val index = line.indexOf(':')
+        if (index <= 0) return null
+        return line.substring(0, index).trim().takeIf { it.isNotBlank() }
+    }
+
+    private fun indentation(line: String): Int =
+        line.indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 } ?: line.length
+
+    private fun result(
+        yaml: String,
+        rootName: String? = null,
+        targetName: String? = null,
+        reason: String,
+    ) = MihomoAutomaticRoutingBridgeResult(
+        yaml = yaml,
+        applied = false,
+        rootName = rootName,
+        targetName = targetName,
+        reason = reason,
+    )
+
+    private const val URL_TEST_TYPE = "urltest"
+    private const val MAX_GROUP_DEPTH = 8
+    private const val MAX_UNICODE_CODE_POINT = 0x10FFFF
+    private val HIGH_SURROGATE_RANGE = 0xD800..0xDBFF
+    private val LOW_SURROGATE_RANGE = 0xDC00..0xDFFF
+    private val SURROGATE_RANGE = 0xD800..0xDFFF
 }
 
 object MihomoFrontingPatcher {
@@ -1341,6 +1795,10 @@ class MihomoControllerClient(
         }
     }
 
+    fun clearProxySelection(groupName: String) {
+        selectProxy(groupName, "")
+    }
+
     fun delay(
         name: String,
         timeoutMs: Int = 5_000,
@@ -1393,6 +1851,102 @@ class MihomoControllerClient(
     }
 }
 
+data class MihomoAdaptiveSelectionPlan(
+    val groupName: String,
+    val groupType: String,
+    val selections: List<MihomoGroupSelection>,
+)
+
+internal data class MihomoQuickFastestCandidate(
+    val name: String,
+    val delayMs: Int,
+    val order: Int,
+)
+
+internal data class MihomoQuickFastestPlan(
+    val groupName: String,
+    val originalFixed: String,
+    val candidates: List<MihomoQuickFastestCandidate>,
+)
+
+internal data class MihomoQuickFastestMeasurement(
+    val candidate: MihomoQuickFastestCandidate,
+    val speedKbps: Int,
+)
+
+internal object MihomoQuickFastestPolicy {
+    fun hasRequiredCapabilities(response: JSONObject, groupName: String): Boolean {
+        val group = response.optJSONObject("proxies")?.optJSONObject(groupName) ?: return false
+        return group.optString("type").lowercase().filter(Char::isLetterOrDigit) == "urltest" &&
+            group.opt("fixed") is String &&
+            group.opt("all") is JSONArray &&
+            (group.opt("testUrl") as? String)?.isNotBlank() == true
+    }
+
+    fun plan(
+        response: JSONObject,
+        groupName: String,
+        availableProfileNames: Set<String>,
+    ): MihomoQuickFastestPlan? {
+        val proxies = response.optJSONObject("proxies") ?: return null
+        val group = proxies.optJSONObject(groupName) ?: return null
+        if (!hasRequiredCapabilities(response, groupName)) return null
+        val fixed = group.getString("fixed")
+        val members = group.getJSONArray("all")
+        val testUrl = group.getString("testUrl")
+        val seen = mutableSetOf<String>()
+        val candidates = buildList {
+            for (index in 0 until members.length()) {
+                val name = members.optString(index).takeIf(String::isNotBlank) ?: continue
+                if (!seen.add(name) || name !in availableProfileNames) continue
+                val proxy = proxies.optJSONObject(name) ?: continue
+                if (proxy.optJSONArray("all") != null) continue
+                val health = proxy.optJSONObject("extra")?.optJSONObject(testUrl) ?: continue
+                if (!health.optBoolean("alive", false)) continue
+                val history = health.optJSONArray("history") ?: continue
+                val delay = history.optJSONObject(history.length() - 1)
+                    ?.optInt("delay", -1)
+                    ?.takeIf { it > 0 }
+                    ?: continue
+                add(MihomoQuickFastestCandidate(name, delay, index))
+            }
+        }.sortedWith(compareBy<MihomoQuickFastestCandidate> { it.delayMs }.thenBy { it.order })
+            .take(MAX_CANDIDATES)
+        if (candidates.size < MIN_MEASUREMENTS) return null
+        return MihomoQuickFastestPlan(groupName, fixed, candidates)
+    }
+
+    fun winner(measurements: List<MihomoQuickFastestMeasurement>): MihomoQuickFastestMeasurement? {
+        val valid = measurements.filter { it.speedKbps > 0 }
+        if (valid.size < MIN_MEASUREMENTS) return null
+        val maximumSpeed = valid.maxOf(MihomoQuickFastestMeasurement::speedKbps)
+        return valid.asSequence()
+            .filter { it.speedKbps.toLong() * 100L >= maximumSpeed.toLong() * SPEED_BAND_PERCENT }
+            .minWithOrNull(
+                compareBy<MihomoQuickFastestMeasurement> { it.candidate.delayMs }
+                    .thenByDescending { it.speedKbps }
+                    .thenBy { it.candidate.order },
+            )
+    }
+
+    fun isPinnedActive(
+        response: JSONObject,
+        rootName: String,
+        groupName: String,
+        selectedName: String,
+    ): Boolean {
+        val group = response.optJSONObject("proxies")?.optJSONObject(groupName) ?: return false
+        return group.opt("fixed") == selectedName &&
+            group.optString("now") == selectedName &&
+            MihomoControllerProxies.isActiveThrough(response, rootName, groupName) &&
+            MihomoControllerProxies.activeProxyName(response, rootName) == selectedName
+    }
+
+    private const val MAX_CANDIDATES = 3
+    private const val MIN_MEASUREMENTS = 2
+    private const val SPEED_BAND_PERCENT = 80L
+}
+
 object MihomoControllerProxies {
     fun activeProxyName(response: JSONObject, selectedName: String?): String? {
         val proxies = response.optJSONObject("proxies") ?: return selectedName
@@ -1405,6 +1959,21 @@ object MihomoControllerProxies {
             name = now
         }
         return name
+    }
+
+    fun isActiveThrough(response: JSONObject, rootName: String, targetName: String): Boolean {
+        val proxies = response.optJSONObject("proxies") ?: return false
+        var name = rootName.takeIf(String::isNotBlank) ?: return false
+        val target = targetName.takeIf(String::isNotBlank) ?: return false
+        val seen = mutableSetOf<String>()
+        repeat(MAX_GROUP_DEPTH) {
+            val item = proxies.optJSONObject(name) ?: return false
+            if (name == target) return true
+            if (!seen.add(name)) return false
+            val now = item.optString("now").takeIf(String::isNotBlank) ?: return false
+            name = now
+        }
+        return name == target && proxies.optJSONObject(name) != null
     }
 
     fun selectorPath(
@@ -1443,8 +2012,83 @@ object MihomoControllerProxies {
         response: JSONObject,
         targetNames: Collection<String>,
         preferredRoots: List<String> = emptyList(),
-    ): Set<String> = targetNames.filterTo(linkedSetOf()) { targetName ->
-        selectorPath(response, targetName, preferredRoots).isNotEmpty()
+    ): Set<String> {
+        val proxies = response.optJSONObject("proxies") ?: return emptySet()
+        val roots = selectorRoots(proxies, preferredRoots)
+        if (roots.isEmpty()) return emptySet()
+        val reachable = reachableSelectorPaths(proxies, roots).keys
+        return targetNames.filterTo(linkedSetOf()) { it in reachable }
+    }
+
+    fun rootScopedAdaptivePlan(
+        response: JSONObject,
+        rootName: String,
+        preferredGroupNames: List<String> = emptyList(),
+        excludedGroupNames: Set<String> = emptySet(),
+        excludedGroupTypes: Set<String> = emptySet(),
+    ): MihomoAdaptiveSelectionPlan? {
+        val proxies = response.optJSONObject("proxies") ?: return null
+        val root = proxies.optJSONObject(rootName) ?: return null
+        val rootType = root.optString("type")
+        val normalizedExcludedTypes = excludedGroupTypes.mapTo(mutableSetOf(), ::normalizeType)
+        if (adaptiveTypeRank(rootType) != null) {
+            if (rootName in excludedGroupNames || normalizeType(rootType) in normalizedExcludedTypes) return null
+            return MihomoAdaptiveSelectionPlan(
+                groupName = rootName,
+                groupType = rootType,
+                selections = emptyList(),
+            )
+        }
+        if (!rootType.equals("Selector", ignoreCase = true)) return null
+
+        val reachable = reachableSelectorPaths(proxies, listOf(rootName))
+        val preferredIndexes = preferredGroupNames
+            .distinct()
+            .mapIndexed { index, name -> name to index }
+            .toMap()
+        val directIndexes = root.optJSONArray("all")
+            ?.let { members ->
+                buildMap {
+                    for (index in 0 until members.length()) {
+                        val name = members.optString(index).takeIf(String::isNotBlank) ?: continue
+                        putIfAbsent(name, index)
+                    }
+                }
+            }
+            .orEmpty()
+        val candidates = reachable.entries.mapIndexedNotNull { discoveryIndex, entry ->
+            val name = entry.key
+            if (name in excludedGroupNames) return@mapIndexedNotNull null
+            val item = proxies.optJSONObject(name) ?: return@mapIndexedNotNull null
+            val type = item.optString("type")
+            if (normalizeType(type) in normalizedExcludedTypes) return@mapIndexedNotNull null
+            val typeRank = adaptiveTypeRank(type) ?: return@mapIndexedNotNull null
+            val preferredIndex = preferredIndexes[name]
+            val directIndex = directIndexes[name]
+            if (preferredIndex == null && directIndex == null) return@mapIndexedNotNull null
+            AdaptiveCandidate(
+                name = name,
+                type = type,
+                typeRank = typeRank,
+                path = entry.value,
+                preferredIndex = preferredIndex ?: Int.MAX_VALUE,
+                directIndex = directIndex ?: Int.MAX_VALUE,
+                discoveryIndex = discoveryIndex,
+            )
+        }
+        val selected = candidates.minWithOrNull(
+            compareBy<AdaptiveCandidate> { it.typeRank }
+                .thenBy { it.preferredIndex }
+                .thenBy { it.directIndex }
+                .thenBy { it.discoveryIndex },
+        ) ?: return null
+        return MihomoAdaptiveSelectionPlan(
+            groupName = selected.name,
+            groupType = selected.type,
+            selections = selected.path.zipWithNext()
+                .map { (selector, target) -> MihomoGroupSelection(selector, target) }
+                .reversed(),
+        )
     }
 
     fun currentSelections(
@@ -1484,7 +2128,108 @@ object MihomoControllerProxies {
         return null
     }
 
+    private data class AdaptiveCandidate(
+        val name: String,
+        val type: String,
+        val typeRank: Int,
+        val path: List<String>,
+        val preferredIndex: Int,
+        val directIndex: Int,
+        val discoveryIndex: Int,
+    )
+
+    private data class PendingSelector(
+        val name: String,
+        val path: List<String>,
+        val depth: Int,
+    )
+
+    private fun selectorRoots(proxies: JSONObject, preferredRoots: List<String>): List<String> {
+        val selectorNames = proxies.keys().asSequence()
+            .filter { name ->
+                proxies.optJSONObject(name)
+                    ?.optString("type")
+                    .equals("Selector", ignoreCase = true)
+            }
+            .toList()
+        return preferredRoots
+            .takeIf(List<String>::isNotEmpty)
+            ?.filter { it in selectorNames }
+            ?.distinct()
+            ?: selectorNames
+    }
+
+    private fun reachableSelectorPaths(
+        proxies: JSONObject,
+        roots: List<String>,
+    ): LinkedHashMap<String, List<String>> {
+        val reachable = linkedMapOf<String, List<String>>()
+        val pending = roots.mapTo(mutableListOf()) { root ->
+            PendingSelector(name = root, path = listOf(root), depth = 0)
+        }
+        val visitedSelectors = mutableSetOf<String>()
+        var pendingIndex = 0
+        while (pendingIndex < pending.size) {
+            val current = pending[pendingIndex++]
+            if (!visitedSelectors.add(current.name) || current.depth >= MAX_GROUP_DEPTH) continue
+            val item = proxies.optJSONObject(current.name) ?: continue
+            if (!item.optString("type").equals("Selector", ignoreCase = true)) continue
+            val members = item.optJSONArray("all") ?: continue
+            for (memberIndex in 0 until members.length()) {
+                val member = members.optString(memberIndex).takeIf(String::isNotBlank) ?: continue
+                val path = current.path + member
+                reachable.putIfAbsent(member, path)
+                if (
+                    proxies.optJSONObject(member)
+                        ?.optString("type")
+                        .equals("Selector", ignoreCase = true)
+                ) {
+                    pending += PendingSelector(member, path, current.depth + 1)
+                }
+            }
+        }
+        return reachable
+    }
+
+    private fun adaptiveTypeRank(type: String): Int? = when (normalizeType(type)) {
+        "urltest" -> 0
+        "fallback" -> 1
+        "loadbalance" -> 2
+        else -> null
+    }
+
+    private fun normalizeType(type: String): String = type.lowercase().filter(Char::isLetterOrDigit)
+
     private const val MAX_GROUP_DEPTH = 8
+}
+
+internal object MihomoRuntimeHealthDeadlinePolicy {
+    fun deadlineMs(startedAtMs: Long, totalTimeoutMs: Long): Long =
+        startedAtMs + totalTimeoutMs.coerceAtLeast(0L)
+
+    fun probeTimeoutMs(
+        deadlineMs: Long,
+        nowMs: Long,
+        remainingUrlCount: Int,
+    ): Int? {
+        if (remainingUrlCount <= 0 || nowMs >= deadlineMs) return null
+        return ((deadlineMs - nowMs) / (remainingUrlCount * HTTP_PHASES_PER_URL))
+            .coerceAtMost(MAX_HTTP_PHASE_TIMEOUT_MS.toLong())
+            .toInt()
+            .takeIf { it > 0 }
+    }
+
+    fun pollDelayMs(
+        deadlineMs: Long,
+        nowMs: Long,
+        requestedMs: Long = MAX_POLL_DELAY_MS,
+    ): Long = (deadlineMs - nowMs)
+        .coerceAtLeast(0L)
+        .coerceAtMost(requestedMs.coerceIn(0L, MAX_POLL_DELAY_MS))
+
+    private const val HTTP_PHASES_PER_URL = 2L
+    private const val MAX_HTTP_PHASE_TIMEOUT_MS = 3_000
+    private const val MAX_POLL_DELAY_MS = 500L
 }
 
 object MihomoRuntimeHealth {
@@ -1565,7 +2310,11 @@ object MihomoRuntimeHealth {
                     bytesRead += count
                 }
             }
-            ConnectionSpeed.kbps(bytesRead, System.nanoTime() - startedAtNanos)
+            ConnectionSpeed.completeKbps(
+                bytes = bytesRead,
+                expectedBytes = targetBytes,
+                elapsedNanos = System.nanoTime() - startedAtNanos,
+            )
         }
     }
 
@@ -1596,6 +2345,11 @@ object MihomoRuntimeHealth {
 }
 
 object ConnectionSpeed {
+    fun completeKbps(bytes: Long, expectedBytes: Long, elapsedNanos: Long): Int? {
+        if (bytes != expectedBytes) return null
+        return kbps(bytes, elapsedNanos)
+    }
+
     fun kbps(bytes: Long, elapsedNanos: Long): Int? {
         if (bytes <= 0L || elapsedNanos <= 0L) return null
         return (bytes * 8_000_000L / elapsedNanos)

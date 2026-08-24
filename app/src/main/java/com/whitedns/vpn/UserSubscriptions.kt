@@ -101,7 +101,12 @@ object JsonSubscriptionImporter {
     private fun clashProxies(config: JSONObject): List<JSONObject> {
         val proxies = config.optJSONArray("proxies") ?: return emptyList()
         return (0 until proxies.length()).mapNotNull { index ->
-            proxies.optJSONObject(index)?.takeIf(::isSupportedMihomoProxy)
+            val proxy = proxies.optJSONObject(index) ?: return@mapNotNull null
+            if (proxy.optString("type") in setOf("socks", "socks5")) {
+                proxy.put("type", "socks5")
+                if (!proxy.has("udp")) proxy.put("udp", true)
+            }
+            proxy.takeIf(::isSupportedMihomoProxy)
         }
     }
 
@@ -202,7 +207,7 @@ object JsonSubscriptionImporter {
         val outbounds = config.optJSONArray("outbounds") ?: return null
         val supported = (0 until outbounds.length())
             .mapNotNull(outbounds::optJSONObject)
-            .filter { it.optString("protocol") in setOf("vless", "vmess", "trojan") }
+            .filter { it.optString("protocol") in setOf("vless", "vmess", "trojan", "socks") }
         val outbound = supported.firstOrNull { it.optString("tag") == "proxy" }
             ?: supported.singleOrNull()
             ?: return null
@@ -211,7 +216,7 @@ object JsonSubscriptionImporter {
         val stream = outbound.optJSONObject("streamSettings") ?: JSONObject()
         val proxy = JSONObject()
             .put("name", config.optString("remarks").ifBlank { "Xray ${index + 1}" })
-            .put("type", protocol)
+            .put("type", if (protocol == "socks") "socks5" else protocol)
             .put("udp", true)
         when (protocol) {
             "vless", "vmess" -> {
@@ -232,6 +237,17 @@ object JsonSubscriptionImporter {
                 proxy.put("server", endpoint.optString("address"))
                     .put("port", endpoint.optInt("port"))
                     .put("password", endpoint.optString("password"))
+            }
+            "socks" -> {
+                proxy.put("server", settings.optString("address"))
+                    .put("port", settings.optInt("port"))
+                if (settings.has("user") || settings.has("pass")) {
+                    val username = (settings.opt("user") as? String)
+                        ?.takeIf(String::isNotBlank) ?: return null
+                    val password = settings.opt("pass") as? String ?: return null
+                    proxy.put("username", username).put("password", password)
+                }
+                return proxy.takeIf(::isSupportedMihomoProxy)
             }
         }
 
@@ -303,7 +319,7 @@ object JsonSubscriptionImporter {
     }
 
     private fun isSupportedMihomoProxy(proxy: JSONObject): Boolean =
-        proxy.optString("type") in setOf("vless", "vmess", "trojan", "ss", "wireguard") &&
+        proxy.optString("type") in setOf("vless", "vmess", "trojan", "ss", "socks5", "wireguard") &&
             proxy.optString("name").isNotBlank() &&
             proxy.optString("server").isNotBlank() &&
             proxy.optInt("port") in 1..65535

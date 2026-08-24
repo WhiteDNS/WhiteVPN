@@ -63,7 +63,7 @@
     <string name="subscription_action_delete">حذف</string>
     <string name="subscription_name_hint">نام سابسکریپشن</string>
     <string name="subscription_source_hint">URL، YAML، JSON یا لینک‌های پروکسی</string>
-    <string name="subscription_source_helper">پشتیبانی از Clash/Xray JSON و vless، vmess، trojan، ss</string>
+    <string name="subscription_source_helper">پشتیبانی: URL سابسکریپشن، Mihomo YAML، Clash/Xray JSON و فهرست لینک‌های VLESS، VMess، Trojan، Hysteria2/Hy2، Shadowsocks (SS)، WireGuard یا SOCKS/SOCKS5 (ساده یا Base64).</string>
     <string name="subscription_add_title">افزودن سابسکریپشن</string>
     <string name="subscription_edit_title">ویرایش سابسکریپشن</string>
     <string name="subscription_fields_required">نام و سابسکریپشن الزامی است.</string>
@@ -149,6 +149,7 @@
     <string name="connection_switch_unavailable">اتصال در دسترس نیست.</string>
     <string name="connection_switch_failed">تغییر اتصال ناموفق بود.</string>
     <string name="connection_switching">در حال تغییر اتصال…</string>
+    <string name="connection_quick_fastest_reconnecting">در حال پیدا کردن اتصال سریع‌تر — تا ۳ مگابایت داده برای تست مصرف می‌شود.</string>
     <string name="split_tunnel_label">تقسیم تونل</string>
     <string name="value_inactive">غیرفعال</string>
     <string name="action_reconnect">اتصال مجدد</string>
@@ -171,6 +172,10 @@
     <string name="settings_category_system">محافظت سیستم</string>
     <string name="settings_category_system_detail">وی‌پی‌ان همیشه‌فعال و قطع اضطراری اندروید.</string>
     <string name="settings_category_back">بازگشت به تنظیمات</string>
+    <string name="settings_reset">ریست تنظیمات</string>
+    <string name="settings_reset_message">همهٔ تنظیمات برنامه به حالت اولیه برمی‌گردند. سابسکریپشن‌ها و نتایج ذخیره‌شدهٔ تست حفظ می‌شوند. وی‌پی‌ان همیشه‌فعال و قطع اضطراری اندروید تغییر نمی‌کنند. اگر متصل باشید، اتصال فعلی ادامه پیدا می‌کند و تنظیمات اولیه از اتصال بعدی اعمال می‌شوند.</string>
+    <string name="settings_reset_confirm">ریست</string>
+    <string name="settings_reset_done">تنظیمات ریست شد.</string>
     <string name="config_test_section">تنظیمات تست</string>
     <string name="config_test_timeout_title">مهلت تست تأخیر</string>
     <string name="config_test_timeout_detail">حداکثر زمان برای هر اتصال؛ از تست بعدی اعمال می‌شود.</string>
