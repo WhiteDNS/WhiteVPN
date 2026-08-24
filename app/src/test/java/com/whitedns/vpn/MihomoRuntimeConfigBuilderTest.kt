@@ -2,9 +2,11 @@ package com.whitedns.vpn
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -343,6 +345,370 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
+    fun automaticRoutingBridgeAddsExistingUrlTestFirstInSanitizedCurrentTopology() {
+        val rawYaml = """
+            proxy-groups:
+              - name: Proxy Select
+                type: select
+                proxies:
+                  - Auto Select
+              - name: Auto Select
+                type: url-test
+                url: https://www.gstatic.com/generate_204
+                proxies:
+                  - Node A
+                  - Node B
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - FirstPing
+                  - Manual
+              - name: FirstPing
+                type: fallback
+                proxies:
+                  - Node A
+                  - Node B
+              - name: Manual
+                type: select
+                proxies:
+                  - Node A
+                  - Node B
+        """.trimIndent()
+
+        val result = MihomoAutomaticRoutingBridge.patch(rawYaml)
+
+        assertTrue(result.applied)
+        assertEquals("WhiteDNS Proxy", result.rootName)
+        assertEquals("Auto Select", result.targetName)
+        assertEquals("inserted", result.reason)
+        assertTrue(
+            result.yaml.contains(
+                "  - name: WhiteDNS Proxy\n" +
+                    "    type: select\n" +
+                    "    proxies:\n" +
+                    "      - 'Auto Select'\n" +
+                    "      - FirstPing\n" +
+                    "      - Manual",
+            ),
+        )
+    }
+
+    @Test
+    fun automaticRoutingBridgeDecodesEscapedUnicodeNamesAndPatchesExactlyOnce() {
+        val rawYaml = """
+            proxy-groups:
+              - name: "\u0041uto Select"
+                type: url-test
+                proxies:
+                  - Node
+              - name: "\U0001F680 WhiteDNS Proxy"
+                type: select
+                proxies:
+                  - Manual
+              - name: Manual
+                type: select
+                proxies:
+                  - Node
+        """.trimIndent()
+
+        val first = MihomoAutomaticRoutingBridge.patch(rawYaml)
+        val second = MihomoAutomaticRoutingBridge.patch(first.yaml)
+
+        assertTrue(first.applied)
+        assertEquals("🚀 WhiteDNS Proxy", first.rootName)
+        assertEquals("Auto Select", first.targetName)
+        assertEquals("inserted", first.reason)
+        assertFalse(second.applied)
+        assertEquals("already-reachable", second.reason)
+        assertEquals(first.yaml, second.yaml)
+        assertEquals(1, Regex("(?m)^      - 'Auto Select'$").findAll(second.yaml).count())
+    }
+
+    @Test
+    fun automaticRoutingBridgeRejectsInvalidUnicodeEscapeWithoutChangingYaml() {
+        val rawYaml = """
+            proxy-groups:
+              - name: Auto Select
+                type: url-test
+                proxies:
+                  - Node
+              - name: "\U0001F68G WhiteDNS Proxy"
+                type: select
+                proxies:
+                  - Manual
+              - name: Manual
+                type: select
+                proxies:
+                  - Node
+        """.trimIndent()
+
+        val result = MihomoAutomaticRoutingBridge.patch(rawYaml)
+
+        assertFalse(result.applied)
+        assertEquals(rawYaml, result.yaml)
+    }
+
+    @Test
+    fun automaticRoutingBridgeTreatsDynamicProviderGroupsAsTerminalMemberships() {
+        val rawYaml = """
+            proxy-groups:
+              - name: Auto Select
+                type: url-test
+                include-all: true
+                url: https://www.gstatic.com/generate_204
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - FirstPing
+                  - round-robin
+                  - Manual
+                  - Countries
+              - name: FirstPing
+                type: fallback
+                include-all: true
+                url: https://www.gstatic.com/generate_204
+              - name: round-robin
+                type: load-balance
+                include-all: true
+                strategy: round-robin
+              - name: Manual
+                type: select
+                include-all: true
+              - name: Countries
+                type: select
+                use:
+                  - Provider A
+        """.trimIndent()
+
+        val first = MihomoAutomaticRoutingBridge.patch(rawYaml)
+        val second = MihomoAutomaticRoutingBridge.patch(first.yaml)
+
+        assertTrue(first.applied)
+        assertEquals("inserted", first.reason)
+        assertFalse(second.applied)
+        assertEquals("already-reachable", second.reason)
+        assertEquals(first.yaml, second.yaml)
+    }
+
+    @Test
+    fun automaticRoutingBridgeRejectsMalformedDynamicMemberships() {
+        val inlineUse = """
+            proxy-groups:
+              - name: Auto Select
+                type: url-test
+                include-all: true
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - Manual
+              - name: Manual
+                type: select
+                include-all: true
+                use: [Provider A]
+        """.trimIndent()
+        val duplicateIncludeAll = """
+            proxy-groups:
+              - name: Auto Select
+                type: url-test
+                include-all: true
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - Manual
+              - name: Manual
+                type: select
+                include-all: true
+                include-all: true
+        """.trimIndent()
+
+        listOf(inlineUse, duplicateIncludeAll).forEach { rawYaml ->
+            val result = MihomoAutomaticRoutingBridge.patch(rawYaml)
+            assertFalse(result.applied)
+            assertEquals("membership-layout-unsupported", result.reason)
+            assertEquals(rawYaml, result.yaml)
+        }
+    }
+
+    @Test
+    fun automaticRoutingBridgeLeavesAlreadyReachableUrlTestUntouched() {
+        val rawYaml = """
+            proxy-groups:
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - FirstPing
+                  - Auto Select
+                  - Manual
+              - name: Auto Select
+                type: url-test
+                proxies:
+                  - Node
+        """.trimIndent()
+
+        val result = MihomoAutomaticRoutingBridge.patch(rawYaml)
+
+        assertFalse(result.applied)
+        assertEquals("already-reachable", result.reason)
+        assertEquals(rawYaml, result.yaml)
+    }
+
+    @Test
+    fun automaticRoutingBridgeDoesNotSubstituteAnotherUrlTestForPolicyTarget() {
+        val rawYaml = """
+            proxy-groups:
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - Manual
+              - name: Auto Select
+                type: fallback
+                proxies:
+                  - Node A
+              - name: Fastest
+                type: url-test
+                proxies:
+                  - Node B
+        """.trimIndent()
+
+        val result = MihomoAutomaticRoutingBridge.patch(rawYaml)
+
+        assertFalse(result.applied)
+        assertEquals("Auto Select", result.targetName)
+        assertEquals("auto-group-not-url-test", result.reason)
+        assertEquals(rawYaml, result.yaml)
+    }
+
+    @Test
+    fun automaticRoutingBridgeLeavesTransitivelyReachableUrlTestUntouched() {
+        val rawYaml = """
+            proxy-groups:
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - Cycle
+                  - Manual
+              - name: Cycle
+                type: select
+                proxies:
+                  - WhiteDNS Proxy
+              - name: Manual
+                type: select
+                proxies:
+                  - Auto Select
+              - name: Auto Select
+                type: url-test
+                proxies:
+                  - Node
+        """.trimIndent()
+
+        val result = MihomoAutomaticRoutingBridge.patch(rawYaml)
+
+        assertFalse(result.applied)
+        assertEquals("already-reachable", result.reason)
+        assertEquals(rawYaml, result.yaml)
+    }
+
+    @Test
+    fun automaticRoutingBridgeLeavesUnsupportedAndAmbiguousLayoutsUntouched() {
+        val inlineRoot = """
+            proxy-groups:
+              - { name: WhiteDNS Proxy, type: select, proxies: [Auto Select] }
+              - name: Auto Select
+                type: url-test
+                proxies:
+                  - Node
+        """.trimIndent()
+        val inlineIntermediate = """
+            proxy-groups:
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - Manual
+              - { name: Manual, type: select, proxies: [Node] }
+              - name: Auto Select
+                type: url-test
+                proxies:
+                  - Node
+        """.trimIndent()
+        val duplicateRoot = """
+            proxy-groups:
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - Manual
+              - name: WhiteDNS Proxy Backup
+                type: select
+                proxies:
+                  - Manual
+              - name: Auto Select
+                type: url-test
+                proxies:
+                  - Node
+        """.trimIndent()
+
+        val unsupportedRoot = MihomoAutomaticRoutingBridge.patch(inlineRoot)
+        val unsupportedIntermediate = MihomoAutomaticRoutingBridge.patch(inlineIntermediate)
+        val ambiguousRoot = MihomoAutomaticRoutingBridge.patch(duplicateRoot)
+
+        assertFalse(unsupportedRoot.applied)
+        assertEquals("root-layout-unsupported", unsupportedRoot.reason)
+        assertEquals(inlineRoot, unsupportedRoot.yaml)
+        assertFalse(unsupportedIntermediate.applied)
+        assertEquals("membership-layout-unsupported", unsupportedIntermediate.reason)
+        assertEquals(inlineIntermediate, unsupportedIntermediate.yaml)
+        assertFalse(ambiguousRoot.applied)
+        assertEquals("root-layout-ambiguous", ambiguousRoot.reason)
+        assertEquals(duplicateRoot, ambiguousRoot.yaml)
+    }
+
+    @Test
+    fun automaticRoutingBridgeStopsSafelyAtCyclesAndDepthLimit() {
+        val cycle = """
+            proxy-groups:
+              - name: WhiteDNS Proxy
+                type: select
+                proxies:
+                  - Manual
+              - name: Manual
+                type: select
+                proxies:
+                  - WhiteDNS Proxy
+              - name: Auto Select
+                type: url-test
+                proxies:
+                  - Node
+        """.trimIndent()
+        val tooDeep = buildString {
+            appendLine("proxy-groups:")
+            appendLine("  - name: WhiteDNS Proxy")
+            appendLine("    type: select")
+            appendLine("    proxies:")
+            appendLine("      - Level 1")
+            for (depth in 1..8) {
+                val next = if (depth == 8) "Node" else "Level ${depth + 1}"
+                appendLine("  - name: Level $depth")
+                appendLine("    type: select")
+                appendLine("    proxies:")
+                appendLine("      - $next")
+            }
+            appendLine("  - name: Auto Select")
+            appendLine("    type: url-test")
+            appendLine("    proxies:")
+            append("      - Node")
+        }
+
+        val cycleResult = MihomoAutomaticRoutingBridge.patch(cycle)
+        val deepResult = MihomoAutomaticRoutingBridge.patch(tooDeep)
+
+        assertFalse(cycleResult.applied)
+        assertEquals("membership-layout-unsupported", cycleResult.reason)
+        assertEquals(cycle, cycleResult.yaml)
+        assertFalse(deepResult.applied)
+        assertEquals("membership-layout-unsupported", deepResult.reason)
+        assertEquals(tooDeep, deepResult.yaml)
+    }
+
+    @Test
     fun flClashRuntimeYamlHonorsExplicitEncryptedDnsModes() {
         val yaml = """
             proxies:
@@ -540,7 +906,7 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
-    fun explicitDnsModesPutCustomResolverBeforeEncryptedFallbacks() {
+    fun dnsPrivacyModesKeepAutomaticPoolAndUseOnlyCustomResolver() {
         val yaml = """
             proxies:
               - name: Node
@@ -549,6 +915,10 @@ class MihomoRuntimeConfigBuilderTest {
                 port: 443
         """.trimIndent()
 
+        val automaticYaml = MihomoRuntimeConfigBuilder.flClashRuntimeYaml(
+            rawYaml = yaml,
+            secret = "secret-123",
+        )
         val dohYaml = MihomoRuntimeConfigBuilder.flClashRuntimeYaml(
             rawYaml = yaml,
             secret = "secret-123",
@@ -562,11 +932,17 @@ class MihomoRuntimeConfigBuilderTest {
             dotEndpoint = "dns.example:8853",
         )
 
-        assertTrue(dohYaml.indexOf("https://dns.example/dns-query") < dohYaml.indexOf("https://1.1.1.1/dns-query"))
-        assertTrue(dohYaml.contains("https://8.8.8.8/dns-query"))
+        assertTrue(automaticYaml.contains("https://1.1.1.1/dns-query"))
+        assertTrue(automaticYaml.contains("https://8.8.8.8/dns-query"))
+        assertTrue(automaticYaml.contains("tls://1.1.1.1:853"))
+        assertTrue(automaticYaml.contains("tls://8.8.8.8:853"))
+        assertTrue(dohYaml.contains("https://dns.example/dns-query"))
+        assertFalse(dohYaml.contains("https://1.1.1.1/dns-query"))
+        assertFalse(dohYaml.contains("https://8.8.8.8/dns-query"))
         assertFalse(dohYaml.contains("tls://"))
-        assertTrue(dotYaml.indexOf("tls://dns.example:8853") < dotYaml.indexOf("tls://1.1.1.1:853"))
-        assertTrue(dotYaml.contains("tls://8.8.8.8:853"))
+        assertTrue(dotYaml.contains("tls://dns.example:8853"))
+        assertFalse(dotYaml.contains("tls://1.1.1.1:853"))
+        assertFalse(dotYaml.contains("tls://8.8.8.8:853"))
         assertFalse(dotYaml.contains("https://"))
     }
 
@@ -780,6 +1156,256 @@ class MihomoRuntimeConfigBuilderTest {
         )
 
         assertEquals("🇩🇪 DE | 01", MihomoControllerProxies.activeProxyName(response, "🚀 Proxy Select"))
+    }
+
+    @Test
+    fun controllerProxiesPlanUrlTestFromSanitizedCurrentTrafficRoot() {
+        val response = JSONObject(
+            """
+                {
+                  "proxies": {
+                    "Proxy Select": {
+                      "type": "Selector",
+                      "now": "Auto Select",
+                      "all": ["Auto Select"]
+                    },
+                    "Auto Select": {
+                      "type": "URLTest",
+                      "now": "Node B",
+                      "all": ["Node A", "Node B"]
+                    },
+                    "WhiteDNS Proxy": {
+                      "type": "Selector",
+                      "now": "FirstPing",
+                      "all": ["Auto Select", "FirstPing", "round-robin", "Manual"]
+                    },
+                    "FirstPing": { "type": "Fallback", "all": ["Node A", "Node B"] },
+                    "round-robin": { "type": "LoadBalance", "all": ["Node A", "Node B"] },
+                    "Manual": { "type": "Selector", "all": ["Node A", "Node B"] },
+                    "Node A": { "type": "Vless" },
+                    "Node B": { "type": "Trojan" }
+                  }
+                }
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            MihomoAdaptiveSelectionPlan(
+                groupName = "Auto Select",
+                groupType = "URLTest",
+                selections = listOf(MihomoGroupSelection("WhiteDNS Proxy", "Auto Select")),
+            ),
+            MihomoControllerProxies.rootScopedAdaptivePlan(
+                response = response,
+                rootName = "WhiteDNS Proxy",
+                preferredGroupNames = listOf("Auto Select"),
+            ),
+        )
+    }
+
+    @Test
+    fun controllerProxiesRankAdaptiveGroupsAndIgnoreUnreachablePreferredGroups() {
+        val response = JSONObject(
+            """
+                {
+                  "proxies": {
+                    "Traffic": {
+                      "type": "Selector",
+                      "all": ["Balance", "First Healthy", "Fastest"]
+                    },
+                    "Unrelated Auto": { "type": "URLTest", "all": ["Other"] },
+                    "Balance": { "type": "LoadBalance", "all": ["Node"] },
+                    "First Healthy": { "type": "Fallback", "all": ["Node"] },
+                    "Fastest": { "type": "URLTest", "all": ["Node"] },
+                    "Node": { "type": "Vless" },
+                    "Other": { "type": "Trojan" }
+                  }
+                }
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            "Fastest",
+            MihomoControllerProxies.rootScopedAdaptivePlan(
+                response = response,
+                rootName = "Traffic",
+                preferredGroupNames = listOf("Unrelated Auto"),
+            )?.groupName,
+        )
+        assertNull(
+            MihomoControllerProxies.rootScopedAdaptivePlan(
+                response = response,
+                rootName = "Missing",
+                preferredGroupNames = listOf("Unrelated Auto"),
+            ),
+        )
+    }
+
+    @Test
+    fun controllerProxiesAdvanceThroughBoundedAdaptiveFallbacks() {
+        val response = JSONObject(
+            """
+                {
+                  "proxies": {
+                    "Traffic": {
+                      "type": "Selector",
+                      "all": ["Round Robin", "First Healthy", "Fastest"]
+                    },
+                    "Round Robin": { "type": "LoadBalance", "all": ["Node"] },
+                    "First Healthy": { "type": "Fallback", "all": ["Node"] },
+                    "Fastest": { "type": "URLTest", "all": ["Node"] },
+                    "Node": { "type": "Vless" }
+                  }
+                }
+            """.trimIndent(),
+        )
+
+        val fastest = MihomoControllerProxies.rootScopedAdaptivePlan(response, "Traffic")
+        val firstHealthyByName = MihomoControllerProxies.rootScopedAdaptivePlan(
+            response = response,
+            rootName = "Traffic",
+            excludedGroupNames = setOf("Fastest"),
+        )
+        val firstHealthy = MihomoControllerProxies.rootScopedAdaptivePlan(
+            response = response,
+            rootName = "Traffic",
+            excludedGroupTypes = setOf("urltest"),
+        )
+        val roundRobin = MihomoControllerProxies.rootScopedAdaptivePlan(
+            response = response,
+            rootName = "Traffic",
+            excludedGroupTypes = setOf("url-test", "Fallback"),
+        )
+        val exhausted = MihomoControllerProxies.rootScopedAdaptivePlan(
+            response = response,
+            rootName = "Traffic",
+            excludedGroupTypes = setOf("URLTest", "Fallback", "load_balance"),
+        )
+
+        assertEquals("Fastest", fastest?.groupName)
+        assertEquals("First Healthy", firstHealthyByName?.groupName)
+        assertEquals("First Healthy", firstHealthy?.groupName)
+        assertEquals("Round Robin", roundRobin?.groupName)
+        assertNull(exhausted)
+    }
+
+    @Test
+    fun controllerProxiesBuildLeafFirstAdaptivePlanThroughNestedSelector() {
+        val response = JSONObject(
+            """
+                {
+                  "proxies": {
+                    "Traffic": { "type": "Selector", "all": ["Manual"] },
+                    "Manual": { "type": "Selector", "all": ["Auto Select"] },
+                    "Auto Select": { "type": "URLTest", "all": ["Node"] },
+                    "Node": { "type": "Vless" }
+                  }
+                }
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            MihomoAdaptiveSelectionPlan(
+                groupName = "Auto Select",
+                groupType = "URLTest",
+                selections = listOf(
+                    MihomoGroupSelection("Manual", "Auto Select"),
+                    MihomoGroupSelection("Traffic", "Manual"),
+                ),
+            ),
+            MihomoControllerProxies.rootScopedAdaptivePlan(
+                response = response,
+                rootName = "Traffic",
+                preferredGroupNames = listOf("Auto Select"),
+            ),
+        )
+    }
+
+    @Test
+    fun controllerProxiesHandleAdaptiveRootAndExcludedAdaptiveRoot() {
+        val response = JSONObject(
+            """
+                {
+                  "proxies": {
+                    "Fastest": { "type": "URLTest", "now": "Node", "all": ["Node"] },
+                    "Node": { "type": "Vless" }
+                  }
+                }
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            MihomoAdaptiveSelectionPlan("Fastest", "URLTest", emptyList()),
+            MihomoControllerProxies.rootScopedAdaptivePlan(response, "Fastest"),
+        )
+        assertNull(
+            MihomoControllerProxies.rootScopedAdaptivePlan(
+                response = response,
+                rootName = "Fastest",
+                excludedGroupNames = setOf("Fastest"),
+            ),
+        )
+        assertNull(
+            MihomoControllerProxies.rootScopedAdaptivePlan(
+                response = response,
+                rootName = "Fastest",
+                excludedGroupTypes = setOf("url-test"),
+            ),
+        )
+    }
+
+    @Test
+    fun controllerProxiesVerifyLiveActivePathWithCycleAndDepthBounds() {
+        val response = JSONObject(
+            """
+                {
+                  "proxies": {
+                    "Traffic": { "type": "Selector", "now": "Manual" },
+                    "Manual": { "type": "Selector", "now": "Auto Select" },
+                    "Auto Select": { "type": "URLTest", "now": "Node" },
+                    "Node": { "type": "Vless" },
+                    "Cycle A": { "type": "Selector", "now": "Cycle B" },
+                    "Cycle B": { "type": "Selector", "now": "Cycle A" }
+                  }
+                }
+            """.trimIndent(),
+        )
+
+        assertTrue(MihomoControllerProxies.isActiveThrough(response, "Traffic", "Auto Select"))
+        assertTrue(MihomoControllerProxies.isActiveThrough(response, "Traffic", "Node"))
+        assertFalse(MihomoControllerProxies.isActiveThrough(response, "Traffic", "Other"))
+        assertFalse(MihomoControllerProxies.isActiveThrough(response, "Cycle A", "Node"))
+        assertFalse(MihomoControllerProxies.isActiveThrough(response, "Missing", "Missing"))
+    }
+
+    @Test
+    fun controllerProxiesExposeOneThousandReachableLeavesInLinearTraversal() {
+        val leafNames = (0 until 1_000).map { index -> "Node $index" }
+        val proxies = JSONObject()
+            .put(
+                "Traffic",
+                JSONObject()
+                    .put("type", "Selector")
+                    .put("all", JSONArray(listOf("Manual"))),
+            )
+            .put(
+                "Manual",
+                JSONObject()
+                    .put("type", "Selector")
+                    .put("all", JSONArray(leafNames)),
+            )
+            .put("Outside", JSONObject().put("type", "Vless"))
+        leafNames.forEach { name -> proxies.put(name, JSONObject().put("type", "Vless")) }
+        val response = JSONObject().put("proxies", proxies)
+
+        assertEquals(
+            leafNames.toSet(),
+            MihomoControllerProxies.selectableTargetNames(
+                response = response,
+                targetNames = leafNames + "Outside",
+                preferredRoots = listOf("Traffic"),
+            ),
+        )
     }
 
     @Test

@@ -80,9 +80,10 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 79
-        versionName = "1.6.1"
+        versionName = "1.6.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        resourceConfigurations += listOf("en", "fa")
 
         buildConfigField("String", "MIHOMO_SUBSCRIPTION_URL", buildConfigStringLiteral(mihomoSubscriptionUrl))
         buildConfigField("String", "ENCRYPTED_IP_LIST_URL", buildConfigStringLiteral(encryptedIpListUrl))
@@ -122,6 +123,9 @@ android {
                 signingConfig = signingConfigs.getByName("release")
             }
             isMinifyEnabled = true
+            isShrinkResources = true
+            // CMake and Go already strip release binaries; generated .sym files only duplicate them.
+            ndk.debugSymbolLevel = "NONE"
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

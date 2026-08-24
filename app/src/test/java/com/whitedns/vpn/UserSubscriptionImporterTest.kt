@@ -114,6 +114,28 @@ class UserSubscriptionImporterTest {
     }
 
     @Test
+    fun vmessNullSecurityDefaultsToAuto() {
+        fun link(scy: String) = "vmess://" + Base64.getEncoder().encodeToString(
+            """
+            {
+              "ps": "VMess",
+              "add": "vmess.example.com",
+              "port": "443",
+              "id": "00000000-0000-0000-0000-000000000003",
+              "aid": "0",
+              "scy": $scy,
+              "net": "tcp",
+              "tls": ""
+            }
+            """.trimIndent().toByteArray(),
+        )
+
+        val proxies = SubConvConverter.convert(listOf(link("null"), link("\"null\"")).joinToString("\n"))
+
+        assertEquals(listOf("auto", "auto"), proxies.map { it.getString("cipher") })
+    }
+
+    @Test
     fun subConvPortMirrorsVlessWebsocketAndHttp2Options() {
         val proxies = SubConvConverter.convert(
             """
@@ -167,6 +189,47 @@ class UserSubscriptionImporterTest {
         assertTrue(imported.yaml.contains("servername: 'edge.example.com'"))
         assertTrue(imported.yaml.contains("name: 'WhiteDNS Proxy'"))
         assertTrue(imported.yaml.contains("- 'MATCH,WhiteDNS Proxy'"))
+    }
+
+    @Test
+    fun importerConvertsSocksLinksAndSkipsMalformedSiblings() {
+        val standardCredentials = Base64.getEncoder().encodeToString("🌀:standard".toByteArray())
+        val urlSafeCredentials = Base64.getUrlEncoder().withoutPadding()
+            .encodeToString("🌀:url-safe".toByteArray())
+        val links = """
+            socks://anonymous.example.com:1080
+            socks5://us%2Ber:pa%3Ass@[2001:db8::1]:1081?udp=false#IPv6%20Auth
+            socks5://$standardCredentials@standard.example.com:1082#Standard
+            socks5://$urlSafeCredentials@192.0.2.10:1083#URL-safe
+            socks5://solo@192.0.2.11:1084#User-only
+            socks://:1080
+            socks://missing-port.example.com
+            socks5://:password@missing-user.example.com:1085
+            socks5://bad-port.example.com:70000
+        """.trimIndent()
+        val encoded = Base64.getEncoder().encodeToString(links.toByteArray()).trimEnd('=')
+
+        val proxies = SubConvConverter.convert(encoded)
+        val imported = UserSubscriptionImporter.import(encoded, nowMs = 123L)
+        val profiles = MihomoConfigParser.parse(imported.yaml, 123L).catalog.profiles
+        val byName = proxies.associateBy { it.getString("name") }
+
+        assertEquals(5, proxies.size)
+        assertEquals(5, imported.connectionCount)
+        assertTrue(profiles.all { it.type == "socks5" })
+        assertTrue(byName.getValue("anonymous.example.com:1080").getBoolean("udp"))
+        assertFalse(byName.getValue("anonymous.example.com:1080").has("username"))
+        assertEquals("2001:db8::1", byName.getValue("IPv6 Auth").getString("server"))
+        assertEquals("us+er", byName.getValue("IPv6 Auth").getString("username"))
+        assertEquals("pa:ss", byName.getValue("IPv6 Auth").getString("password"))
+        assertFalse(byName.getValue("IPv6 Auth").getBoolean("udp"))
+        assertEquals("🌀", byName.getValue("Standard").getString("username"))
+        assertEquals("standard", byName.getValue("Standard").getString("password"))
+        assertEquals("🌀", byName.getValue("URL-safe").getString("username"))
+        assertEquals("url-safe", byName.getValue("URL-safe").getString("password"))
+        assertEquals("solo", byName.getValue("User-only").getString("username"))
+        assertFalse(byName.getValue("User-only").has("password"))
+        assertTrue(imported.yaml.contains("name: 'WhiteDNS Proxy'"))
     }
 
     @Test
@@ -273,6 +336,50 @@ class UserSubscriptionImporterTest {
     }
 
     @Test
+    fun importerNormalizesClashJsonSocksAliases() {
+        val imported = UserSubscriptionImporter.import(
+            """
+            {
+              "proxies": [
+                {
+                  "name": "Clash SOCKS",
+                  "type": "socks",
+                  "server": "socks.example.com",
+                  "port": 1080,
+                  "username": "user",
+                  "password": "pass"
+                },
+                {
+                  "name": "Clash SOCKS5",
+                  "type": "socks5",
+                  "server": "192.0.2.20",
+                  "port": 1081,
+                  "udp": false
+                },
+                {
+                  "name": "Invalid SOCKS",
+                  "type": "socks5",
+                  "server": "",
+                  "port": 1082
+                }
+              ]
+            }
+            """.trimIndent(),
+            nowMs = 123L,
+        )
+        val profiles = MihomoConfigParser.parse(imported.yaml, 123L).catalog.profiles
+
+        assertEquals(UserSubscriptionFormat.Mihomo, imported.format)
+        assertEquals(2, imported.connectionCount)
+        assertTrue(profiles.all { it.type == "socks5" })
+        assertTrue(imported.yaml.contains("username: 'user'"))
+        assertTrue(imported.yaml.contains("password: 'pass'"))
+        assertTrue(imported.yaml.contains("udp: true"))
+        assertTrue(imported.yaml.contains("udp: false"))
+        assertFalse(imported.yaml.contains("Invalid SOCKS"))
+    }
+
+    @Test
     fun importerNormalizesClashJsonWireGuardSubscriptions() {
         val imported = UserSubscriptionImporter.import(
             """
@@ -337,6 +444,68 @@ class UserSubscriptionImporterTest {
         assertTrue(imported.yaml.contains("servername: 'edge.example.com'"))
         assertTrue(imported.yaml.contains("'path': '/vpn'"))
         assertEquals(2, snapshot.summary.groups.size)
+    }
+
+    @Test
+    fun importerNormalizesXraySocksOutbounds() {
+        val imported = UserSubscriptionImporter.import(
+            """
+            [
+              {
+                "remarks": "Xray SOCKS Auth",
+                "outbounds": [{
+                  "tag": "proxy",
+                  "protocol": "socks",
+                  "settings": {
+                    "address": "auth.example.com",
+                    "port": 1080,
+                    "user": "user",
+                    "pass": "pass",
+                    "level": 1,
+                    "email": "ignored@example.com"
+                  },
+                  "streamSettings": {"network": "ws"}
+                }]
+              },
+              {
+                "remarks": "Xray SOCKS Anonymous",
+                "outbounds": [{
+                  "protocol": "socks",
+                  "settings": {"address": "192.0.2.30", "port": 1081}
+                }]
+              },
+              {
+                "remarks": "Missing password",
+                "outbounds": [{
+                  "protocol": "socks",
+                  "settings": {"address": "invalid.example.com", "port": 1082, "user": "user"}
+                }]
+              },
+              {
+                "remarks": "Invalid port",
+                "outbounds": [{
+                  "protocol": "socks",
+                  "settings": {"address": "invalid.example.net", "port": 70000}
+                }]
+              }
+            ]
+            """.trimIndent(),
+            nowMs = 123L,
+        )
+        val profiles = MihomoConfigParser.parse(imported.yaml, 123L).catalog.profiles
+
+        assertEquals(UserSubscriptionFormat.Links, imported.format)
+        assertEquals(2, imported.connectionCount)
+        assertTrue(profiles.all { it.type == "socks5" })
+        assertTrue(imported.yaml.contains("username: 'user'"))
+        assertTrue(imported.yaml.contains("password: 'pass'"))
+        assertEquals(1, Regex("username:").findAll(imported.yaml).count())
+        assertTrue(imported.yaml.contains("udp: true"))
+        assertFalse(imported.yaml.contains("level:"))
+        assertFalse(imported.yaml.contains("email:"))
+        assertFalse(imported.yaml.contains("network:"))
+        assertFalse(imported.yaml.contains("Missing password"))
+        assertFalse(imported.yaml.contains("Invalid port"))
     }
 
     @Test
@@ -570,6 +739,10 @@ class UserSubscriptionImporterTest {
     @Test
     fun oldGeneratedYamlIsMigratedToTheRuntimeTrafficGroup() {
         val oldYaml = """
+            proxies:
+              - name: 'VMess'
+                type: 'vmess'
+                cipher: 'null'
             proxy-groups:
               - name: 'WhiteDNS Select'
                 type: select
@@ -581,6 +754,7 @@ class UserSubscriptionImporterTest {
 
         assertFalse(migrated.contains("WhiteDNS Select"))
         assertTrue(migrated.contains("name: 'WhiteDNS Proxy'"))
+        assertTrue(migrated.contains("cipher: 'auto'"))
         assertTrue(migrated.contains("- 'MATCH,WhiteDNS Proxy'"))
     }
 }

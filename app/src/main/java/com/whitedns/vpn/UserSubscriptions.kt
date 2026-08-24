@@ -6,9 +6,7 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
-import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URL
 import java.util.UUID
 
 enum class UserSubscriptionFormat(val wireName: String, val label: String) {
@@ -29,6 +27,9 @@ data class UserSubscription(
     val connectionCount: Int,
     val updatedAt: Long,
     val lastError: String = "",
+    val fetchedAt: Long = updatedAt,
+    val sourceKind: UserSubscriptionSourceKind =
+        UserSubscriptionSourceKind.fromWireName(null, input),
 )
 
 data class ImportedUserSubscription(
@@ -100,7 +101,12 @@ object JsonSubscriptionImporter {
     private fun clashProxies(config: JSONObject): List<JSONObject> {
         val proxies = config.optJSONArray("proxies") ?: return emptyList()
         return (0 until proxies.length()).mapNotNull { index ->
-            proxies.optJSONObject(index)?.takeIf(::isSupportedMihomoProxy)
+            val proxy = proxies.optJSONObject(index) ?: return@mapNotNull null
+            if (proxy.optString("type") in setOf("socks", "socks5")) {
+                proxy.put("type", "socks5")
+                if (!proxy.has("udp")) proxy.put("udp", true)
+            }
+            proxy.takeIf(::isSupportedMihomoProxy)
         }
     }
 
@@ -201,7 +207,7 @@ object JsonSubscriptionImporter {
         val outbounds = config.optJSONArray("outbounds") ?: return null
         val supported = (0 until outbounds.length())
             .mapNotNull(outbounds::optJSONObject)
-            .filter { it.optString("protocol") in setOf("vless", "vmess", "trojan") }
+            .filter { it.optString("protocol") in setOf("vless", "vmess", "trojan", "socks") }
         val outbound = supported.firstOrNull { it.optString("tag") == "proxy" }
             ?: supported.singleOrNull()
             ?: return null
@@ -210,7 +216,7 @@ object JsonSubscriptionImporter {
         val stream = outbound.optJSONObject("streamSettings") ?: JSONObject()
         val proxy = JSONObject()
             .put("name", config.optString("remarks").ifBlank { "Xray ${index + 1}" })
-            .put("type", protocol)
+            .put("type", if (protocol == "socks") "socks5" else protocol)
             .put("udp", true)
         when (protocol) {
             "vless", "vmess" -> {
@@ -231,6 +237,17 @@ object JsonSubscriptionImporter {
                 proxy.put("server", endpoint.optString("address"))
                     .put("port", endpoint.optInt("port"))
                     .put("password", endpoint.optString("password"))
+            }
+            "socks" -> {
+                proxy.put("server", settings.optString("address"))
+                    .put("port", settings.optInt("port"))
+                if (settings.has("user") || settings.has("pass")) {
+                    val username = (settings.opt("user") as? String)
+                        ?.takeIf(String::isNotBlank) ?: return null
+                    val password = settings.opt("pass") as? String ?: return null
+                    proxy.put("username", username).put("password", password)
+                }
+                return proxy.takeIf(::isSupportedMihomoProxy)
             }
         }
 
@@ -302,7 +319,7 @@ object JsonSubscriptionImporter {
     }
 
     private fun isSupportedMihomoProxy(proxy: JSONObject): Boolean =
-        proxy.optString("type") in setOf("vless", "vmess", "trojan", "ss", "wireguard") &&
+        proxy.optString("type") in setOf("vless", "vmess", "trojan", "ss", "socks5", "wireguard") &&
             proxy.optString("name").isNotBlank() &&
             proxy.optString("server").isNotBlank() &&
             proxy.optInt("port") in 1..65535
@@ -336,7 +353,9 @@ object MihomoLinkConfigBuilder {
     }
 
     fun migrateGeneratedYaml(yaml: String): String {
-        val renamed = yaml.replace("'WhiteDNS Select'", quote(SELECT_GROUP))
+        val renamed = yaml
+            .replace("'WhiteDNS Select'", quote(SELECT_GROUP))
+            .replace("cipher: 'null'", "cipher: 'auto'")
         if ("MATCH,$SELECT_GROUP" in renamed) return renamed
         return renamed.trimEnd() + "\nrules:\n  - ${quote("MATCH,$SELECT_GROUP")}\n"
     }
@@ -407,100 +426,75 @@ class UserSubscriptionManager(
     context: Context,
     private val store: SubscriptionStore = SubscriptionStore(context),
 ) {
+    private val snapshots = SubscriptionSnapshotResolver(
+        persistence = AndroidSubscriptionSnapshotAdapter(context, store),
+    )
+
     fun list(): List<UserSubscription> = store.readUserSubscriptions()
 
     fun selectedId(): String = store.readSelectedSubscriptionId()
 
     fun select(id: String) = store.saveSelectedSubscriptionId(id)
 
-    fun test(input: String): ImportedUserSubscription = UserSubscriptionImporter.import(load(input))
+    suspend fun test(input: String): ImportedUserSubscription = compile(input).let { compiled ->
+        ImportedUserSubscription(
+            yaml = compiled.snapshot.rawConfig,
+            format = compiled.format,
+            connectionCount = compiled.snapshot.catalog.profiles.size,
+        )
+    }
 
-    fun add(name: String, input: String): UserSubscription {
+    suspend fun add(name: String, input: String): UserSubscription {
         val cleanName = name.trim().take(60)
         require(cleanName.isNotBlank()) { "نام الزامی است" }
         val cleanInput = input.trim()
-        val imported = UserSubscriptionImporter.import(load(cleanInput))
+        val compiled = compile(cleanInput)
+        val fetchedAt = compiled.snapshot.catalog.fetchedAt
         val item = UserSubscription(
             id = UUID.randomUUID().toString(),
             name = cleanName,
             input = cleanInput,
-            format = imported.format,
-            connectionCount = imported.connectionCount,
-            updatedAt = System.currentTimeMillis(),
+            format = compiled.format,
+            connectionCount = compiled.snapshot.catalog.profiles.size,
+            updatedAt = fetchedAt,
+            fetchedAt = fetchedAt,
+            sourceKind = UserSubscriptionSourceKind.fromWireName(null, cleanInput),
         )
-        store.saveUserSubscription(item, imported.yaml)
+        store.saveUserSubscription(item, compiled.snapshot.rawConfig)
         return item
     }
 
-    fun update(id: String, name: String, input: String): UserSubscription {
+    suspend fun update(id: String, name: String, input: String): UserSubscription {
         val existing = store.readUserSubscription(id) ?: throw IOException("سابسکریپشن دیگر وجود ندارد")
         val cleanName = name.trim().take(60)
         require(cleanName.isNotBlank()) { "نام الزامی است" }
         val cleanInput = input.trim()
-        val imported = UserSubscriptionImporter.import(load(cleanInput))
+        val compiled = compile(cleanInput)
+        val fetchedAt = compiled.snapshot.catalog.fetchedAt
         return existing.copy(
             name = cleanName,
             input = cleanInput,
-            format = imported.format,
-            connectionCount = imported.connectionCount,
-            updatedAt = System.currentTimeMillis(),
+            format = compiled.format,
+            connectionCount = compiled.snapshot.catalog.profiles.size,
+            updatedAt = fetchedAt,
+            fetchedAt = fetchedAt,
+            sourceKind = UserSubscriptionSourceKind.fromWireName(null, cleanInput),
             lastError = "",
-        ).also { store.saveUserSubscription(it, imported.yaml) }
+        ).also { store.saveUserSubscription(it, compiled.snapshot.rawConfig) }
     }
 
-    fun refresh(id: String): UserSubscription {
-        val existing = store.readUserSubscription(id) ?: throw IOException("سابسکریپشن دیگر وجود ندارد")
-        return runCatching {
-            val imported = UserSubscriptionImporter.import(load(existing.input))
-            existing.copy(
-                format = imported.format,
-                connectionCount = imported.connectionCount,
-                updatedAt = System.currentTimeMillis(),
-                lastError = "",
-            ).also { store.saveUserSubscription(it, imported.yaml) }
-        }.getOrElse { error ->
-            store.saveUserSubscription(existing.copy(lastError = userMessage(error)))
-            throw error
-        }
+    suspend fun refresh(id: String): UserSubscription {
+        snapshots.resolve(id, SubscriptionRefreshPolicy.Force)
+        return store.readUserSubscription(id)
+            ?: throw IOException("سابسکریپشن دیگر وجود ندارد")
     }
 
     fun delete(id: String) = store.deleteUserSubscription(id)
 
-    fun cachedSnapshot(id: String): MihomoSubscriptionSnapshot? {
-        val item = store.readUserSubscription(id) ?: return null
-        var yaml = store.readUserSubscriptionYaml(id).takeIf(String::isNotBlank) ?: return null
-        if (item.format == UserSubscriptionFormat.Links) {
-            if ("\\/" in yaml && (": {\"" in yaml || ": [\"" in yaml)) return null
-            val migrated = MihomoLinkConfigBuilder.migrateGeneratedYaml(yaml)
-            if (migrated != yaml) {
-                yaml = migrated
-                store.saveUserSubscription(item, yaml)
-            }
-        }
-        return MihomoConfigParser.parse(yaml, item.updatedAt).takeIf { it.catalog.profiles.isNotEmpty() }
-    }
+    fun cachedSnapshot(id: String): MihomoSubscriptionSnapshot? = snapshots.cached(id)
 
-    private fun load(input: String): String {
-        if (!input.startsWith("http://", true) && !input.startsWith("https://", true)) return input
-        val uri = runCatching { URI(input) }.getOrElse { throw IOException("URL سابسکریپشن نامعتبر است") }
-        if (!uri.scheme.equals("https", true) || uri.host.isNullOrBlank()) {
-            throw IOException("URL سابسکریپشن باید از HTTPS استفاده کند")
-        }
-        val connection = URL(input).openConnection() as HttpURLConnection
-        connection.connectTimeout = 12_000
-        connection.readTimeout = 20_000
-        connection.requestMethod = "GET"
-        connection.setRequestProperty("Accept", "text/yaml,text/plain,*/*;q=0.1")
-        return try {
-            if (connection.responseCode !in 200..299) throw IOException("سابسکریپشن پاسخ HTTP ${connection.responseCode} برگرداند")
-            val bytes = connection.inputStream.use { it.readAtMost(UserSubscriptionImporter.MAX_SUBSCRIPTION_BYTES + 1) }
-            if (bytes.size > UserSubscriptionImporter.MAX_SUBSCRIPTION_BYTES) throw IOException("حجم سابسکریپشن بیش از حد مجاز است")
-            bytes.toString(Charsets.UTF_8)
-        } finally {
-            connection.disconnect()
-        }
+    private suspend fun compile(input: String): CompiledSubscription {
+        val content = SubscriptionSourceLoader.load(userSubscriptionSource(input))
+        return SubscriptionCompiler.compile(content, System.currentTimeMillis())
     }
-
-    private fun userMessage(error: Throwable): String =
-        error.message?.take(160)?.ifBlank { null } ?: "تازه‌سازی ناموفق بود"
 }

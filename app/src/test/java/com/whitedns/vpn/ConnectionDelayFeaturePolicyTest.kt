@@ -53,6 +53,22 @@ class ConnectionDelayFeaturePolicyTest {
     }
 
     @Test
+    fun startupCandidatesExcludePreviousLeafAndStopAtFive() {
+        val profiles = (0..7).map { index -> profile("profile-$index", index + 1) }
+
+        val ordered = AutomaticConnectionCandidatePolicy.order(
+            profiles = profiles,
+            records = emptyList(),
+            lastSelectedProfile = profiles.first(),
+            excludedFingerprint = profiles.first().fingerprint,
+            limit = 5,
+        )
+
+        assertEquals(5, ordered.size)
+        assertFalse(ordered.any { it.fingerprint == profiles.first().fingerprint })
+    }
+
+    @Test
     fun activeTestSessionCanBeReattachedAndUpdated() {
         ConnectionDelayTestState.replace(
             ConnectionDelayTestSession(
@@ -155,6 +171,14 @@ class ConnectionDelayFeaturePolicyTest {
         assertEquals(ConnectionTestSettings(1, 100, 1), ConnectionTestSettings(-1, 999, 0).normalized())
         assertEquals(ConnectionTestSettings(30, 1, 100), ConnectionTestSettings(99, 0, 999).normalized())
         assertEquals(5_000_000L, ConnectionTestSettings(speedTestMegabytes = 5).speedTestBytes)
+    }
+
+    @Test
+    fun delayResultUiRefreshesAreLimitedToTwicePerSecond() {
+        assertEquals(0L, ConnectionDelayUiRefreshPolicy.delayUntilNextRefresh(1_000L, null))
+        assertEquals(500L, ConnectionDelayUiRefreshPolicy.delayUntilNextRefresh(1_000L, 1_000L))
+        assertEquals(1L, ConnectionDelayUiRefreshPolicy.delayUntilNextRefresh(1_499L, 1_000L))
+        assertEquals(0L, ConnectionDelayUiRefreshPolicy.delayUntilNextRefresh(1_500L, 1_000L))
     }
 
     private fun record(

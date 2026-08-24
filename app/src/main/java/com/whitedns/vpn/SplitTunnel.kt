@@ -1,7 +1,6 @@
 package com.whitedns.vpn
 
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import java.util.Locale
@@ -150,20 +149,16 @@ class SplitTunnelPreferenceStore(context: Context) {
 class InstalledAppRepository(private val context: Context) {
     fun loadLaunchableApps(): List<SplitTunnelInstalledApp> {
         val packageManager = context.packageManager
-        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            packageManager.queryIntentActivities(
-                launcherIntent,
-                PackageManager.ResolveInfoFlags.of(0),
-            )
+        val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
         } else {
             @Suppress("DEPRECATION")
-            packageManager.queryIntentActivities(launcherIntent, 0)
+            packageManager.getInstalledApplications(0)
         }
 
-        return resolved
+        return installed
             .mapNotNull { info ->
-                val packageName = info.activityInfo?.packageName?.takeIf { it.isNotBlank() }
+                val packageName = info.packageName?.takeIf { it.isNotBlank() }
                     ?: return@mapNotNull null
                 if (packageName == context.packageName) return@mapNotNull null
                 SplitTunnelInstalledApp(
@@ -172,7 +167,6 @@ class InstalledAppRepository(private val context: Context) {
                         ?: packageName,
                 )
             }
-            .distinctBy { it.packageName }
             .sortedWith(
                 compareBy<SplitTunnelInstalledApp> { it.label.lowercase(Locale.getDefault()) }
                     .thenBy { it.packageName },

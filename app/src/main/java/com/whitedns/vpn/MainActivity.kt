@@ -36,6 +36,7 @@ import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.ContextThemeWrapper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.PathInterpolator
@@ -79,6 +80,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.text.DateFormat
+
+internal object ConnectionDelayUiRefreshPolicy {
+    const val MIN_REFRESH_INTERVAL_MS = 500L
+
+    fun delayUntilNextRefresh(nowMs: Long, lastRefreshAtMs: Long?): Long {
+        if (lastRefreshAtMs == null) return 0L
+        val elapsedMs = (nowMs - lastRefreshAtMs).coerceAtLeast(0L)
+        return (MIN_REFRESH_INTERVAL_MS - elapsedMs).coerceAtLeast(0L)
+    }
+}
 
 /* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app · tone: utilitarian · anchor hue: green */
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 · contrast: pass (40–41) · slop: pass */
@@ -147,6 +158,7 @@ class MainActivity : Activity() {
     private lateinit var homeChainAfterSelectorRow: DashboardDataRowView
     private lateinit var homeChainSelectorRows: LinearLayout
     private lateinit var homeSubscriptionSelectorRow: DashboardDataRowView
+    private lateinit var settingsSubscriptionSelectorRow: DashboardDataRowView
     private var updateSplitTunnelControlsEnabled: ((Boolean) -> Unit)? = null
     private lateinit var connectionModeGroup: MaterialButtonToggleGroup
     private lateinit var vpnModeButton: MaterialButton
@@ -233,21 +245,6 @@ class MainActivity : Activity() {
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(AppLocale.wrap(AppTheme.wrap(newBase)))
-    }
-
-    private val disconnectTimeoutRunnable = Runnable {
-        if (buttonModel.state == VpnState.Stopping) {
-            DiagnosticLogger.warn(
-                this,
-                "activity.disconnect.timeout",
-                "No stopped broadcast received after ${DISCONNECT_UI_TIMEOUT_MS}ms; resetting UI",
-            )
-            sessionStartedAtElapsedMs = 0L
-            mainHandler.removeCallbacks(timerRunnable)
-            resetTransferSpeeds()
-            buttonModel.onStateChanged(VpnState.Stopped)
-            renderState(VpnState.Stopped)
-        }
     }
 
     private val stateReceiver = object : BroadcastReceiver() {
@@ -609,7 +606,20 @@ class MainActivity : Activity() {
         val selectedName = selectedSubscriptionName()
         homeSubscriptionSelectorRow.setValue(selectedName)
         homeSubscriptionSelectorRow.contentDescription =
-            getString(R.string.home_menu_subscription, selectedName)
+            getString(
+                R.string.settings_value_content_description,
+                getString(R.string.subscriptions_title),
+                selectedName,
+            )
+        if (::settingsSubscriptionSelectorRow.isInitialized) {
+            settingsSubscriptionSelectorRow.setValue(selectedName)
+            settingsSubscriptionSelectorRow.contentDescription =
+                getString(
+                    R.string.settings_value_content_description,
+                    getString(R.string.settings_subscription_title),
+                    selectedName,
+                )
+        }
         val whiteDnsCount = store.readCatalog()?.profiles?.size ?: 0
         subscriptionsList.addView(
             subscriptionCard(
@@ -1163,7 +1173,6 @@ class MainActivity : Activity() {
         // Pause orb animation when app goes to background to save battery
         if (::connectionOrb.isInitialized) connectionOrb.pauseAnimation()
         mainHandler.removeCallbacks(timerRunnable)
-        mainHandler.removeCallbacks(disconnectTimeoutRunnable)
         privacyPolicyDialog?.dismiss()
         privacyPolicyDialog = null
         connectionDelayTestListener = null
@@ -1300,60 +1309,27 @@ class MainActivity : Activity() {
             }
         }
 
-        // New header with hamburger menu, centered title, and theme toggle
+        // Centered product header
         val headerBlock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutDirection = View.LAYOUT_DIRECTION_LTR
-            gravity = Gravity.CENTER_VERTICAL
-            // Hamburger menu button on left
-            addView(
-                ImageButton(this@MainActivity).apply {
-                    setImageResource(R.drawable.ic_menu)
-                    imageTintList = ColorStateList.valueOf(TEXT_PRIMARY)
-                    scaleType = ImageView.ScaleType.CENTER
-                    setPadding(dp(10), dp(10), dp(10), dp(10))
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(Color.TRANSPARENT)
-                    }
-                    setSelectableBackground()
-                    contentDescription = getString(R.string.home_menu_content_description)
-                    setOnClickListener { showHomeMenu(this) }
-                },
-                LinearLayout.LayoutParams(dp(40), dp(40)),
-            )
-            // Centered title with version
-            addView(
-                LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    layoutDirection = View.LAYOUT_DIRECTION_LTR
-                    gravity = Gravity.CENTER
-                    setPadding(dp(9), dp(4), dp(9), dp(4))
-                    addView(TextView(this@MainActivity).apply {
-                        text = "WhiteVPN"
-                        textSize = 14.5f
-                        typeface = WhiteDnsDisplayTypeface
-                        setTextColor(TEXT_PRIMARY)
-                        includeFontPadding = false
-                        letterSpacing = -0.01f
-                    })
-                    addView(TextView(this@MainActivity).apply {
-                        text = BuildConfig.VERSION_NAME
-                        textSize = 11.5f
-                        typeface = WhiteDnsBodyTypeface
-                        setTextColor(palette.textTertiary)
-                        includeFontPadding = false
-                    }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(9) })
-                },
-                LinearLayout.LayoutParams(0, -2, 1f).apply {
-                    gravity = Gravity.CENTER
-                },
-            )
-            // Empty spacer on right for balance (theme toggle removed)
-            addView(
-                View(this@MainActivity),
-                LinearLayout.LayoutParams(dp(40), dp(40)),
-            )
+            gravity = Gravity.CENTER
+            setPadding(dp(9), dp(4), dp(9), dp(4))
+            addView(TextView(this@MainActivity).apply {
+                text = "WhiteVPN"
+                textSize = 14.5f
+                typeface = WhiteDnsDisplayTypeface
+                setTextColor(TEXT_PRIMARY)
+                includeFontPadding = false
+                letterSpacing = -0.01f
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = BuildConfig.VERSION_NAME
+                textSize = 11.5f
+                typeface = WhiteDnsBodyTypeface
+                setTextColor(palette.textTertiary)
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(9) })
         }
 
         // New segmented tab switcher with rounded corners
@@ -1704,8 +1680,12 @@ class MainActivity : Activity() {
         homeSubscriptionSelectorRow = DashboardDataRowView(this).apply {
             val subscriptionName = selectedSubscriptionName()
             setRow(getString(R.string.subscriptions_title), subscriptionName)
-            contentDescription = getString(R.string.home_menu_subscription, subscriptionName)
-            setOnRowClickListener { showHomeSubscriptionMenu(this) }
+            contentDescription = getString(
+                R.string.settings_value_content_description,
+                getString(R.string.subscriptions_title),
+                subscriptionName,
+            )
+            setOnRowClickListener { showSubscriptionSelectorMenu(this) }
         }
         dashboardConnectionMetadataSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1827,12 +1807,54 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
         }
+        val appPreferencesSettings = settingsContent()
         val testingSettings = settingsContent()
         val connectionSettings = settingsContent()
         val chainSettings = buildConnectionChainSettings()
         val splitTunnelSettings = settingsContent()
         val sharingSettings = settingsContent()
         val systemSettings = settingsContent()
+        fun appPreferenceRow(
+            @StringRes titleRes: Int,
+            value: String,
+            onClick: (View) -> Unit,
+        ) = DashboardDataRowView(this).apply {
+            val title = getString(titleRes)
+            setRow(title, value)
+            contentDescription = getString(R.string.settings_value_content_description, title, value)
+            setOnRowClickListener { onClick(this) }
+        }
+        settingsSubscriptionSelectorRow = appPreferenceRow(
+            R.string.settings_subscription_title,
+            selectedSubscriptionName(),
+            ::showSubscriptionSelectorMenu,
+        )
+        val themeSelectorRow = appPreferenceRow(
+            R.string.theme_dialog_title,
+            getString(appThemePreferenceStore.read().labelRes),
+        ) { showThemeSelector() }
+        val languageSelectorRow = appPreferenceRow(
+            R.string.language_setting_title,
+            getString(appLanguagePreferenceStore.read().labelRes),
+        ) { showLanguageSelector() }
+        val appPreferencesPanel = advancedSettingsPanel()
+        listOf(settingsSubscriptionSelectorRow, themeSelectorRow, languageSelectorRow)
+            .forEachIndexed { index, row ->
+                if (index > 0) {
+                    appPreferencesPanel.addView(
+                        View(this).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+                        LinearLayout.LayoutParams(-1, dp(1)).apply {
+                            marginStart = dp(16)
+                            marginEnd = dp(16)
+                        },
+                    )
+                }
+                appPreferencesPanel.addView(row, LinearLayout.LayoutParams(-1, -2))
+            }
+        appPreferencesSettings.addView(
+            appPreferencesPanel,
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) },
+        )
         var connectionTestSettings = connectionTestSettingsPreferenceStore.read()
         testingSettings.addView(
             advancedSectionLabel(getString(R.string.config_test_section)),
@@ -2915,6 +2937,11 @@ class MainActivity : Activity() {
             }
         }
         addCategory(
+            R.string.settings_category_app_preferences,
+            R.string.settings_category_app_preferences_detail,
+            appPreferencesSettings,
+        )
+        addCategory(
             R.string.settings_category_testing,
             R.string.settings_category_testing_detail,
             testingSettings,
@@ -2947,7 +2974,26 @@ class MainActivity : Activity() {
             R.string.settings_category_system,
             R.string.settings_category_system_detail,
             systemSettings,
-            addDivider = false,
+        )
+        categoriesPanel.addView(
+            MaterialButton(this).apply {
+                setText(R.string.settings_reset)
+                setAllCaps(false)
+                textSize = 16f
+                typeface = WhiteDnsBodyBoldTypeface
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                minHeight = dp(64)
+                insetTop = 0
+                insetBottom = 0
+                cornerRadius = 0
+                backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+                rippleColor = ColorStateList.valueOf(withAlpha(ERROR, 24))
+                setTextColor(ERROR)
+                elevation = 0f
+                stateListAnimator = null
+                setOnClickListener { showResetSettingsDialog() }
+            },
+            LinearLayout.LayoutParams(-1, dp(64)),
         )
         indexBody.addView(
             categoriesPanel,
@@ -2998,6 +3044,21 @@ class MainActivity : Activity() {
         root.addView(scrollView, FrameLayout.LayoutParams(-1, -1))
         renderAdvancedControls()
         return root
+    }
+
+    private fun showResetSettingsDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.settings_reset)
+            .setMessage(R.string.settings_reset_message)
+            .setNegativeButton(R.string.split_tunnel_cancel, null)
+            .setPositiveButton(R.string.settings_reset_confirm) { _, _ ->
+                AppSettingsResetter.reset(this)
+                WhiteDnsTileService.requestTileRefresh(this)
+                Toast.makeText(this, R.string.settings_reset_done, Toast.LENGTH_SHORT).show()
+                recreate()
+            }
+            .create()
+            .showWhiteDnsDialog(positiveColor = ERROR)
     }
 
     private fun scrollFieldIntoView(
@@ -3714,6 +3775,27 @@ class MainActivity : Activity() {
         if (buttonModel.state != VpnState.Started) return
         if (!commitFrontingIpInput(reconnectIfChanged = false, focusOnError = true)) return
         if (!commitDnsPrivacyEndpoint(reconnectIfChanged = false, focusOnError = true)) return
+        val selectedSubscriptionId = SubscriptionStore(this).readSelectedSubscriptionId()
+        val quickSpeedEligible =
+            connectionProfiles.isNotEmpty() &&
+                locationPreferenceStore.readSelectedCountryCode() == null &&
+                connectionSelectionPreferenceStore.readSelectedProfile(
+                    selectedSubscriptionId,
+                    connectionProfiles,
+                ) == null &&
+                connectionSelectionPreferenceStore.readAutomaticTypes(
+                    selectedSubscriptionId,
+                    connectionProfiles,
+                ).isEmpty() &&
+                !connectionChainPreferenceStore.read().isActive &&
+                frontingIpPreferenceStore.readFrontingIps().isEmpty()
+        if (quickSpeedEligible) {
+            Toast.makeText(
+                this,
+                R.string.connection_quick_fastest_reconnecting,
+                Toast.LENGTH_LONG,
+            ).show()
+        }
         DiagnosticLogger.info(this, "button.refresh", "currentState=${buttonModel.state.wireName}")
         connectFlowPending = false
         buttonModel.onStateChanged(VpnState.Starting)
@@ -4882,7 +4964,49 @@ class MainActivity : Activity() {
             )
         }
 
-        connectionDelayTestListener = listener@{ intent ->
+        lateinit var pageDelayTestListener: (Intent) -> Unit
+        var lastDelayResultsRefreshAtMs: Long? = null
+        var delayResultsRefreshScheduled = false
+
+        fun reloadDelayResults() {
+            connectionDelayRecords = subscriptionStore
+                .readConnectionDelayRecords(
+                    subscriptionId = selectedSubscriptionId,
+                    profiles = selectorProfiles,
+                )
+                .associateBy(ConnectionDelayRecord::fingerprint)
+            filteredProfiles = visibleProfiles()
+            adapter.notifyDataSetChanged()
+            lastDelayResultsRefreshAtMs = SystemClock.elapsedRealtime()
+        }
+
+        val delayedResultsRefresh = Runnable {
+            delayResultsRefreshScheduled = false
+            if (connectionDelayTestListener !== pageDelayTestListener) return@Runnable
+            reloadDelayResults()
+        }
+
+        fun scheduleDelayResultsRefresh() {
+            if (delayResultsRefreshScheduled) return
+            val delayMs = ConnectionDelayUiRefreshPolicy.delayUntilNextRefresh(
+                nowMs = SystemClock.elapsedRealtime(),
+                lastRefreshAtMs = lastDelayResultsRefreshAtMs,
+            )
+            if (delayMs == 0L) {
+                reloadDelayResults()
+            } else {
+                delayResultsRefreshScheduled = true
+                mainHandler.postDelayed(delayedResultsRefresh, delayMs)
+            }
+        }
+
+        fun reloadFinalDelayResults() {
+            mainHandler.removeCallbacks(delayedResultsRefresh)
+            delayResultsRefreshScheduled = false
+            scheduleDelayResultsRefresh()
+        }
+
+        pageDelayTestListener = listener@{ intent ->
             if (intent.action == Actions.CONNECTION_SPEED_TEST_CHANGED) {
                 val broadcastTestId = intent.getStringExtra(Actions.EXTRA_SPEED_TEST_ID) ?: return@listener
                 if (broadcastTestId != speedTestId) return@listener
@@ -4934,28 +5058,22 @@ class MainActivity : Activity() {
                     it !in session.targetFingerprints
                 }
                 filteredProfiles = visibleProfiles()
-            }
-            if (status == Actions.DELAY_TEST_PROGRESS || status == Actions.DELAY_TEST_COMPLETED) {
-                connectionDelayRecords = subscriptionStore
-                    .readConnectionDelayRecords(
-                        subscriptionId = selectedSubscriptionId,
-                        profiles = selectorProfiles,
-                    )
-                    .associateBy(ConnectionDelayRecord::fingerprint)
+                lastDelayResultsRefreshAtMs = SystemClock.elapsedRealtime()
             }
             testingFingerprints.clear()
             if (session.isRunning) {
                 testingFingerprints += session.targetFingerprints - session.finishedFingerprints
             }
-            if (status == Actions.DELAY_TEST_PROGRESS || status == Actions.DELAY_TEST_COMPLETED) {
-                filteredProfiles = visibleProfiles()
-            }
             when (status) {
-                Actions.DELAY_TEST_STARTED,
-                Actions.DELAY_TEST_PROGRESS,
-                -> {
+                Actions.DELAY_TEST_STARTED -> {
                     testRunning = true
                     adapter.notifyDataSetChanged()
+                    updateTestControls()
+                }
+
+                Actions.DELAY_TEST_PROGRESS -> {
+                    testRunning = true
+                    scheduleDelayResultsRefresh()
                     updateTestControls()
                 }
 
@@ -4963,8 +5081,7 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    filteredProfiles = visibleProfiles()
-                    adapter.notifyDataSetChanged()
+                    reloadFinalDelayResults()
                     updateTestControls()
                 }
 
@@ -4972,7 +5089,7 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    adapter.notifyDataSetChanged()
+                    reloadFinalDelayResults()
                     updateTestControls()
                 }
 
@@ -4980,11 +5097,12 @@ class MainActivity : Activity() {
                     testRunning = false
                     testPaused = false
                     testingFingerprints.clear()
-                    adapter.notifyDataSetChanged()
+                    reloadFinalDelayResults()
                     updateTestControls()
                 }
             }
         }
+        connectionDelayTestListener = pageDelayTestListener
 
         // Assemble layout
         content.addView(headerRow, LinearLayout.LayoutParams(-1, -2))
@@ -5246,54 +5364,21 @@ class MainActivity : Activity() {
     private fun automaticLocationOption(): LocationSelectorOption =
         LocationSelectorOption(countryCode = null, label = getString(R.string.option_automatic))
 
-    private fun showHomeMenu(anchor: View) {
-        val themeMode = appThemePreferenceStore.read()
-        val language = appLanguagePreferenceStore.read()
-        whiteDnsPopupMenu(anchor).apply {
-            menu.add(
-                0,
-                HOME_MENU_SUBSCRIPTION_ID,
-                0,
-                getString(R.string.home_menu_subscription, selectedSubscriptionName()),
-            )
-            menu.add(
-                0,
-                HOME_MENU_THEME_ID,
-                1,
-                getString(R.string.home_menu_theme, getString(themeMode.labelRes)),
-            )
-            menu.add(
-                0,
-                HOME_MENU_LANGUAGE_ID,
-                2,
-                getString(R.string.home_menu_language, getString(language.labelRes)),
-            )
-            setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    HOME_MENU_SUBSCRIPTION_ID -> anchor.post { showHomeSubscriptionMenu(anchor) }
-                    HOME_MENU_THEME_ID -> showThemeSelector()
-                    HOME_MENU_LANGUAGE_ID -> showLanguageSelector()
-                }
-                true
-            }
-        }.show()
-    }
-
-    private fun showHomeSubscriptionMenu(anchor: View) {
+    private fun showSubscriptionSelectorMenu(anchor: View) {
         val subscriptions = listOf(
             SubscriptionStore.DEFAULT_SUBSCRIPTION_ID to "WhiteVPN",
         ) + userSubscriptionManager.list().map { it.id to it.name }
         val selectedId = userSubscriptionManager.selectedId()
         whiteDnsPopupMenu(anchor).apply {
             subscriptions.forEachIndexed { index, (id, name) ->
-                menu.add(0, HOME_SUBSCRIPTION_ITEM_ID_BASE + index, index, name).apply {
+                menu.add(0, SUBSCRIPTION_ITEM_ID_BASE + index, index, name).apply {
                     isCheckable = true
                     isChecked = id == selectedId
                 }
             }
             menu.setGroupCheckable(0, true, true)
             setOnMenuItemClickListener { item ->
-                val subscriptionId = subscriptions[item.itemId - HOME_SUBSCRIPTION_ITEM_ID_BASE].first
+                val subscriptionId = subscriptions[item.itemId - SUBSCRIPTION_ITEM_ID_BASE].first
                 if (subscriptionId != selectedId) {
                     userSubscriptionManager.select(subscriptionId)
                     onSubscriptionSelected()
@@ -5643,7 +5728,12 @@ class MainActivity : Activity() {
             textDirection = View.TEXT_DIRECTION_FIRST_STRONG
         }
         val appListHeight = minOf(dp(520), resources.displayMetrics.heightPixels * 55 / 100)
-        val appList = ListView(this).apply {
+        val appList = object : ListView(this) {
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                parent.requestDisallowInterceptTouchEvent(true)
+                return super.dispatchTouchEvent(event)
+            }
+        }.apply {
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
             divider = ColorDrawable(OUTLINE)
             dividerHeight = dp(1)
@@ -6483,7 +6573,6 @@ class MainActivity : Activity() {
     }
 
     private fun renderState(state: VpnState) {
-        scheduleDisconnectTimeout(state)
         val presentation = DashboardStatePresenter.forState(state)
         val accent = accentFor(presentation.tone)
         connectionOrb.setVpnState(state)
@@ -6569,13 +6658,6 @@ class MainActivity : Activity() {
             (state == VpnState.Started && sessionStartedAtElapsedMs <= 0L)
         ) {
             setTimerText(0L)
-        }
-    }
-
-    private fun scheduleDisconnectTimeout(state: VpnState) {
-        mainHandler.removeCallbacks(disconnectTimeoutRunnable)
-        if (state == VpnState.Stopping) {
-            mainHandler.postDelayed(disconnectTimeoutRunnable, DISCONNECT_UI_TIMEOUT_MS)
         }
     }
 
@@ -6799,7 +6881,6 @@ class MainActivity : Activity() {
         const val REQUEST_VPN_PERMISSION = 10
         const val REQUEST_NOTIFICATION_PERMISSION = 11
         const val TIMER_TICK_MS = 1_000L
-        const val DISCONNECT_UI_TIMEOUT_MS = 7_000L
         const val KEYBOARD_SCROLL_DELAY_MS = 250L
         const val CONNECTION_TESTING_PAGE_ANIMATION_MS = 300L
         const val STATE_CONNECTION_TESTING_PAGE = "connection_testing_page"
@@ -6807,9 +6888,6 @@ class MainActivity : Activity() {
         const val STATE_CHAIN_PICKER_SUBSCRIPTION = "chain_picker_subscription"
         const val STATE_CONNECT_FLOW_PENDING = "connect_flow_pending"
         const val STATE_CONNECT_FLOW_ACTION = "connect_flow_action"
-        const val HOME_MENU_THEME_ID = 100
-        const val HOME_MENU_LANGUAGE_ID = 101
-        const val HOME_MENU_SUBSCRIPTION_ID = 102
-        const val HOME_SUBSCRIPTION_ITEM_ID_BASE = 200
+        const val SUBSCRIPTION_ITEM_ID_BASE = 200
     }
 }
