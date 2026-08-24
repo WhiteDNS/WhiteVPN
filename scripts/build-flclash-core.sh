@@ -69,6 +69,8 @@ if git -C "${SOURCE_SUBMODULE_DIR}" rev-parse --git-dir >/dev/null 2>&1 &&
   git -C "${SUBMODULE_DIR}" checkout --detach "${MIHOMO_COMMIT}"
 else
   echo "Fetching FlClash's pinned Mihomo commit..."
+  git -C "${FLCLASH_DIR}" submodule set-url \
+    core/Clash.Meta https://github.com/chen08209/Clash.Meta.git
   git -C "${FLCLASH_DIR}" submodule update --init --depth 1 core/Clash.Meta
 fi
 
