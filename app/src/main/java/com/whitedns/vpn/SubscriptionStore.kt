@@ -35,7 +35,8 @@ class SubscriptionStore(private val context: Context) {
     fun readUserSubscriptions(): List<UserSubscription> {
         val file = userSubscriptionsFile()
         if (!file.exists() || file.length() == 0L) return emptyList()
-        return runCatching {
+        var needsSourceKindMigration = false
+        val subscriptions = runCatching {
             val items = JSONArray(file.readText())
             buildList {
                 for (index in 0 until items.length()) {
@@ -43,6 +44,9 @@ class SubscriptionStore(private val context: Context) {
                     val id = item.optString("id").takeIf(String::isNotBlank) ?: continue
                     val name = item.optString("name").takeIf(String::isNotBlank) ?: continue
                     val input = item.optString("input").takeIf(String::isNotBlank) ?: continue
+                    val updatedAt = item.optLong("updatedAt", 0L)
+                    val sourceKind = item.optString("sourceKind").takeIf(String::isNotBlank)
+                    if (sourceKind == null) needsSourceKindMigration = true
                     add(
                         UserSubscription(
                             id = id,
@@ -50,13 +54,22 @@ class SubscriptionStore(private val context: Context) {
                             input = input,
                             format = UserSubscriptionFormat.fromWireName(item.optString("format")),
                             connectionCount = item.optInt("connectionCount", 0).coerceAtLeast(0),
-                            updatedAt = item.optLong("updatedAt", 0L),
+                            updatedAt = updatedAt,
                             lastError = item.optString("lastError"),
+                            fetchedAt = item.optLong("fetchedAt", updatedAt),
+                            sourceKind = UserSubscriptionSourceKind.fromWireName(
+                                sourceKind,
+                                input,
+                            ),
                         ),
                     )
                 }
             }
         }.getOrDefault(emptyList())
+        if (needsSourceKindMigration && subscriptions.isNotEmpty()) {
+            runCatching { writeUserSubscriptions(subscriptions) }
+        }
+        return subscriptions
     }
 
     @Synchronized
@@ -64,21 +77,13 @@ class SubscriptionStore(private val context: Context) {
         val updated = readUserSubscriptions()
             .filterNot { it.id == subscription.id }
             .plus(subscription)
-        val items = JSONArray()
-        updated.forEach { item ->
-            items.put(
-                JSONObject()
-                    .put("id", item.id)
-                    .put("name", item.name)
-                    .put("input", item.input)
-                    .put("format", item.format.wireName)
-                    .put("connectionCount", item.connectionCount)
-                    .put("updatedAt", item.updatedAt)
-                    .put("lastError", item.lastError),
-            )
+        if (yaml == null) {
+            writeUserSubscriptions(updated)
+        } else {
+            replaceSubscriptionSnapshot(userSubscriptionYamlFile(subscription.id), yaml) {
+                writeUserSubscriptions(updated)
+            }
         }
-        writeFile(userSubscriptionsFile(), items.toString())
-        yaml?.let { writeFile(userSubscriptionYamlFile(subscription.id), it) }
     }
 
     fun readUserSubscription(id: String): UserSubscription? =
@@ -92,20 +97,7 @@ class SubscriptionStore(private val context: Context) {
     @Synchronized
     fun deleteUserSubscription(id: String) {
         val remaining = readUserSubscriptions().filterNot { it.id == id }
-        val items = JSONArray()
-        remaining.forEach { item ->
-            items.put(
-                JSONObject()
-                    .put("id", item.id)
-                    .put("name", item.name)
-                    .put("input", item.input)
-                    .put("format", item.format.wireName)
-                    .put("connectionCount", item.connectionCount)
-                    .put("updatedAt", item.updatedAt)
-                    .put("lastError", item.lastError),
-            )
-        }
-        writeFile(userSubscriptionsFile(), items.toString())
+        writeUserSubscriptions(remaining)
         userSubscriptionYamlFile(id).delete()
         deleteConnectionDelayRecords(id)
         if (readSelectedSubscriptionId() == id) saveSelectedSubscriptionId(DEFAULT_SUBSCRIPTION_ID)
@@ -349,9 +341,25 @@ class SubscriptionStore(private val context: Context) {
     private fun userSubscriptionYamlFile(id: String): File =
         File(context.filesDir, "mihomo/subscriptions/$id.yaml")
 
+    private fun writeUserSubscriptions(subscriptions: List<UserSubscription>) {
+        val items = JSONArray()
+        subscriptions.forEach { items.put(it.toJson()) }
+        writeFile(userSubscriptionsFile(), items.toString())
+    }
+
+    private fun UserSubscription.toJson(): JSONObject = JSONObject()
+        .put("id", id)
+        .put("name", name)
+        .put("input", input)
+        .put("format", format.wireName)
+        .put("connectionCount", connectionCount)
+        .put("updatedAt", updatedAt)
+        .put("fetchedAt", fetchedAt)
+        .put("sourceKind", sourceKind.wireName)
+        .put("lastError", lastError)
+
     private fun writeFile(file: File, value: String) {
-        file.parentFile?.mkdirs()
-        file.writeText(value)
+        writeSubscriptionTextAtomically(file, value)
     }
 
     private fun JSONArray?.orEmptyObjects(): Sequence<JSONObject> {
