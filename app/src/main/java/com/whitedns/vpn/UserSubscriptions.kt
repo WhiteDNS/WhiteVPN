@@ -353,7 +353,9 @@ object MihomoLinkConfigBuilder {
     }
 
     fun migrateGeneratedYaml(yaml: String): String {
-        val renamed = yaml.replace("'WhiteDNS Select'", quote(SELECT_GROUP))
+        val renamed = yaml
+            .replace("'WhiteDNS Select'", quote(SELECT_GROUP))
+            .replace("cipher: 'null'", "cipher: 'auto'")
         if ("MATCH,$SELECT_GROUP" in renamed) return renamed
         return renamed.trimEnd() + "\nrules:\n  - ${quote("MATCH,$SELECT_GROUP")}\n"
     }

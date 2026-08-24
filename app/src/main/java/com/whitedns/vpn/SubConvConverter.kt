@@ -143,7 +143,13 @@ internal object SubConvConverter {
             .put("port", port)
             .put("uuid", uuid)
             .put("alterId", jsonInt(values, "aid", 0))
-            .put("cipher", values.optString("scy").ifBlank { "auto" })
+            .put(
+                "cipher",
+                (values.opt("scy") as? String)
+                    ?.takeUnless { it.equals("null", ignoreCase = true) }
+                    .orEmpty()
+                    .ifBlank { "auto" },
+            )
             .put("udp", true)
             .put("xudp", true)
             .put("tls", false)

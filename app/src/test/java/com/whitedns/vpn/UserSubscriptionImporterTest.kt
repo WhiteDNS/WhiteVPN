@@ -114,6 +114,28 @@ class UserSubscriptionImporterTest {
     }
 
     @Test
+    fun vmessNullSecurityDefaultsToAuto() {
+        fun link(scy: String) = "vmess://" + Base64.getEncoder().encodeToString(
+            """
+            {
+              "ps": "VMess",
+              "add": "vmess.example.com",
+              "port": "443",
+              "id": "00000000-0000-0000-0000-000000000003",
+              "aid": "0",
+              "scy": $scy,
+              "net": "tcp",
+              "tls": ""
+            }
+            """.trimIndent().toByteArray(),
+        )
+
+        val proxies = SubConvConverter.convert(listOf(link("null"), link("\"null\"")).joinToString("\n"))
+
+        assertEquals(listOf("auto", "auto"), proxies.map { it.getString("cipher") })
+    }
+
+    @Test
     fun subConvPortMirrorsVlessWebsocketAndHttp2Options() {
         val proxies = SubConvConverter.convert(
             """
@@ -717,6 +739,10 @@ class UserSubscriptionImporterTest {
     @Test
     fun oldGeneratedYamlIsMigratedToTheRuntimeTrafficGroup() {
         val oldYaml = """
+            proxies:
+              - name: 'VMess'
+                type: 'vmess'
+                cipher: 'null'
             proxy-groups:
               - name: 'WhiteDNS Select'
                 type: select
@@ -728,6 +754,7 @@ class UserSubscriptionImporterTest {
 
         assertFalse(migrated.contains("WhiteDNS Select"))
         assertTrue(migrated.contains("name: 'WhiteDNS Proxy'"))
+        assertTrue(migrated.contains("cipher: 'auto'"))
         assertTrue(migrated.contains("- 'MATCH,WhiteDNS Proxy'"))
     }
 }
