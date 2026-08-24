@@ -37,10 +37,6 @@
     <string name="language_section">زبان</string>
     <string name="language_setting_title">زبان برنامه</string>
     <string name="language_setting_detail">زبان مورد استفاده در همه بخش‌های WhiteVPN را انتخاب کنید.</string>
-    <string name="home_menu_content_description">منوی گزینه‌های خانه</string>
-    <string name="home_menu_subscription">سابسکریپشن · %1$s</string>
-    <string name="home_menu_theme">پوسته · %1$s</string>
-    <string name="home_menu_language">زبان · %1$s</string>
     <string name="theme_dialog_title">پوسته</string>
     <string name="theme_system">مطابق دستگاه</string>
     <string name="theme_light">روشن</string>
@@ -161,6 +157,10 @@
 
     <string name="settings_title">تنظیمات</string>
     <string name="settings_categories_description">برای پیکربندی وایت‌وی‌پی‌ان یک دسته را انتخاب کنید.</string>
+    <string name="settings_category_app_preferences">تنظیمات برنامه</string>
+    <string name="settings_category_app_preferences_detail">سابسکریپشن، پوسته و زبان برنامه.</string>
+    <string name="settings_subscription_title">سابسکریپشن</string>
+    <string name="settings_value_content_description">%1$s: %2$s</string>
     <string name="settings_category_testing">آزمایش</string>
     <string name="settings_category_testing_detail">مهلت تأخیر، تعداد تست‌های هم‌زمان و حجم تست سرعت.</string>
     <string name="settings_category_connections">اتصال‌ها</string>

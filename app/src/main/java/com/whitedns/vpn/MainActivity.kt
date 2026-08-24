@@ -147,6 +147,7 @@ class MainActivity : Activity() {
     private lateinit var homeChainAfterSelectorRow: DashboardDataRowView
     private lateinit var homeChainSelectorRows: LinearLayout
     private lateinit var homeSubscriptionSelectorRow: DashboardDataRowView
+    private lateinit var settingsSubscriptionSelectorRow: DashboardDataRowView
     private var updateSplitTunnelControlsEnabled: ((Boolean) -> Unit)? = null
     private lateinit var connectionModeGroup: MaterialButtonToggleGroup
     private lateinit var vpnModeButton: MaterialButton
@@ -609,7 +610,20 @@ class MainActivity : Activity() {
         val selectedName = selectedSubscriptionName()
         homeSubscriptionSelectorRow.setValue(selectedName)
         homeSubscriptionSelectorRow.contentDescription =
-            getString(R.string.home_menu_subscription, selectedName)
+            getString(
+                R.string.settings_value_content_description,
+                getString(R.string.subscriptions_title),
+                selectedName,
+            )
+        if (::settingsSubscriptionSelectorRow.isInitialized) {
+            settingsSubscriptionSelectorRow.setValue(selectedName)
+            settingsSubscriptionSelectorRow.contentDescription =
+                getString(
+                    R.string.settings_value_content_description,
+                    getString(R.string.settings_subscription_title),
+                    selectedName,
+                )
+        }
         val whiteDnsCount = store.readCatalog()?.profiles?.size ?: 0
         subscriptionsList.addView(
             subscriptionCard(
@@ -1300,60 +1314,27 @@ class MainActivity : Activity() {
             }
         }
 
-        // New header with hamburger menu, centered title, and theme toggle
+        // Centered product header
         val headerBlock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutDirection = View.LAYOUT_DIRECTION_LTR
-            gravity = Gravity.CENTER_VERTICAL
-            // Hamburger menu button on left
-            addView(
-                ImageButton(this@MainActivity).apply {
-                    setImageResource(R.drawable.ic_menu)
-                    imageTintList = ColorStateList.valueOf(TEXT_PRIMARY)
-                    scaleType = ImageView.ScaleType.CENTER
-                    setPadding(dp(10), dp(10), dp(10), dp(10))
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.OVAL
-                        setColor(Color.TRANSPARENT)
-                    }
-                    setSelectableBackground()
-                    contentDescription = getString(R.string.home_menu_content_description)
-                    setOnClickListener { showHomeMenu(this) }
-                },
-                LinearLayout.LayoutParams(dp(40), dp(40)),
-            )
-            // Centered title with version
-            addView(
-                LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    layoutDirection = View.LAYOUT_DIRECTION_LTR
-                    gravity = Gravity.CENTER
-                    setPadding(dp(9), dp(4), dp(9), dp(4))
-                    addView(TextView(this@MainActivity).apply {
-                        text = "WhiteVPN"
-                        textSize = 14.5f
-                        typeface = WhiteDnsDisplayTypeface
-                        setTextColor(TEXT_PRIMARY)
-                        includeFontPadding = false
-                        letterSpacing = -0.01f
-                    })
-                    addView(TextView(this@MainActivity).apply {
-                        text = BuildConfig.VERSION_NAME
-                        textSize = 11.5f
-                        typeface = WhiteDnsBodyTypeface
-                        setTextColor(palette.textTertiary)
-                        includeFontPadding = false
-                    }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(9) })
-                },
-                LinearLayout.LayoutParams(0, -2, 1f).apply {
-                    gravity = Gravity.CENTER
-                },
-            )
-            // Empty spacer on right for balance (theme toggle removed)
-            addView(
-                View(this@MainActivity),
-                LinearLayout.LayoutParams(dp(40), dp(40)),
-            )
+            gravity = Gravity.CENTER
+            setPadding(dp(9), dp(4), dp(9), dp(4))
+            addView(TextView(this@MainActivity).apply {
+                text = "WhiteVPN"
+                textSize = 14.5f
+                typeface = WhiteDnsDisplayTypeface
+                setTextColor(TEXT_PRIMARY)
+                includeFontPadding = false
+                letterSpacing = -0.01f
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = BuildConfig.VERSION_NAME
+                textSize = 11.5f
+                typeface = WhiteDnsBodyTypeface
+                setTextColor(palette.textTertiary)
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(9) })
         }
 
         // New segmented tab switcher with rounded corners
@@ -1704,8 +1685,12 @@ class MainActivity : Activity() {
         homeSubscriptionSelectorRow = DashboardDataRowView(this).apply {
             val subscriptionName = selectedSubscriptionName()
             setRow(getString(R.string.subscriptions_title), subscriptionName)
-            contentDescription = getString(R.string.home_menu_subscription, subscriptionName)
-            setOnRowClickListener { showHomeSubscriptionMenu(this) }
+            contentDescription = getString(
+                R.string.settings_value_content_description,
+                getString(R.string.subscriptions_title),
+                subscriptionName,
+            )
+            setOnRowClickListener { showSubscriptionSelectorMenu(this) }
         }
         dashboardConnectionMetadataSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1827,12 +1812,54 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
         }
+        val appPreferencesSettings = settingsContent()
         val testingSettings = settingsContent()
         val connectionSettings = settingsContent()
         val chainSettings = buildConnectionChainSettings()
         val splitTunnelSettings = settingsContent()
         val sharingSettings = settingsContent()
         val systemSettings = settingsContent()
+        fun appPreferenceRow(
+            @StringRes titleRes: Int,
+            value: String,
+            onClick: (View) -> Unit,
+        ) = DashboardDataRowView(this).apply {
+            val title = getString(titleRes)
+            setRow(title, value)
+            contentDescription = getString(R.string.settings_value_content_description, title, value)
+            setOnRowClickListener { onClick(this) }
+        }
+        settingsSubscriptionSelectorRow = appPreferenceRow(
+            R.string.settings_subscription_title,
+            selectedSubscriptionName(),
+            ::showSubscriptionSelectorMenu,
+        )
+        val themeSelectorRow = appPreferenceRow(
+            R.string.theme_dialog_title,
+            getString(appThemePreferenceStore.read().labelRes),
+        ) { showThemeSelector() }
+        val languageSelectorRow = appPreferenceRow(
+            R.string.language_setting_title,
+            getString(appLanguagePreferenceStore.read().labelRes),
+        ) { showLanguageSelector() }
+        val appPreferencesPanel = advancedSettingsPanel()
+        listOf(settingsSubscriptionSelectorRow, themeSelectorRow, languageSelectorRow)
+            .forEachIndexed { index, row ->
+                if (index > 0) {
+                    appPreferencesPanel.addView(
+                        View(this).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+                        LinearLayout.LayoutParams(-1, dp(1)).apply {
+                            marginStart = dp(16)
+                            marginEnd = dp(16)
+                        },
+                    )
+                }
+                appPreferencesPanel.addView(row, LinearLayout.LayoutParams(-1, -2))
+            }
+        appPreferencesSettings.addView(
+            appPreferencesPanel,
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) },
+        )
         var connectionTestSettings = connectionTestSettingsPreferenceStore.read()
         testingSettings.addView(
             advancedSectionLabel(getString(R.string.config_test_section)),
@@ -2914,6 +2941,11 @@ class MainActivity : Activity() {
                 )
             }
         }
+        addCategory(
+            R.string.settings_category_app_preferences,
+            R.string.settings_category_app_preferences_detail,
+            appPreferencesSettings,
+        )
         addCategory(
             R.string.settings_category_testing,
             R.string.settings_category_testing_detail,
@@ -5246,54 +5278,21 @@ class MainActivity : Activity() {
     private fun automaticLocationOption(): LocationSelectorOption =
         LocationSelectorOption(countryCode = null, label = getString(R.string.option_automatic))
 
-    private fun showHomeMenu(anchor: View) {
-        val themeMode = appThemePreferenceStore.read()
-        val language = appLanguagePreferenceStore.read()
-        whiteDnsPopupMenu(anchor).apply {
-            menu.add(
-                0,
-                HOME_MENU_SUBSCRIPTION_ID,
-                0,
-                getString(R.string.home_menu_subscription, selectedSubscriptionName()),
-            )
-            menu.add(
-                0,
-                HOME_MENU_THEME_ID,
-                1,
-                getString(R.string.home_menu_theme, getString(themeMode.labelRes)),
-            )
-            menu.add(
-                0,
-                HOME_MENU_LANGUAGE_ID,
-                2,
-                getString(R.string.home_menu_language, getString(language.labelRes)),
-            )
-            setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    HOME_MENU_SUBSCRIPTION_ID -> anchor.post { showHomeSubscriptionMenu(anchor) }
-                    HOME_MENU_THEME_ID -> showThemeSelector()
-                    HOME_MENU_LANGUAGE_ID -> showLanguageSelector()
-                }
-                true
-            }
-        }.show()
-    }
-
-    private fun showHomeSubscriptionMenu(anchor: View) {
+    private fun showSubscriptionSelectorMenu(anchor: View) {
         val subscriptions = listOf(
             SubscriptionStore.DEFAULT_SUBSCRIPTION_ID to "WhiteVPN",
         ) + userSubscriptionManager.list().map { it.id to it.name }
         val selectedId = userSubscriptionManager.selectedId()
         whiteDnsPopupMenu(anchor).apply {
             subscriptions.forEachIndexed { index, (id, name) ->
-                menu.add(0, HOME_SUBSCRIPTION_ITEM_ID_BASE + index, index, name).apply {
+                menu.add(0, SUBSCRIPTION_ITEM_ID_BASE + index, index, name).apply {
                     isCheckable = true
                     isChecked = id == selectedId
                 }
             }
             menu.setGroupCheckable(0, true, true)
             setOnMenuItemClickListener { item ->
-                val subscriptionId = subscriptions[item.itemId - HOME_SUBSCRIPTION_ITEM_ID_BASE].first
+                val subscriptionId = subscriptions[item.itemId - SUBSCRIPTION_ITEM_ID_BASE].first
                 if (subscriptionId != selectedId) {
                     userSubscriptionManager.select(subscriptionId)
                     onSubscriptionSelected()
@@ -6807,9 +6806,6 @@ class MainActivity : Activity() {
         const val STATE_CHAIN_PICKER_SUBSCRIPTION = "chain_picker_subscription"
         const val STATE_CONNECT_FLOW_PENDING = "connect_flow_pending"
         const val STATE_CONNECT_FLOW_ACTION = "connect_flow_action"
-        const val HOME_MENU_THEME_ID = 100
-        const val HOME_MENU_LANGUAGE_ID = 101
-        const val HOME_MENU_SUBSCRIPTION_ID = 102
-        const val HOME_SUBSCRIPTION_ITEM_ID_BASE = 200
+        const val SUBSCRIPTION_ITEM_ID_BASE = 200
     }
 }

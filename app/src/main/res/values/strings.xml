@@ -36,10 +36,6 @@
     <string name="language_section">Language</string>
     <string name="language_setting_title">App language</string>
     <string name="language_setting_detail">Choose the language used throughout WhiteVPN.</string>
-    <string name="home_menu_content_description">Home options menu</string>
-    <string name="home_menu_subscription">Subscription · %1$s</string>
-    <string name="home_menu_theme">Theme · %1$s</string>
-    <string name="home_menu_language">Language · %1$s</string>
     <string name="theme_dialog_title">Theme</string>
     <string name="theme_system">System default</string>
     <string name="theme_light">Light</string>
@@ -160,6 +156,10 @@
 
     <string name="settings_title">Settings</string>
     <string name="settings_categories_description">Choose a category to configure WhiteVPN.</string>
+    <string name="settings_category_app_preferences">App preferences</string>
+    <string name="settings_category_app_preferences_detail">Subscription, appearance, and language.</string>
+    <string name="settings_subscription_title">Subscription</string>
+    <string name="settings_value_content_description">%1$s: %2$s</string>
     <string name="settings_category_testing">Testing</string>
     <string name="settings_category_testing_detail">Delay limits, concurrency, and speed-test size.</string>
     <string name="settings_category_connections">Connections</string>
