@@ -387,8 +387,8 @@ class WhiteDnsVpnService : VpnService() {
     override fun onRevoke() {
         alwaysOnActive = false
         lockdownActive = false
+        // VpnService.onRevoke() stops the service; finishStoppedState() must do that after cleanup.
         stopVpn(force = true)
-        super.onRevoke()
     }
 
     private fun startVpn() {
