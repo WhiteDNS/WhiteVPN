@@ -370,6 +370,7 @@ class MainActivity : Activity() {
                 val tabStrip = getChildAt(0) as? ViewGroup ?: return@post
                 for (index in 0 until tabStrip.childCount) {
                     val tabView = tabStrip.getChildAt(index) as? ViewGroup ?: continue
+                    tabView.setPadding(0, tabView.paddingTop, 0, tabView.paddingBottom)
                     val icon = tabView.getChildAt(0) as? ImageView ?: continue
                     val params = icon.layoutParams as? ViewGroup.MarginLayoutParams ?: continue
                     params.bottomMargin = dp(5)
@@ -1447,9 +1448,8 @@ class MainActivity : Activity() {
             textSize = 15f
             letterSpacing = 0.02f
             typeface = WhiteDnsDataTypeface
-            setTextColor(TEXT_PRIMARY)
+            setTextColor(TEXT_SECONDARY)
             includeFontPadding = false
-            alpha = 0.25f
         }
         downloadSpeedText = TextView(this).apply {
             text = "0 B/s"
@@ -5439,8 +5439,7 @@ class MainActivity : Activity() {
                 modes.map { getString(it.labelRes) }.toTypedArray(),
                 modes.indexOf(selectedMode),
             ) { dialog, which ->
-                handleDnsPrivacySelected(modes[which])
-                dialog.dismiss()
+                if (handleDnsPrivacySelected(modes[which])) dialog.dismiss()
             }
             .create()
         dialog.showWhiteDnsDialog()
@@ -5477,17 +5476,21 @@ class MainActivity : Activity() {
         routingModeRow.contentDescription = getString(R.string.routing_content_description, modeLabel)
     }
 
-    private fun handleDnsPrivacySelected(mode: DnsPrivacyMode) {
+    private fun handleDnsPrivacySelected(mode: DnsPrivacyMode): Boolean {
         val previousMode = dnsPrivacyPreferenceStore.readMode()
-        if (previousMode == mode) return
+        val sameMode = previousMode == mode
+        if (!commitDnsPrivacyEndpoint(reconnectIfChanged = sameMode, focusOnError = true)) return false
+        if (sameMode) return true
         dnsPrivacyPreferenceStore.saveMode(mode)
         DiagnosticLogger.info(this, "activity.dnsPrivacy.saved", "mode=${mode.wireName}")
+        if (::dnsPrivacyEndpointInput.isInitialized) dnsPrivacyEndpointInput.clearFocus()
         renderDnsPrivacySelection()
         if (buttonModel.state == VpnState.Started) {
             buttonModel.onStateChanged(VpnState.Starting)
             renderState(VpnState.Starting)
             startVpnService(Actions.RECONNECT)
         }
+        return true
     }
 
     private fun commitDnsPrivacyEndpoint(
@@ -6574,6 +6577,7 @@ class MainActivity : Activity() {
 
     private fun renderState(state: VpnState) {
         val presentation = DashboardStatePresenter.forState(state)
+        if (!presentation.showTransferSpeeds) resetTransferSpeeds()
         val accent = accentFor(presentation.tone)
         connectionOrb.setVpnState(state)
         // Keep long-press diagnostics available even when the connection action is unavailable.
@@ -6591,8 +6595,7 @@ class MainActivity : Activity() {
         )
         statusText.text = getString(presentation.titleRes)
         statusText.setTextColor(TEXT_SECONDARY)
-        // Update timer opacity based on connection state
-        timerText.alpha = if (state == VpnState.Started) 1f else 0.25f
+        timerText.setTextColor(if (state == VpnState.Started) TEXT_PRIMARY else TEXT_SECONDARY)
         connectionCountryText.text = when {
             state == VpnState.Started && connectionCountryFlag.isNotBlank() ->
                 getString(R.string.route_location, connectionCountryFlag)
@@ -6669,8 +6672,7 @@ class MainActivity : Activity() {
 
     private fun setTimerText(elapsedMs: Long) {
         val isActive = buttonModel.state == VpnState.Started && sessionStartedAtElapsedMs > 0L
-        timerText.setTextColor(TEXT_PRIMARY)
-        timerText.alpha = if (isActive) 1f else 0.25f
+        timerText.setTextColor(if (isActive) TEXT_PRIMARY else TEXT_SECONDARY)
         timerText.text = formatDuration(elapsedMs)
     }
 
@@ -6682,6 +6684,10 @@ class MainActivity : Activity() {
     }
 
     private fun updateTransferSpeeds() {
+        if (!DashboardStatePresenter.forState(buttonModel.state).showTransferSpeeds) {
+            resetTransferSpeeds()
+            return
+        }
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val rxBytes = TrafficStats.getUidRxBytes(Process.myUid())
         val txBytes = TrafficStats.getUidTxBytes(Process.myUid())

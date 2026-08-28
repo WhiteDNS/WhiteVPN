@@ -13,6 +13,7 @@ class DashboardStatePresentationTest {
         assertEquals(R.string.state_ready, presentation.titleRes)
         assertEquals(DashboardTone.Neutral, presentation.tone)
         assertFalse(presentation.showProgress)
+        assertFalse(presentation.showTransferSpeeds)
     }
 
     @Test
@@ -23,9 +24,11 @@ class DashboardStatePresentationTest {
         assertEquals(R.string.state_connecting, starting.titleRes)
         assertEquals(DashboardTone.Progress, starting.tone)
         assertTrue(starting.showProgress)
+        assertFalse(starting.showTransferSpeeds)
         assertEquals(R.string.state_disconnecting, stopping.titleRes)
         assertEquals(DashboardTone.Progress, stopping.tone)
         assertTrue(stopping.showProgress)
+        assertFalse(stopping.showTransferSpeeds)
     }
 
     @Test
@@ -35,6 +38,7 @@ class DashboardStatePresentationTest {
         assertEquals(R.string.state_connected, presentation.titleRes)
         assertEquals(DashboardTone.Connected, presentation.tone)
         assertFalse(presentation.showProgress)
+        assertTrue(presentation.showTransferSpeeds)
     }
 
     @Test
@@ -44,6 +48,7 @@ class DashboardStatePresentationTest {
         assertEquals(R.string.state_connection_error, presentation.titleRes)
         assertEquals(DashboardTone.Error, presentation.tone)
         assertFalse(presentation.showProgress)
+        assertFalse(presentation.showTransferSpeeds)
     }
 
     @Test
@@ -53,6 +58,7 @@ class DashboardStatePresentationTest {
         assertEquals(R.string.state_daily_limit, presentation.titleRes)
         assertEquals(DashboardTone.Neutral, presentation.tone)
         assertFalse(presentation.showProgress)
+        assertFalse(presentation.showTransferSpeeds)
     }
 
     @Test

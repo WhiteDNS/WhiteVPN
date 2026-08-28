@@ -723,7 +723,7 @@ internal class MihomoRuntimeConfigBuilder(private val context: Context) {
             }
             val subscriptionYaml = stripTopLevelKeys(rawYaml, keysToReplace)
             val dnsProxyGroup = if (routingMode == RoutingMode.Subscription) {
-                dnsProxyGroup(rawYaml)
+                routingTarget
             } else {
                 requiredRoutingTarget
             }
@@ -732,6 +732,10 @@ internal class MihomoRuntimeConfigBuilder(private val context: Context) {
                 DnsPrivacyMode.Automatic -> DOH_SERVERS + DOT_SERVERS
                 DnsPrivacyMode.DoH -> listOf(DnsPrivacyPolicy.normalizeDohUrl(dohUrl))
                 DnsPrivacyMode.DoT -> listOf(DnsPrivacyPolicy.normalizeDotEndpoint(dotEndpoint))
+            }
+            val bootstrapServers = when (dnsPrivacyMode) {
+                DnsPrivacyMode.Automatic, DnsPrivacyMode.DoH -> DOH_SERVERS
+                DnsPrivacyMode.DoT -> DOT_SERVERS
             }
             return buildString {
                 if (subscriptionYaml.isNotBlank()) {
@@ -791,15 +795,17 @@ internal class MihomoRuntimeConfigBuilder(private val context: Context) {
                 append("  enhanced-mode: fake-ip\n")
                 append("  fake-ip-range: 198.18.0.1/16\n")
                 append("  default-nameserver:\n")
-                append("    - 1.1.1.1\n")
-                append("    - 8.8.8.8\n")
+                bootstrapServers.forEach { server ->
+                    append("    - ${yamlSingleQuoted(server)}\n")
+                }
                 append("  nameserver:\n")
                 dnsServers.forEach { server ->
                     append("    - ${yamlSingleQuoted("$server$proxySuffix")}\n")
                 }
                 append("  proxy-server-nameserver:\n")
-                append("    - 1.1.1.1\n")
-                append("    - 8.8.8.8\n")
+                bootstrapServers.forEach { server ->
+                    append("    - ${yamlSingleQuoted(server)}\n")
+                }
                 append("tun:\n")
                 append("  enable: false\n")
             }
@@ -811,12 +817,6 @@ internal class MihomoRuntimeConfigBuilder(private val context: Context) {
                 MihomoSelectionPolicy.trafficProbeGroup(summary)?.name
                     ?: MihomoSelectionPolicy.mainSelectorGroup(summary)?.name
                     ?: summary.proxies.firstOrNull()?.name
-            }.getOrNull()
-        }
-
-        private fun dnsProxyGroup(rawYaml: String): String? {
-            return runCatching {
-                MihomoSelectionPolicy.trafficProbeGroup(MihomoConfigParser.parseSummary(rawYaml))?.name
             }.getOrNull()
         }
 
