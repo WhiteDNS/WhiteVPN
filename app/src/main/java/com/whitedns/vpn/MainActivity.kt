@@ -909,7 +909,7 @@ class MainActivity : Activity() {
         if (source == null) {
             Toast.makeText(this, R.string.subscription_clipboard_empty, Toast.LENGTH_SHORT).show()
         } else {
-            showAddSubscriptionDialog(source)
+            showAddSubscriptionDialog(source, scannedSubscriptionName(source).orEmpty())
         }
     }
 
