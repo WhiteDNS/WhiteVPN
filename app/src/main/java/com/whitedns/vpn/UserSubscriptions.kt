@@ -7,6 +7,8 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 enum class UserSubscriptionFormat(val wireName: String, val label: String) {
@@ -37,6 +39,46 @@ data class ImportedUserSubscription(
     val format: UserSubscriptionFormat,
     val connectionCount: Int,
 )
+
+internal fun normalizedSubscriptionSource(contents: String?): String? =
+    contents?.trim()?.takeIf(String::isNotEmpty)
+
+internal fun scannedSubscriptionName(source: String): String? {
+    fun clean(value: String?): String? = value?.trim()
+        ?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+    fun decode(value: String?): String? {
+        val encoded = value ?: return null
+        return runCatching { URLDecoder.decode(encoded, StandardCharsets.UTF_8.name()) }
+            .getOrNull()
+            ?.let(::clean)
+    }
+
+    val uriName = runCatching {
+        val uri = URI(source)
+        val query = uri.rawQuery?.split('&').orEmpty()
+        listOf("remark", "remarks", "name").firstNotNullOfOrNull { key ->
+            query.firstOrNull { it.substringBefore('=') == key }
+                ?.substringAfter('=', "")
+                ?.let(::decode)
+        } ?: decode(uri.rawFragment)
+    }.getOrNull()
+    if (uriName != null) return uriName
+
+    val jsonSource = if (source.startsWith("vmess://")) {
+        SubConvConverter.decodeBase64Text(source.removePrefix("vmess://")) ?: return null
+    } else {
+        source
+    }
+    val json = runCatching {
+        when (jsonSource.trimStart().firstOrNull()) {
+            '{' -> JSONObject(jsonSource)
+            '[' -> JSONArray(jsonSource).optJSONObject(0)
+            else -> null
+        }
+    }.getOrNull() ?: return null
+    return listOf("remarks", "remark", "ps", "name")
+        .firstNotNullOfOrNull { key -> clean(json.optString(key)) }
+}
 
 internal fun InputStream.readAtMost(maxBytes: Int): ByteArray {
     val output = ByteArrayOutputStream(minOf(maxBytes, 8 * 1024))

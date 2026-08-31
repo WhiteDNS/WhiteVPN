@@ -429,8 +429,8 @@ class WhiteDnsVpnService : VpnService() {
     override fun onRevoke() {
         alwaysOnActive = false
         lockdownActive = false
-        // VpnService.onRevoke() stops the service; finishStoppedState() must do that after cleanup.
-        stopVpn(force = true)
+        // Android has already deactivated the VPN interface; service destruction continues native cleanup.
+        finishStoppedState("disconnect.revoked")
     }
 
     private fun startVpn() {

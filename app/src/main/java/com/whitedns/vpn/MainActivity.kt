@@ -72,6 +72,10 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.tabs.TabLayout
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
+import com.google.zxing.integration.android.IntentIntegrator
+import com.journeyapps.barcodescanner.CaptureActivity
+import com.journeyapps.barcodescanner.DecoratedBarcodeView
+import com.journeyapps.barcodescanner.Size
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -89,6 +93,14 @@ internal object ConnectionDelayUiRefreshPolicy {
         val elapsedMs = (nowMs - lastRefreshAtMs).coerceAtLeast(0L)
         return (MIN_REFRESH_INTERVAL_MS - elapsedMs).coerceAtLeast(0L)
     }
+}
+
+class SubscriptionQrCaptureActivity : CaptureActivity() {
+    override fun initializeContent(): DecoratedBarcodeView =
+        super.initializeContent().also { scanner ->
+            val side = minOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels) * 4 / 5
+            scanner.barcodeView.framingRectSize = Size(side, side)
+        }
 }
 
 /* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app · tone: utilitarian · anchor hue: green */
@@ -563,7 +575,7 @@ class MainActivity : Activity() {
             strokeColor = ColorStateList.valueOf(TEAL)
             rippleColor = ColorStateList.valueOf(withAlpha(TEAL, 24))
             setTextColor(TEAL)
-            setOnClickListener { showAddSubscriptionDialog() }
+            setOnClickListener { showAddSubscriptionMenu(this) }
         }
         val compactHeader = resources.configuration.screenWidthDp < 360
         content.addView(LinearLayout(this).apply {
@@ -662,7 +674,6 @@ class MainActivity : Activity() {
                             onSubscriptionSelected()
                         },
                         R.string.subscription_action_edit to { showEditSubscriptionDialog(item) },
-                        R.string.subscription_action_validate_source to { testSubscription(item) },
                         R.string.subscription_action_refresh to { refreshSubscription(item) },
                         R.string.subscription_action_delete to { confirmDeleteSubscription(item) },
                     ),
@@ -862,18 +873,63 @@ class MainActivity : Activity() {
         showConnectionTestingPage()
     }
 
-    private fun showAddSubscriptionDialog() = showSubscriptionDialog()
+    private fun startSubscriptionQrScan() {
+        IntentIntegrator(this)
+            .setCaptureActivity(SubscriptionQrCaptureActivity::class.java)
+            .setDesiredBarcodeFormats(listOf(IntentIntegrator.QR_CODE))
+            .setPrompt(getString(R.string.subscription_scan_qr_prompt))
+            .setBeepEnabled(false)
+            .setBarcodeImageEnabled(false)
+            .initiateScan()
+    }
+
+    private fun showAddSubscriptionMenu(anchor: View) {
+        whiteDnsPopupMenu(anchor).apply {
+            if (packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)) {
+                menu.add(R.string.subscription_scan_qr).setOnMenuItemClickListener {
+                    startSubscriptionQrScan()
+                    true
+                }
+            }
+            menu.add(R.string.subscription_from_clipboard).setOnMenuItemClickListener {
+                addSubscriptionFromClipboard()
+                true
+            }
+            show()
+        }
+    }
+
+    private fun addSubscriptionFromClipboard() {
+        val source = getSystemService(ClipboardManager::class.java).primaryClip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)
+            ?.coerceToText(this)
+            ?.toString()
+            .let(::normalizedSubscriptionSource)
+        if (source == null) {
+            Toast.makeText(this, R.string.subscription_clipboard_empty, Toast.LENGTH_SHORT).show()
+        } else {
+            showAddSubscriptionDialog(source)
+        }
+    }
+
+    private fun showAddSubscriptionDialog(initialSource: String = "", initialName: String = "") =
+        showSubscriptionDialog(initialSource = initialSource, initialName = initialName)
 
     private fun showEditSubscriptionDialog(item: UserSubscription) = showSubscriptionDialog(item)
 
-    private fun showSubscriptionDialog(existing: UserSubscription? = null) {
+    private fun showSubscriptionDialog(
+        existing: UserSubscription? = null,
+        initialSource: String = "",
+        initialName: String = "",
+    ) {
         val nameInput = TextInputEditText(this).apply {
             setSingleLine(true)
             background = null
             setPaddingRelative(dp(16), dp(12), dp(16), dp(12))
             setTextColor(TEXT_PRIMARY)
             setHintTextColor(TEXT_SECONDARY)
-            setText(existing?.name.orEmpty())
+            setText(existing?.name ?: initialName)
         }
         val nameLayout = TextInputLayout(this).apply {
             hint = getString(R.string.subscription_name_hint)
@@ -895,7 +951,7 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             setTextColor(TEXT_PRIMARY)
             setHintTextColor(TEXT_SECONDARY)
-            setText(existing?.input.orEmpty())
+            setText(existing?.input ?: initialSource)
         }
         val sourceLayout = TextInputLayout(this).apply {
             hint = getString(R.string.subscription_source_hint)
@@ -1207,6 +1263,13 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Android API")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        val scanResult = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
+        if (scanResult != null) {
+            normalizedSubscriptionSource(scanResult.contents)?.let { source ->
+                showAddSubscriptionDialog(source, scannedSubscriptionName(source).orEmpty())
+            }
+            return
+        }
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_VPN_PERMISSION) return
         if (!connectFlowPending) {
@@ -6026,6 +6089,10 @@ class MainActivity : Activity() {
             ),
         )
         content.addView(
+            saveButton,
+            LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(16) },
+        )
+        content.addView(
             appPicker,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -6033,10 +6100,6 @@ class MainActivity : Activity() {
             ).apply {
                 topMargin = dp(16)
             },
-        )
-        content.addView(
-            saveButton,
-            LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(16) },
         )
 
         saveButton.setOnClickListener {

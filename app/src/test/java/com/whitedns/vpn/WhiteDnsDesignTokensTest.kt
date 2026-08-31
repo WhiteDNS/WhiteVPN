@@ -27,10 +27,14 @@ class WhiteDnsDesignTokensTest {
         assertEquals(0xFFF8FDFB.toInt(), light.surface)
         assertEquals(0xFFD3E2DB.toInt(), light.surfaceVariant)
         assertTrue(light.background != light.surface)
-        assertTrue(light.teal != light.amber)
-        assertTrue(light.teal != light.red)
+        assertEquals(4, setOf(light.neutral, light.teal, light.amber, light.red).size)
         assertTrue(dark.surface != dark.surfaceVariant)
-        assertTrue(dark.teal != dark.amber)
-        assertTrue(dark.teal != dark.red)
+        assertEquals(4, setOf(dark.neutral, dark.teal, dark.amber, dark.red).size)
+        assertTrue(light.tealGradientStart != light.tealGradientEnd)
+        assertTrue(light.amberGradientStart != light.amberGradientEnd)
+        assertTrue(light.redGradientStart != light.redGradientEnd)
+        assertTrue(dark.tealGradientStart != dark.tealGradientEnd)
+        assertTrue(dark.amberGradientStart != dark.amberGradientEnd)
+        assertTrue(dark.redGradientStart != dark.redGradientEnd)
     }
 }

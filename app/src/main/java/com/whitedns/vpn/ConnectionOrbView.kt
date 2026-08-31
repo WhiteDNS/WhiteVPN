@@ -78,6 +78,12 @@ class ConnectionOrbView(context: Context) : View(context) {
     // State
     private var state: VpnState = VpnState.Stopped
     private var transitionProgress = 1f
+    private var fromAccent = palette.neutral
+    private var toAccent = palette.neutral
+    private var fromGradientStart = palette.textSecondary
+    private var fromGradientEnd = palette.neutral
+    private var toGradientStart = fromGradientStart
+    private var toGradientEnd = fromGradientEnd
     private var orbPressed = false
     private val isTelevision = isTelevisionUiMode(resources.configuration.uiMode)
 
@@ -113,51 +119,31 @@ class ConnectionOrbView(context: Context) : View(context) {
     private var lastParticleTime = 0L
     private var lastFrameTime = 0L
 
-    // Particle colors - light colors for dark theme, darker for light theme
-    private val darkParticleColors = intArrayOf(
-        0xFF7EE0BA.toInt(),  // Soft mint
-        0xFF9AEBCC.toInt(),  // Light seafoam
-        0xFF6BCAA5.toInt(),  // Muted teal
-        0xFFAEF0D8.toInt(),  // Pale mint
-        0xFF5DBFA0.toInt(),  // Deep mint
-        0xFF8CE8C4.toInt(),  // Fresh green
-        0xFFB4F5E0.toInt(),  // Very light mint
-        0xFF72D8B0.toInt(),  // Medium mint
-        0xFFA2ECD0.toInt(),  // Soft seafoam
-        0xFF64C8A0.toInt()   // Teal green
-    )
-    // Darker/more saturated greens for light theme - better visibility
-    private val lightParticleColors = intArrayOf(
-        0xFF2A9D70.toInt(),  // Deep green
-        0xFF35B080.toInt(),  // Medium green
-        0xFF40C090.toInt(),  // Teal green
-        0xFF28A878.toInt(),  // Forest green
-        0xFF45C898.toInt(),  // Mint green
-        0xFF30B888.toInt(),  // Sea green
-        0xFF3DBD8A.toInt(),  // Jade
-        0xFF25A070.toInt(),  // Dark mint
-        0xFF48CCA0.toInt(),  // Light jade
-        0xFF2DB078.toInt()   // Medium jade
-    )
-
     init {
         isClickable = true
         isFocusable = true
-        setLayerType(LAYER_TYPE_HARDWARE, null)
     }
 
     private var isPaused = false
 
     fun setVpnState(newState: VpnState) {
         if (state == newState) return
+        fromAccent = currentAccent()
+        fromGradientStart = currentGradientStart()
+        fromGradientEnd = currentGradientEnd()
         state = newState
+        toAccent = stateAccent(newState)
+        stateGradient(newState).let { (start, end) ->
+            toGradientStart = start
+            toGradientEnd = end
+        }
 
         transitionAnimator?.cancel()
         if (ValueAnimator.areAnimatorsEnabled()) {
             transitionProgress = 0f
             transitionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = 550L
-                interpolator = PathInterpolator(0.4f, 0f, 0.2f, 1f)
+                duration = 420L
+                interpolator = PathInterpolator(0.16f, 1f, 0.3f, 1f)
                 addUpdateListener {
                     transitionProgress = it.animatedValue as Float
                     invalidate()
@@ -374,70 +360,22 @@ class ConnectionOrbView(context: Context) : View(context) {
     }
 
     private fun drawOuterGlow(canvas: Canvas, cx: Float, cy: Float) {
-        // Breathing glow effect - more visible
         val phase = sin(breathePhase * 2f * PI.toFloat())
         val scale = 1f + 0.08f * phase
         val opacity = 0.7f + 0.3f * phase
-
-        if (palette.isDark) {
-            // Dark theme: dark green glow
-            val outerGlowRadius = orbRadius * 1.6f * scale
-            glowPaint.shader = RadialGradient(
-                cx, cy, outerGlowRadius,
-                intArrayOf(
-                    withAlpha(0x256B55, (0.35f * opacity * 255).toInt()),
-                    withAlpha(0x1A5040, (0.18f * opacity * 255).toInt()),
-                    withAlpha(0x1A5040, (0.06f * opacity * 255).toInt()),
-                    Color.TRANSPARENT
-                ),
-                floatArrayOf(0f, 0.4f, 0.7f, 1f),
-                Shader.TileMode.CLAMP
-            )
-            canvas.drawCircle(cx, cy, outerGlowRadius, glowPaint)
-
-            val innerGlowRadius = orbRadius * 1.25f * scale
-            glowPaint.shader = RadialGradient(
-                cx, cy, innerGlowRadius,
-                intArrayOf(
-                    withAlpha(0x3FBE90, (0.50f * opacity * 255).toInt()),
-                    withAlpha(0x2D8B6E, (0.25f * opacity * 255).toInt()),
-                    withAlpha(0x256B55, (0.10f * opacity * 255).toInt()),
-                    Color.TRANSPARENT
-                ),
-                floatArrayOf(0.5f, 0.72f, 0.88f, 1f),
-                Shader.TileMode.CLAMP
-            )
-            canvas.drawCircle(cx, cy, innerGlowRadius, glowPaint)
-        } else {
-            // Light theme: light green glow
-            val outerGlowRadius = orbRadius * 1.6f * scale
-            glowPaint.shader = RadialGradient(
-                cx, cy, outerGlowRadius,
-                intArrayOf(
-                    withAlpha(0x7EE8C0, (0.40f * opacity * 255).toInt()),  // Light mint
-                    withAlpha(0xA8F0D8, (0.25f * opacity * 255).toInt()),  // Pale mint
-                    withAlpha(0xC0F8E8, (0.10f * opacity * 255).toInt()),  // Very light mint
-                    Color.TRANSPARENT
-                ),
-                floatArrayOf(0f, 0.4f, 0.7f, 1f),
-                Shader.TileMode.CLAMP
-            )
-            canvas.drawCircle(cx, cy, outerGlowRadius, glowPaint)
-
-            val innerGlowRadius = orbRadius * 1.25f * scale
-            glowPaint.shader = RadialGradient(
-                cx, cy, innerGlowRadius,
-                intArrayOf(
-                    withAlpha(0x50D8A0, (0.55f * opacity * 255).toInt()),  // Medium green
-                    withAlpha(0x78E8C0, (0.30f * opacity * 255).toInt()),  // Light green
-                    withAlpha(0xA0F0D8, (0.12f * opacity * 255).toInt()),  // Pale green
-                    Color.TRANSPARENT
-                ),
-                floatArrayOf(0.5f, 0.72f, 0.88f, 1f),
-                Shader.TileMode.CLAMP
-            )
-            canvas.drawCircle(cx, cy, innerGlowRadius, glowPaint)
-        }
+        val accent = currentAccent()
+        val outerGlowRadius = orbRadius * 1.6f * scale
+        glowPaint.shader = RadialGradient(
+            cx, cy, outerGlowRadius,
+            intArrayOf(
+                withAlpha(accent, (0.36f * opacity * 255).toInt()),
+                withAlpha(accent, (0.16f * opacity * 255).toInt()),
+                Color.TRANSPARENT,
+            ),
+            floatArrayOf(0f, 0.58f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        canvas.drawCircle(cx, cy, outerGlowRadius, glowPaint)
     }
 
     private fun drawSpinRing(canvas: Canvas, cx: Float, cy: Float) {
@@ -450,81 +388,6 @@ class ConnectionOrbView(context: Context) : View(context) {
     }
 
     private fun drawOrbBase(canvas: Canvas, cx: Float, cy: Float) {
-        val isIdle = state == VpnState.Stopped
-        val isError = state is VpnState.Error || state == VpnState.DailyLimitReached
-
-        // Create gradient based on state
-        val colors: IntArray
-        val positions: FloatArray
-
-        if (isIdle) {
-            // Subtle, semi-transparent gradient for idle state
-            colors = if (palette.isDark) {
-                intArrayOf(
-                    0x557EE0BA.toInt(),  // Lighter top
-                    0x443FBE90.toInt(),
-                    0x3835A87E.toInt(),
-                    0x302B9370.toInt(),
-                    0x2823845F.toInt()   // Darker bottom
-                )
-            } else {
-                intArrayOf(
-                    0x9068D8B0.toInt(),
-                    0x8050C898.toInt(),
-                    0x7038B080.toInt(),
-                    0x6528A070.toInt(),
-                    0x5818905E.toInt()
-                )
-            }
-            positions = floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f)
-        } else if (isError) {
-            // Red/orange for error state
-            colors = if (palette.isDark) {
-                intArrayOf(
-                    0xFFE07878.toInt(),
-                    0xFFD05050.toInt(),
-                    0xFFC04040.toInt(),
-                    0xFFB03535.toInt()
-                )
-            } else {
-                intArrayOf(
-                    0xFFD05555.toInt(),
-                    0xFFC04545.toInt(),
-                    0xFFB03838.toInt(),
-                    0xFFA02828.toInt()
-                )
-            }
-            positions = floatArrayOf(0f, 0.35f, 0.7f, 1f)
-        } else {
-            // Vibrant green gradient for connected/connecting states
-            colors = if (palette.isDark) {
-                intArrayOf(
-                    0xFF7EECC0.toInt(),  // Bright top
-                    0xFF5FDAA8.toInt(),
-                    0xFF45C894.toInt(),
-                    0xFF3FBE90.toInt(),  // Main accent
-                    0xFF35A87E.toInt(),
-                    0xFF2B926C.toInt(),
-                    0xFF227C5A.toInt()   // Dark bottom
-                )
-            } else {
-                intArrayOf(
-                    0xFF38C088.toInt(),
-                    0xFF28B078.toInt(),
-                    0xFF18A068.toInt(),
-                    0xFF088858.toInt(),
-                    0xFF007848.toInt(),
-                    0xFF006838.toInt()
-                )
-            }
-            positions = if (palette.isDark) {
-                floatArrayOf(0f, 0.15f, 0.32f, 0.5f, 0.68f, 0.85f, 1f)
-            } else {
-                floatArrayOf(0f, 0.2f, 0.4f, 0.6f, 0.8f, 1f)
-            }
-        }
-
-        // Apply gradient at 160 degree angle (matching design)
         val gradientAngle = 160f * PI.toFloat() / 180f
         val gradientLength = orbRadius * 2.2f
         orbPaint.shader = LinearGradient(
@@ -532,8 +395,9 @@ class ConnectionOrbView(context: Context) : View(context) {
             cy - sin(gradientAngle) * gradientLength / 2 - orbRadius * 0.3f,
             cx + cos(gradientAngle) * gradientLength / 2,
             cy + sin(gradientAngle) * gradientLength / 2 + orbRadius * 0.3f,
-            colors, positions,
-            Shader.TileMode.CLAMP
+            currentGradientStart(),
+            currentGradientEnd(),
+            Shader.TileMode.CLAMP,
         )
 
         canvas.drawPath(orbPath, orbPaint)
@@ -563,6 +427,7 @@ class ConnectionOrbView(context: Context) : View(context) {
 
     private fun drawInnerMist(canvas: Canvas, cx: Float, cy: Float) {
         val rotation = swirlPhase * 360f
+        val accent = currentAccent()
 
         canvas.save()
         canvas.rotate(rotation, cx, cy)
@@ -571,8 +436,8 @@ class ConnectionOrbView(context: Context) : View(context) {
         overlayPaint.shader = RadialGradient(
             cx - orbRadius * 0.25f, cy - orbRadius * 0.2f, orbRadius * 0.5f,
             intArrayOf(
-                withAlpha(0x7EE0BA, 45),
-                withAlpha(0x7EE0BA, 20),
+                withAlpha(accent, 45),
+                withAlpha(accent, 20),
                 Color.TRANSPARENT
             ),
             floatArrayOf(0f, 0.5f, 1f),
@@ -587,13 +452,15 @@ class ConnectionOrbView(context: Context) : View(context) {
         val phase = sin(corePhase * 2f * PI.toFloat())
         val scale = 0.92f + 0.12f * phase
         val opacity = 0.35f + 0.35f * phase
+        val accent = currentAccent()
+        val highlight = evaluator.evaluate(0.65f, accent, palette.onStateFill) as Int
 
         val coreRadius = orbRadius * 0.6f * scale
         overlayPaint.shader = RadialGradient(
             cx, cy, coreRadius,
             intArrayOf(
-                withAlpha(0xD6FCEC, (opacity * 180).toInt()),
-                withAlpha(0x7EE0BA, (opacity * 80).toInt()),
+                withAlpha(highlight, (opacity * 180).toInt()),
+                withAlpha(accent, (opacity * 80).toInt()),
                 Color.TRANSPARENT
             ),
             floatArrayOf(0f, 0.5f, 1f),
@@ -603,14 +470,16 @@ class ConnectionOrbView(context: Context) : View(context) {
     }
 
     private fun drawEdgeShadow(canvas: Canvas, cx: Float, cy: Float) {
+        val shadowTarget = if (palette.isDark) palette.background else palette.textPrimary
+        val shadow = evaluator.evaluate(0.55f, currentAccent(), shadowTarget) as Int
         // Edge shadow now follows the blob path since we're already clipped to orbPath
         overlayPaint.shader = RadialGradient(
             cx, cy, orbRadius * 1.1f,
             intArrayOf(
                 Color.TRANSPARENT,
                 Color.TRANSPARENT,
-                withAlpha(0x18684C, 30),
-                withAlpha(0x12503A, 80)
+                withAlpha(shadow, 30),
+                withAlpha(shadow, 80)
             ),
             floatArrayOf(0f, 0.7f, 0.88f, 1f),
             Shader.TileMode.CLAMP
@@ -625,9 +494,9 @@ class ConnectionOrbView(context: Context) : View(context) {
         overlayPaint.shader = RadialGradient(
             highlightX, highlightY, orbRadius * 0.55f,
             intArrayOf(
-                withAlpha(0xFFFFFF, 60),
-                withAlpha(0xFFFFFF, 30),
-                withAlpha(0xFFFFFF, 10),
+                withAlpha(palette.onStateFill, 60),
+                withAlpha(palette.onStateFill, 30),
+                withAlpha(palette.onStateFill, 10),
                 Color.TRANSPARENT
             ),
             floatArrayOf(0f, 0.3f, 0.6f, 1f),
@@ -637,11 +506,12 @@ class ConnectionOrbView(context: Context) : View(context) {
     }
 
     private fun drawBottomReflection(canvas: Canvas, cx: Float, cy: Float) {
+        val accent = currentAccent()
         overlayPaint.shader = RadialGradient(
             cx, cy + orbRadius * 0.5f, orbRadius * 0.7f,
             intArrayOf(
-                withAlpha(0x3FBE90, 50),
-                withAlpha(0x3FBE90, 25),
+                withAlpha(accent, 50),
+                withAlpha(accent, 25),
                 Color.TRANSPARENT
             ),
             floatArrayOf(0f, 0.4f, 1f),
@@ -651,11 +521,12 @@ class ConnectionOrbView(context: Context) : View(context) {
     }
 
     private fun drawPressShade(canvas: Canvas, cx: Float, cy: Float) {
+        val shade = if (palette.isDark) palette.background else palette.textPrimary
         overlayPaint.shader = RadialGradient(
             cx, cy + orbRadius * 0.1f, orbRadius,
             intArrayOf(
-                withAlpha(Color.BLACK, (0.25f * shadeOpacity * 255).toInt()),
-                withAlpha(Color.BLACK, (0.10f * shadeOpacity * 255).toInt()),
+                withAlpha(shade, (0.25f * shadeOpacity * 255).toInt()),
+                withAlpha(shade, (0.10f * shadeOpacity * 255).toInt()),
                 Color.TRANSPARENT
             ),
             floatArrayOf(0f, 0.6f, 1f),
@@ -665,15 +536,10 @@ class ConnectionOrbView(context: Context) : View(context) {
     }
 
     private fun drawIcon(canvas: Canvas, cx: Float, cy: Float) {
-        val isIdle = state == VpnState.Stopped
         val isConnected = state == VpnState.Started
         val isError = state is VpnState.Error || state == VpnState.DailyLimitReached
 
-        iconPaint.color = when {
-            isConnected -> palette.onAccent
-            isError -> palette.textPrimary
-            else -> palette.textPrimary
-        }
+        iconPaint.color = currentForeground()
 
         val size = dp(14f)
 
@@ -714,10 +580,7 @@ class ConnectionOrbView(context: Context) : View(context) {
         }
 
         labelPaint.textSize = sp(15f)
-        labelPaint.color = when (state) {
-            VpnState.Started -> palette.onAccent
-            else -> palette.textPrimary
-        }
+        labelPaint.color = currentForeground()
 
         val metrics = labelPaint.fontMetrics
         val textY = cy - (metrics.ascent + metrics.descent) / 2f
@@ -786,7 +649,7 @@ class ConnectionOrbView(context: Context) : View(context) {
     private fun emitAmbientParticles() {
         val cx = width / 2f
         val cy = height / 2f
-        val colors = if (palette.isDark) darkParticleColors else lightParticleColors
+        val colors = particleColors()
 
         // More particles but with longer life (fewer emissions needed)
         repeat(4 + Random.nextInt(4)) {
@@ -812,7 +675,7 @@ class ConnectionOrbView(context: Context) : View(context) {
     }
 
     private fun emitCircularParticles() {
-        val colors = if (palette.isDark) darkParticleColors else lightParticleColors
+        val colors = particleColors()
 
         // More circular particles for richer effect
         repeat(6 + Random.nextInt(5)) {
@@ -843,7 +706,7 @@ class ConnectionOrbView(context: Context) : View(context) {
     private fun emitDustBurst() {
         val cx = width / 2f
         val cy = height / 2f
-        val colors = if (palette.isDark) darkParticleColors else lightParticleColors
+        val colors = particleColors()
 
         // More burst particles for impressive effect
         repeat(80) {
@@ -949,6 +812,7 @@ class ConnectionOrbView(context: Context) : View(context) {
 
     private fun cancelAllAnimations() {
         transitionAnimator?.cancel()
+        transitionProgress = 1f
         masterAnimator?.cancel()
         pressAnimator?.cancel()
         shadeAnimator?.cancel()
@@ -960,6 +824,56 @@ class ConnectionOrbView(context: Context) : View(context) {
 
     private fun withAlpha(color: Int, alpha: Int): Int =
         (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
+
+    private fun stateAccent(targetState: VpnState): Int = when (targetState) {
+        VpnState.Started -> palette.teal
+        VpnState.Starting, VpnState.Stopping -> palette.amber
+        is VpnState.Error, VpnState.DailyLimitReached -> palette.red
+        VpnState.Stopped -> palette.neutral
+    }
+
+    private fun stateGradient(targetState: VpnState): Pair<Int, Int> = when (targetState) {
+        VpnState.Started -> if (palette.isDark) {
+            palette.tealGradientEnd to palette.tealGradientStart
+        } else {
+            palette.tealGradientStart to
+                (evaluator.evaluate(0.2f, palette.teal, palette.textPrimary) as Int)
+        }
+        VpnState.Starting, VpnState.Stopping -> if (palette.isDark) {
+            palette.amberGradientStart to palette.amberGradientEnd
+        } else {
+            (evaluator.evaluate(0.55f, palette.amberGradientStart, palette.textPrimary) as Int) to
+                (evaluator.evaluate(0.4f, palette.amberGradientEnd, palette.textPrimary) as Int)
+        }
+        is VpnState.Error, VpnState.DailyLimitReached -> if (palette.isDark) {
+            palette.redGradientStart to palette.redGradientEnd
+        } else {
+            (evaluator.evaluate(0.08f, palette.red, palette.textPrimary) as Int) to
+                (evaluator.evaluate(0.22f, palette.red, palette.textPrimary) as Int)
+        }
+        VpnState.Stopped -> palette.textSecondary to palette.neutral
+    }
+
+    private fun currentAccent(): Int =
+        evaluator.evaluate(transitionProgress, fromAccent, toAccent) as Int
+
+    private fun currentGradientStart(): Int =
+        evaluator.evaluate(transitionProgress, fromGradientStart, toGradientStart) as Int
+
+    private fun currentGradientEnd(): Int =
+        evaluator.evaluate(transitionProgress, fromGradientEnd, toGradientEnd) as Int
+
+    private fun currentForeground(): Int =
+        if (palette.isDark) palette.onAccent else palette.onProminent
+
+    private fun particleColors(): IntArray {
+        val accent = currentAccent()
+        return intArrayOf(
+            accent,
+            evaluator.evaluate(0.25f, accent, palette.onStateFill) as Int,
+            evaluator.evaluate(0.5f, accent, palette.onStateFill) as Int,
+        )
+    }
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
