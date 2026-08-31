@@ -4,12 +4,40 @@ import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.util.Base64
 
 class UserSubscriptionImporterTest {
+    @Test
+    fun qrPayloadAcceptsSubscriptionUrlsAndInlineConfigs() {
+        val yaml = "proxies:\n  - name: QR node"
+
+        assertEquals("https://example.com/sub", normalizedSubscriptionSource("  https://example.com/sub  "))
+        assertEquals(yaml, normalizedSubscriptionSource("\n$yaml\n"))
+        assertNull(normalizedSubscriptionSource("  "))
+        assertEquals(
+            "My config #1",
+            scannedSubscriptionName("https://example.com/sub?token=abc&remark=My+config+%231"),
+        )
+        assertEquals("Plural", scannedSubscriptionName("https://example.com/sub?remarks=Plural"))
+        assertEquals("Named", scannedSubscriptionName("https://example.com/sub?name=Named"))
+        assertEquals(
+            "Reality node",
+            scannedSubscriptionName(
+                "vless://00000000-0000-0000-0000-000000000001@example.com:443?security=reality#Reality+node",
+            ),
+        )
+        val vmess = Base64.getEncoder().encodeToString("""{"ps":"VMess node"}""".toByteArray())
+        assertEquals("VMess node", scannedSubscriptionName("vmess://$vmess"))
+        assertEquals("Xray node", scannedSubscriptionName("""{"remarks":"Xray node"}"""))
+        assertEquals("JSON name", scannedSubscriptionName("""[{"name":"JSON name"}]"""))
+        assertNull(scannedSubscriptionName("https://example.com/sub?token=abc"))
+        assertNull(scannedSubscriptionName(yaml))
+    }
+
     @Test
     fun boundedSubscriptionReadWorksBeforeAndroid33() {
         val bytes = ByteArray(16) { it.toByte() }

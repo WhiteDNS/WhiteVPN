@@ -258,7 +258,7 @@ class MihomoRuntimeConfigBuilderTest {
         assertTrue(runtimeYaml.contains("external-controller: 127.0.0.1:39125"))
         assertTrue(runtimeYaml.contains("secret: \"secret-123\""))
         assertTrue(runtimeYaml.contains("dns:\n  enable: true"))
-        assertTrue(runtimeYaml.contains("respect-rules: false"))
+        assertTrue(runtimeYaml.contains("respect-rules: true"))
         assertTrue(runtimeYaml.contains("enhanced-mode: fake-ip"))
         assertTrue(runtimeYaml.contains("tun:\n  enable: false"))
     }
@@ -341,7 +341,22 @@ class MihomoRuntimeConfigBuilderTest {
         assertTrue(runtimeYaml.contains("- 'tls://1.1.1.1:853#🚀 WhiteDNS Proxy'"))
         assertTrue(runtimeYaml.contains("- 'tls://8.8.8.8:853#🚀 WhiteDNS Proxy'"))
         assertFalse(runtimeYaml.contains("tcp://"))
-        assertTrue(runtimeYaml.contains("proxy-server-nameserver:\n    - 1.1.1.1\n    - 8.8.8.8"))
+        assertTrue(
+            runtimeYaml.contains(
+                "default-nameserver:\n" +
+                    "    - 'https://1.1.1.1/dns-query'\n" +
+                    "    - 'https://8.8.8.8/dns-query'",
+            ),
+        )
+        assertTrue(
+            runtimeYaml.contains(
+                "proxy-server-nameserver:\n" +
+                    "    - 'https://1.1.1.1/dns-query'\n" +
+                    "    - 'https://8.8.8.8/dns-query'",
+            ),
+        )
+        assertFalse(runtimeYaml.contains("    - 1.1.1.1\n"))
+        assertFalse(runtimeYaml.contains("    - 8.8.8.8\n"))
     }
 
     @Test
@@ -906,7 +921,7 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
-    fun dnsPrivacyModesKeepAutomaticPoolAndUseOnlyCustomResolver() {
+    fun dnsPrivacyModesUseTheSelectedResolverAndEncryptedBootstrap() {
         val yaml = """
             proxies:
               - name: Node
@@ -936,14 +951,22 @@ class MihomoRuntimeConfigBuilderTest {
         assertTrue(automaticYaml.contains("https://8.8.8.8/dns-query"))
         assertTrue(automaticYaml.contains("tls://1.1.1.1:853"))
         assertTrue(automaticYaml.contains("tls://8.8.8.8:853"))
-        assertTrue(dohYaml.contains("https://dns.example/dns-query"))
-        assertFalse(dohYaml.contains("https://1.1.1.1/dns-query"))
-        assertFalse(dohYaml.contains("https://8.8.8.8/dns-query"))
-        assertFalse(dohYaml.contains("tls://"))
-        assertTrue(dotYaml.contains("tls://dns.example:8853"))
-        assertFalse(dotYaml.contains("tls://1.1.1.1:853"))
-        assertFalse(dotYaml.contains("tls://8.8.8.8:853"))
-        assertFalse(dotYaml.contains("https://"))
+        val dohNameservers = dohYaml.substringAfter("  nameserver:\n").substringBefore("  proxy-server-nameserver:")
+        val dotNameservers = dotYaml.substringAfter("  nameserver:\n").substringBefore("  proxy-server-nameserver:")
+        assertTrue(dohYaml.contains("  respect-rules: true"))
+        assertTrue(dohNameservers.contains("https://dns.example/dns-query#Node"))
+        assertFalse(dohNameservers.contains("https://1.1.1.1/dns-query"))
+        assertFalse(dohNameservers.contains("https://8.8.8.8/dns-query"))
+        assertFalse(dohNameservers.contains("tls://"))
+        assertTrue(dotYaml.contains("  respect-rules: true"))
+        assertTrue(dotNameservers.contains("tls://dns.example:8853#Node"))
+        assertFalse(dotNameservers.contains("tls://1.1.1.1:853"))
+        assertFalse(dotNameservers.contains("tls://8.8.8.8:853"))
+        assertFalse(dotNameservers.contains("https://"))
+        assertTrue(dohYaml.contains("default-nameserver:\n    - 'https://1.1.1.1/dns-query'"))
+        assertTrue(dotYaml.contains("default-nameserver:\n    - 'tls://1.1.1.1:853'"))
+        assertFalse(dohYaml.contains("    - 1.1.1.1\n"))
+        assertFalse(dotYaml.contains("    - 1.1.1.1\n"))
     }
 
     @Test

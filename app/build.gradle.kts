@@ -80,7 +80,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 79
-        versionName = "1.6.3"
+        versionName = "1.6.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "fa")
@@ -172,6 +172,7 @@ dependencies {
     implementation("com.google.firebase:firebase-analytics")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.json:json:20240303")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation(libs.material)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

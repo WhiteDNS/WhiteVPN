@@ -48,6 +48,10 @@
     <string name="subscriptions_title">Subscriptions</string>
     <string name="subscriptions_description">Select a source, test its connections, or open its options.</string>
     <string name="subscription_add">+ Add</string>
+    <string name="subscription_scan_qr">Scan QR Code</string>
+    <string name="subscription_scan_qr_prompt">Scan a subscription or configuration QR code</string>
+    <string name="subscription_from_clipboard">From Clipboard</string>
+    <string name="subscription_clipboard_empty">The clipboard does not contain a subscription or configuration.</string>
     <string name="subscription_builtin_detail">Built-in · %1$s</string>
     <string name="subscription_detail">%1$s · %2$s · %3$s</string>
     <string name="subscription_never_updated">Never</string>

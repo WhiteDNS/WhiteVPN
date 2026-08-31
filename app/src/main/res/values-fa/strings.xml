@@ -49,6 +49,10 @@
     <string name="subscriptions_title">سابسکریپشن</string>
     <string name="subscriptions_description">منبع را انتخاب کنید، اتصال‌هایش را تست کنید یا گزینه‌ها را باز کنید.</string>
     <string name="subscription_add">+ افزودن</string>
+    <string name="subscription_scan_qr">اسکن کد QR</string>
+    <string name="subscription_scan_qr_prompt">کد QR سابسکریپشن یا کانفیگ را اسکن کنید</string>
+    <string name="subscription_from_clipboard">از کلیپ‌بورد</string>
+    <string name="subscription_clipboard_empty">کلیپ‌بورد حاوی سابسکریپشن یا کانفیگ نیست.</string>
     <string name="subscription_builtin_detail">داخلی · %1$s</string>
     <string name="subscription_detail">%1$s · %2$s · %3$s</string>
     <string name="subscription_never_updated">هرگز</string>

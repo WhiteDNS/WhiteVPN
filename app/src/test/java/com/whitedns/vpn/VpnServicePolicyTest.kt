@@ -33,6 +33,40 @@ class VpnServicePolicyTest {
     }
 
     @Test
+    fun failedRefreshCanKeepConnectedStateOnlyWhenTheOldRuntimeIsHealthy() {
+        listOf(200, 204, 302, 399).forEach { status ->
+            assertTrue(PostConnectHealthPolicy.isHealthyStatus(status))
+        }
+        listOf(-1, 0, 199, 400, 500).forEach { status ->
+            assertFalse(PostConnectHealthPolicy.isHealthyStatus(status))
+        }
+        assertEquals(VpnState.Starting, PostConnectHealthPolicy.preservedRuntimeState(false, -1))
+        assertEquals(VpnState.Started, PostConnectHealthPolicy.preservedRuntimeState(true, 204))
+        assertEquals(null, PostConnectHealthPolicy.preservedRuntimeState(true, -1))
+        assertTrue(shouldRunPostConnectHealthWatchdog(VpnState.Starting, awaitingPreservedRuntimeHealth = true))
+        assertTrue(shouldRunPostConnectHealthWatchdog(VpnState.Started, awaitingPreservedRuntimeHealth = false))
+        assertFalse(shouldRunPostConnectHealthWatchdog(VpnState.Starting, awaitingPreservedRuntimeHealth = false))
+        assertTrue(canStartVpnRefresh(VpnState.Started, automatic = false, awaitingPreservedRuntimeHealth = false))
+        assertTrue(canStartVpnRefresh(VpnState.Starting, automatic = true, awaitingPreservedRuntimeHealth = true))
+        assertFalse(canStartVpnRefresh(VpnState.Starting, automatic = false, awaitingPreservedRuntimeHealth = true))
+        assertFalse(canStartVpnRefresh(VpnState.Starting, automatic = true, awaitingPreservedRuntimeHealth = false))
+    }
+
+    @Test
+    fun vpnTunnelCapturesBothAddressFamilies() {
+        assertEquals(
+            listOf("172.19.0.1" to 30, "fdfe:dcba:9876::1" to 126),
+            VpnTunnelNetwork.addresses,
+        )
+        assertEquals(listOf("0.0.0.0", "::"), VpnTunnelNetwork.defaultRoutes)
+        assertEquals(listOf("172.19.0.2", "fdfe:dcba:9876::2"), VpnTunnelNetwork.dnsServers)
+        assertEquals("172.19.0.1/30,fdfe:dcba:9876::1/126", VpnTunnelNetwork.coreAddresses)
+        assertEquals("172.19.0.2,fdfe:dcba:9876::2", VpnTunnelNetwork.coreDnsServers)
+        assertEquals("0.0.0.0", VpnTunnelNetwork.IPV4_DEFAULT_ROUTE)
+        assertEquals("::", VpnTunnelNetwork.IPV6_DEFAULT_ROUTE)
+    }
+
+    @Test
     fun canceledOrStoppedStartupCannotPublishAnError() {
         assertTrue(shouldPublishStartupError(startupActive = true, VpnState.Starting))
         assertTrue(shouldPublishStartupError(startupActive = true, VpnState.Started))
@@ -40,6 +74,12 @@ class VpnServicePolicyTest {
         assertFalse(shouldPublishStartupError(startupActive = true, VpnState.Stopping))
         assertFalse(shouldPublishStartupError(startupActive = true, VpnState.Stopped))
         assertFalse(shouldPublishStartupError(startupActive = true, VpnState.Error("failed")))
+    }
+
+    @Test
+    fun disconnectNeverReturnsToStartedWhenCleanupTimesOut() {
+        assertEquals(VpnState.Stopped, disconnectTerminalState(true, "shutdown failed"))
+        assertTrue(disconnectTerminalState(false, "shutdown failed") is VpnState.Error)
     }
 
     @Test

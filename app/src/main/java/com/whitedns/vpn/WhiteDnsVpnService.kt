@@ -74,6 +74,21 @@ internal fun shouldPublishStartupError(startupActive: Boolean, state: VpnState):
 internal fun shouldStopServiceAfterConnectionTest(state: VpnState): Boolean =
     state == VpnState.Stopped || state == VpnState.DailyLimitReached || state is VpnState.Error
 
+internal fun disconnectTerminalState(coreStopped: Boolean, errorMessage: String): VpnState =
+    if (coreStopped) VpnState.Stopped else VpnState.Error(errorMessage)
+
+internal fun shouldRunPostConnectHealthWatchdog(
+    state: VpnState,
+    awaitingPreservedRuntimeHealth: Boolean,
+): Boolean = state == VpnState.Started || (state == VpnState.Starting && awaitingPreservedRuntimeHealth)
+
+internal fun canStartVpnRefresh(
+    state: VpnState,
+    automatic: Boolean,
+    awaitingPreservedRuntimeHealth: Boolean,
+): Boolean = state == VpnState.Started ||
+    (automatic && state == VpnState.Starting && awaitingPreservedRuntimeHealth)
+
 internal fun shouldExcludeRecoveryChainPlan(
     excludedFingerprint: String,
     finalFingerprint: String,
@@ -118,10 +133,35 @@ internal object PostConnectHealthPolicy {
         return consecutiveFailures >= FAILURES_BEFORE_RECOVERY &&
             (lastRecoveryElapsedMs <= 0L || nowElapsedMs - lastRecoveryElapsedMs >= RECOVERY_COOLDOWN_MS)
     }
+
+    fun isHealthyStatus(statusCode: Int): Boolean = statusCode in 200..399
+
+    fun preservedRuntimeState(hasUsableDefaultNetwork: Boolean, statusCode: Int): VpnState? = when {
+        !hasUsableDefaultNetwork -> VpnState.Starting
+        isHealthyStatus(statusCode) -> VpnState.Started
+        else -> null
+    }
 }
 
 internal object DefaultNetworkDnsReplayPolicy {
     const val MAX_RETRY_ATTEMPTS = 1
+}
+
+internal object VpnTunnelNetwork {
+    const val IPV4_ADDRESS = "172.19.0.1"
+    const val IPV4_PREFIX_LENGTH = 30
+    const val IPV4_DNS_SERVER = "172.19.0.2"
+    const val IPV4_DEFAULT_ROUTE = "0.0.0.0"
+    const val IPV6_ADDRESS = "fdfe:dcba:9876::1"
+    const val IPV6_PREFIX_LENGTH = 126
+    const val IPV6_DNS_SERVER = "fdfe:dcba:9876::2"
+    const val IPV6_DEFAULT_ROUTE = "::"
+
+    val addresses = listOf(IPV4_ADDRESS to IPV4_PREFIX_LENGTH, IPV6_ADDRESS to IPV6_PREFIX_LENGTH)
+    val defaultRoutes = listOf(IPV4_DEFAULT_ROUTE, IPV6_DEFAULT_ROUTE)
+    val dnsServers = listOf(IPV4_DNS_SERVER, IPV6_DNS_SERVER)
+    val coreAddresses = addresses.joinToString(",") { (address, prefixLength) -> "$address/$prefixLength" }
+    val coreDnsServers = dnsServers.joinToString(",")
 }
 
 class WhiteDnsVpnService : VpnService() {
@@ -153,6 +193,8 @@ class WhiteDnsVpnService : VpnService() {
     private var subscriptionRefreshJob: Job? = null
     private var encryptedIpScanJob: Job? = null
     private var postConnectHealthJob: Job? = null
+    @Volatile
+    private var awaitingPreservedRuntimeHealth = false
     private var dpiBypassJob: Job? = null
     private var connectionDelayTestJob: Job? = null
     private var connectionSpeedTestJob: Job? = null
@@ -387,8 +429,8 @@ class WhiteDnsVpnService : VpnService() {
     override fun onRevoke() {
         alwaysOnActive = false
         lockdownActive = false
-        // VpnService.onRevoke() stops the service; finishStoppedState() must do that after cleanup.
-        stopVpn(force = true)
+        // Android has already deactivated the VPN interface; service destruction continues native cleanup.
+        finishStoppedState("disconnect.revoked")
     }
 
     private fun startVpn() {
@@ -397,6 +439,7 @@ class WhiteDnsVpnService : VpnService() {
             return
         }
         lastPostConnectRecoveryElapsedMs = 0L
+        awaitingPreservedRuntimeHealth = false
         startForeground(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_starting)))
         DiagnosticLogger.info(this, "connect.start")
         publishState(VpnState.Starting)
@@ -558,10 +601,11 @@ class WhiteDnsVpnService : VpnService() {
         automatic: Boolean = false,
         quickSpeedRequested: Boolean = false,
     ) {
-        if (state != VpnState.Started) {
+        if (!canStartVpnRefresh(state, automatic, awaitingPreservedRuntimeHealth)) {
             DiagnosticLogger.info(this, "$eventPrefix.ignored", "state=${state.wireName}")
             return
         }
+        awaitingPreservedRuntimeHealth = false
         if (!automatic) {
             lastPostConnectRecoveryElapsedMs = 0L
         }
@@ -3450,8 +3494,8 @@ class WhiteDnsVpnService : VpnService() {
                 protect = this@WhiteDnsVpnService::protect,
                 resolverProcess = this@WhiteDnsVpnService::resolveProcess,
                 stack = MIHOMO_TUN_STACK,
-                address = MIHOMO_TUN_ADDRESS,
-                dns = MIHOMO_TUN_DNS_SERVER,
+                address = VpnTunnelNetwork.coreAddresses,
+                dns = VpnTunnelNetwork.coreDnsServers,
             )
         }
         DiagnosticLogger.info(this, "mihomo.core.started", "config=${paths.runtimeConfigYaml.absolutePath}")
@@ -3541,12 +3585,14 @@ class WhiteDnsVpnService : VpnService() {
     private suspend fun establishTun(splitTunnelPlan: SplitTunnelRuntimePlan): Int {
         for (attempt in 1..TUN_ESTABLISH_ATTEMPTS) {
             val builder = Builder()
-                .addAddress(MIHOMO_TUN_IPV4_ADDRESS, MIHOMO_TUN_IPV4_PREFIX_LENGTH)
-                .addRoute(MIHOMO_TUN_ROUTE_ANY, 0)
-                .addDnsServer(MIHOMO_TUN_DNS_SERVER)
                 .setMtu(MIHOMO_TUN_MTU)
                 .setSession(getString(R.string.app_name))
                 .setBlocking(false)
+            VpnTunnelNetwork.addresses.forEach { (address, prefixLength) ->
+                builder.addAddress(address, prefixLength)
+            }
+            VpnTunnelNetwork.defaultRoutes.forEach { route -> builder.addRoute(route, 0) }
+            VpnTunnelNetwork.dnsServers.forEach(builder::addDnsServer)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 builder.setMetered(false)
@@ -3861,6 +3907,7 @@ class WhiteDnsVpnService : VpnService() {
         }
         if (state == VpnState.Stopping) return
         DiagnosticLogger.info(this, "disconnect.start", "state=${state.wireName}")
+        awaitingPreservedRuntimeHealth = false
         startupJob?.cancel(CancellationException("Disconnect requested"))
         subscriptionRefreshJob?.cancel()
         encryptedIpScanJob?.cancel()
@@ -3871,7 +3918,11 @@ class WhiteDnsVpnService : VpnService() {
         connectionSpeedTestJob?.cancel(CancellationException("Disconnect requested"))
         stopJob?.cancel()
         stopJob = scope.launch {
-            if (stopCoreService()) {
+            val terminalState = disconnectTerminalState(
+                stopCoreService(),
+                getString(R.string.state_connection_error),
+            )
+            if (terminalState == VpnState.Stopped) {
                 finishStoppedState("disconnect.stopped")
             } else {
                 DiagnosticLogger.warn(
@@ -3879,12 +3930,15 @@ class WhiteDnsVpnService : VpnService() {
                     "disconnect.failed",
                     "reason=coreShutdownTimeout state=${coreLifecycle.currentState()}",
                 )
-                publishState(VpnState.Started)
+                publishState(terminalState)
+                stopForegroundCompat()
+                stopSelf()
             }
         }
     }
 
     private suspend fun stopAfterFailure(error: Throwable) {
+        awaitingPreservedRuntimeHealth = false
         subscriptionRefreshJob?.cancel()
         encryptedIpScanJob?.cancel()
         cancelPostConnectHealthWatchdog()
@@ -3916,12 +3970,57 @@ class WhiteDnsVpnService : VpnService() {
         stopSelf()
     }
 
-    private fun keepActiveRuntimeAfterStartupFailure(eventPrefix: String, error: Throwable) {
-        DiagnosticLogger.warn(this, "$eventPrefix.failed.keptActive", error = error)
-        publishState(VpnState.Started)
+    private suspend fun keepActiveRuntimeAfterStartupFailure(eventPrefix: String, error: Throwable) {
+        val hasUsableDefaultNetwork = networkMonitor.hasUsableDefaultNetwork()
+        val healthStatus = if (hasUsableDefaultNetwork) {
+            val healthStartedAt = SystemClock.elapsedRealtime()
+            withContext(Dispatchers.IO) {
+                runtimeHealthStatus(
+                    MihomoRuntimeHealthDeadlinePolicy.deadlineMs(
+                        healthStartedAt,
+                        FALLBACK_RUNTIME_HEALTH_TIMEOUT_MS,
+                    ),
+                )
+            }
+        } else {
+            -1
+        }
+        val preservedState = PostConnectHealthPolicy.preservedRuntimeState(
+            hasUsableDefaultNetwork,
+            healthStatus,
+        )
+        if (preservedState == null) {
+            DiagnosticLogger.warn(
+                this,
+                "$eventPrefix.failed.oldRuntimeUnhealthy",
+                "code=$healthStatus",
+                error,
+            )
+            stopAfterFailure(error)
+            return
+        }
+        awaitingPreservedRuntimeHealth = preservedState == VpnState.Starting
+        DiagnosticLogger.warn(
+            this,
+            "$eventPrefix.failed.keptActive",
+            "state=${preservedState.wireName}",
+            error,
+        )
+        publishState(preservedState)
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_connected)))
-        startBackgroundSubscriptionRefresh()
+            .notify(
+                NOTIFICATION_ID,
+                serviceNotification(
+                    getString(
+                        if (preservedState == VpnState.Started) {
+                            R.string.notification_connected
+                        } else {
+                            R.string.notification_starting
+                        },
+                    ),
+                ),
+            )
+        if (preservedState == VpnState.Started) startBackgroundSubscriptionRefresh()
         startPostConnectHealthWatchdog()
     }
 
@@ -4044,6 +4143,7 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     private fun finishStoppedState(event: String) {
+        awaitingPreservedRuntimeHealth = false
         sessionStartedAtElapsedMs = 0L
         activeProfile = null
         activeProfileShowsServer = false
@@ -4091,11 +4191,21 @@ class WhiteDnsVpnService : VpnService() {
         )
         pendingDefaultNetworkDnsReplay = !applyDefaultNetworkDns(candidate, force)
         if (networkChanged) {
+            if (candidate == null && state == VpnState.Started && activeRuntimePaths != null) {
+                awaitingPreservedRuntimeHealth = true
+                publishState(VpnState.Starting)
+                getSystemService(NotificationManager::class.java).notify(
+                    NOTIFICATION_ID,
+                    serviceNotification(getString(R.string.notification_starting)),
+                )
+            }
             synchronized(quickSpeedStartedLock) {
                 activeQuickSpeedPin?.let { invalidatedQuickSpeedPin = it }
             }
             restoreActiveQuickSpeedPinAfterNetworkChange()
-            if (state == VpnState.Started) startPostConnectHealthWatchdog()
+            if (shouldRunPostConnectHealthWatchdog(state, awaitingPreservedRuntimeHealth)) {
+                startPostConnectHealthWatchdog()
+            }
         }
     }
 
@@ -4272,11 +4382,19 @@ class WhiteDnsVpnService : VpnService() {
         val job = scope.launch(Dispatchers.IO) {
             var consecutiveFailures = 0
             var nextCheckDelayMs = PostConnectHealthPolicy.INITIAL_CHECK_DELAY_MS
-            while (isActive && state == VpnState.Started) {
+            while (isActive && shouldRunPostConnectHealthWatchdog(state, awaitingPreservedRuntimeHealth)) {
                 delay(nextCheckDelayMs)
-                if (!isActive || state != VpnState.Started) break
+                if (!isActive || !shouldRunPostConnectHealthWatchdog(state, awaitingPreservedRuntimeHealth)) break
                 retryPendingDefaultNetworkDnsReplay()
                 if (!networkMonitor.hasUsableDefaultNetwork()) {
+                    if (state == VpnState.Started) {
+                        awaitingPreservedRuntimeHealth = true
+                        publishState(VpnState.Starting)
+                        getSystemService(NotificationManager::class.java).notify(
+                            NOTIFICATION_ID,
+                            serviceNotification(getString(R.string.notification_starting)),
+                        )
+                    }
                     consecutiveFailures = 0
                     nextCheckDelayMs = PostConnectHealthPolicy.CHECK_INTERVAL_MS
                     continue
@@ -4298,7 +4416,16 @@ class WhiteDnsVpnService : VpnService() {
                         FALLBACK_RUNTIME_HEALTH_TIMEOUT_MS,
                     ),
                 )
-                if (code == 204 || code in 200..399) {
+                if (PostConnectHealthPolicy.isHealthyStatus(code)) {
+                    if (state == VpnState.Starting) {
+                        awaitingPreservedRuntimeHealth = false
+                        publishState(VpnState.Started)
+                        getSystemService(NotificationManager::class.java).notify(
+                            NOTIFICATION_ID,
+                            serviceNotification(getString(R.string.notification_connected)),
+                        )
+                        startBackgroundSubscriptionRefresh()
+                    }
                     if (consecutiveFailures > 0) {
                         DiagnosticLogger.info(
                             this@WhiteDnsVpnService,
@@ -4345,7 +4472,7 @@ class WhiteDnsVpnService : VpnService() {
                     "reason=consecutiveHealthFailures failures=$consecutiveFailures",
                 )
                 withContext(Dispatchers.Main) {
-                    if (state == VpnState.Started) {
+                    if (canStartVpnRefresh(state, automatic = true, awaitingPreservedRuntimeHealth)) {
                         refreshVpn(eventPrefix = "selfHeal", automatic = true)
                     }
                 }
@@ -4601,11 +4728,6 @@ class WhiteDnsVpnService : VpnService() {
         const val FRONTING_FALLBACK_NOTICE = "None of the Fronting IPs were reachable. Used original connection."
         const val SCAN_DIAGNOSTICS_ENABLED = true
         const val MIHOMO_TUN_STACK = "gvisor"
-        const val MIHOMO_TUN_IPV4_ADDRESS = "172.19.0.1"
-        const val MIHOMO_TUN_IPV4_PREFIX_LENGTH = 30
-        const val MIHOMO_TUN_ADDRESS = "172.19.0.1/30"
-        const val MIHOMO_TUN_DNS_SERVER = "172.19.0.2"
-        const val MIHOMO_TUN_ROUTE_ANY = "0.0.0.0"
         const val MIHOMO_TUN_MTU = 9000
     }
 }

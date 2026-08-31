@@ -13,7 +13,10 @@ data class DashboardStatePresentation(
     @param:StringRes val titleRes: Int,
     val tone: DashboardTone,
     val showProgress: Boolean,
-)
+) {
+    val showTransferSpeeds: Boolean
+        get() = tone == DashboardTone.Connected
+}
 
 object DashboardStatePresenter {
     fun forState(state: VpnState): DashboardStatePresentation = when (state) {

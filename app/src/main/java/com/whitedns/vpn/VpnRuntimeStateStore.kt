@@ -2,6 +2,18 @@ package com.whitedns.vpn
 
 import android.content.Context
 
+private const val CURRENT_RUNTIME_STATE_SCHEMA = 1
+
+internal fun restoredVpnState(state: VpnState, persistedSchema: Int): VpnState {
+    if (state == VpnState.DailyLimitReached) return VpnState.Stopped
+    if (persistedSchema >= CURRENT_RUNTIME_STATE_SCHEMA) return state
+    return if (state == VpnState.Starting || state == VpnState.Started || state == VpnState.Stopping) {
+        VpnState.Stopped
+    } else {
+        state
+    }
+}
+
 object VpnRuntimeStateStore {
     private const val PREFS = "white_dns_runtime_state"
     private const val KEY_STATE = "state"
@@ -18,6 +30,7 @@ object VpnRuntimeStateStore {
     private const val KEY_SELECTABLE_CONNECTION_FINGERPRINTS = "selectable_connection_fingerprints"
     private const val KEY_ALWAYS_ON = "always_on"
     private const val KEY_LOCKDOWN = "lockdown"
+    private const val KEY_STATE_SCHEMA = "state_schema"
 
     fun save(
         context: Context,
@@ -60,6 +73,7 @@ object VpnRuntimeStateStore {
             )
             .putBoolean(KEY_ALWAYS_ON, alwaysOn)
             .putBoolean(KEY_LOCKDOWN, lockdown)
+            .putInt(KEY_STATE_SCHEMA, CURRENT_RUNTIME_STATE_SCHEMA)
             .apply()
     }
 
@@ -69,11 +83,11 @@ object VpnRuntimeStateStore {
             prefs.getString(KEY_STATE, VpnState.Stopped.wireName),
             prefs.getString(KEY_ERROR, null),
         )
-        if (state == VpnState.DailyLimitReached) {
-            save(context, VpnState.Stopped)
-            return VpnState.Stopped
+        val restoredState = restoredVpnState(state, prefs.getInt(KEY_STATE_SCHEMA, 0))
+        if (restoredState != state) {
+            save(context, restoredState)
         }
-        return state
+        return restoredState
     }
 
     fun readSessionStartedAtElapsedMs(context: Context): Long {
