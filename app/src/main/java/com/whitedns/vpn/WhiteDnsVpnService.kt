@@ -1952,8 +1952,11 @@ class WhiteDnsVpnService : VpnService() {
             ?: MihomoSelectionPolicy.mainSelectorGroup(snapshot.summary)?.name
             ?: throw IOException("Mihomo traffic selector is unavailable")
         val preferredSelectorRoots = listOf(selectedName)
+        suspend fun getStartupProxies(): JSONObject = withContext(Dispatchers.IO) {
+            controller.getProxies(RUNTIME_HEALTH_TIMEOUT_MS.toInt())
+        }
         var liveProxies = try {
-            withContext(Dispatchers.IO) { controller.getProxies() }
+            getStartupProxies()
         } catch (error: Throwable) {
             if (
                 shouldRetryOriginalAfterAutomaticBridgeFailure(
@@ -1984,7 +1987,7 @@ class WhiteDnsVpnService : VpnService() {
                     "selector=${selection.selectorGroup} selected=${selection.selectedGroup}",
                 )
             }
-            val updated = withContext(Dispatchers.IO) { controller.getProxies() }
+            val updated = getStartupProxies()
             val verified = MihomoControllerProxies.currentSelections(updated, path)
                 .associate { it.selectorGroup to it.selectedGroup }
             if (path.any { verified[it.selectorGroup] != it.selectedGroup }) {
@@ -2013,11 +2016,22 @@ class WhiteDnsVpnService : VpnService() {
             if (!MihomoControllerProxies.isActiveThrough(liveProxies, selectedName, targetName)) {
                 throw IOException("Mihomo traffic selector did not resolve through the requested connection")
             }
-            verifyRuntimeHealth(
-                timeoutMs = RUNTIME_HEALTH_TIMEOUT_MS,
-                event = "mihomo.proxy.health.explicit",
-            )
-            liveProxies = withContext(Dispatchers.IO) { controller.getProxies() }
+            val explicitDelayMs = explicitProfile
+                ?.takeIf { forcedProxyName == null }
+                ?.let { profile ->
+                    realConnectionDelayMs(
+                        controller = controller,
+                        profile = profile,
+                        timeoutMs = FOREGROUND_MIHOMO_DELAY_TIMEOUT_MS,
+                    )
+                }
+            if (explicitDelayMs == null) {
+                verifyRuntimeHealth(
+                    timeoutMs = RUNTIME_HEALTH_TIMEOUT_MS,
+                    event = "mihomo.proxy.health.explicit",
+                )
+            }
+            liveProxies = getStartupProxies()
             if (!MihomoControllerProxies.isActiveThrough(liveProxies, selectedName, targetName)) {
                 throw IOException("Mihomo traffic route changed before startup completed")
             }
@@ -2060,7 +2074,7 @@ class WhiteDnsVpnService : VpnService() {
                             },
                             event = "mihomo.proxy.health.adaptive",
                         )
-                        liveProxies = withContext(Dispatchers.IO) { controller.getProxies() }
+                        liveProxies = getStartupProxies()
                         if (!MihomoControllerProxies.isActiveThrough(liveProxies, selectedName, adaptivePlan.groupName)) {
                             throw IOException("Adaptive traffic route changed before startup completed")
                         }
@@ -2116,7 +2130,7 @@ class WhiteDnsVpnService : VpnService() {
                             "root=$selectedName group=${adaptivePlan.groupName} type=${adaptivePlan.groupType} attempt=$adaptiveAttempt",
                             error,
                         )
-                        liveProxies = withContext(Dispatchers.IO) { controller.getProxies() }
+                        liveProxies = getStartupProxies()
                         if (selectedCountryCode != null) break
                     }
                 }
@@ -2181,7 +2195,7 @@ class WhiteDnsVpnService : VpnService() {
                             timeoutMs = FALLBACK_RUNTIME_HEALTH_TIMEOUT_MS,
                             event = "mihomo.proxy.health.fallback",
                         )
-                        liveProxies = withContext(Dispatchers.IO) { controller.getProxies() }
+                        liveProxies = getStartupProxies()
                         if (!MihomoControllerProxies.isActiveThrough(liveProxies, selectedName, candidate.tag)) {
                             throw IOException("Fallback traffic route changed before startup completed")
                         }
@@ -2202,7 +2216,7 @@ class WhiteDnsVpnService : VpnService() {
                             "attempt=${index + 1}/${orderedCandidates.size}",
                             error,
                         )
-                        liveProxies = withContext(Dispatchers.IO) { controller.getProxies() }
+                        liveProxies = getStartupProxies()
                     }
                 }
                 if (selectedLeaf == null) {

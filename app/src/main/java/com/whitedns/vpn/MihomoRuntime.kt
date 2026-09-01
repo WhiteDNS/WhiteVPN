@@ -1772,8 +1772,8 @@ class MihomoControllerClient(
     val endpoint: String
         get() = "core-actions"
 
-    fun getProxies(): JSONObject {
-        return invokeAction("getProxies")
+    fun getProxies(timeoutMs: Int = CORE_ACTION_TIMEOUT_MS): JSONObject {
+        return invokeAction("getProxies", timeoutMs = timeoutMs)
             .optJSONObject("data")
             ?: throw IOException("Mihomo core getProxies returned no data")
     }
