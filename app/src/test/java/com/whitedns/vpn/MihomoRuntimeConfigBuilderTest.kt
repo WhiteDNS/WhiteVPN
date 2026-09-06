@@ -1129,6 +1129,73 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
+    fun connectionOptionsHonorAmneziaV3SubscriptionUnlessOverrideEnabled() {
+        val yaml = """
+            proxies:
+              - name: AWG3
+                type: wireguard
+                server: 192.0.2.10
+                port: 443
+                amnezia-wg-option:
+                  version: 3
+                  jc: 2
+                  jmin: 32
+                  jmax: 64
+                  s1: 16
+                  h1: 101
+                  i1: '<b 0x01020304>'
+                  header-protection-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+                  content-padding-addition: '8-24'
+                  rekey-after-time: '90s'
+                  rekey-timeout: '4s'
+                  reject-after-time: '150s'
+                  keepalive-timeout: '25s'
+                  max-handshake-attempts: '8'
+                  random-trailers: false
+                  disable-cookies: true
+        """.trimIndent()
+        val appOverride = MihomoConnectionOptions(
+            amneziaNoiseEnabled = true,
+            amneziaNoise = AmneziaNoiseSettings(
+                count = 5,
+                minSize = 50,
+                maxSize = 100,
+                version = 3,
+                headerProtectionKey = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+                contentPaddingAddition = "16-32",
+                rekeyAfterTime = "120s",
+                rekeyTimeout = "5s",
+                rejectAfterTime = "180s",
+                keepaliveTimeout = "30s",
+                maxHandshakeAttempts = "10",
+                randomTrailers = true,
+                disableCookies = false,
+            ),
+        )
+
+        assertEquals(
+            yaml,
+            MihomoConnectionOptionsPatcher.patch(
+                yaml,
+                appOverride.copy(amneziaNoiseEnabled = false),
+            ),
+        )
+
+        val patched = MihomoConnectionOptionsPatcher.patch(yaml, appOverride)
+        assertTrue(patched.contains("jc: 5"))
+        assertTrue(patched.contains("jmin: 50"))
+        assertTrue(patched.contains("jmax: 100"))
+        assertTrue(patched.contains("s1: 16"))
+        assertTrue(patched.contains("h1: 101"))
+        assertTrue(patched.contains("i1: '<b 0x01020304>'"))
+        assertTrue(patched.contains("header-protection-key: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB='"))
+        assertTrue(patched.contains("content-padding-addition: '16-32'"))
+        assertTrue(patched.contains("random-trailers: true"))
+        assertTrue(patched.contains("disable-cookies: false"))
+        assertFalse(patched.contains("header-protection-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="))
+    }
+
+    @Test
     fun dpiBypassPatcherAddsLocalProxyAndDialerProxyOnlyWhenEnabled() {
         val yaml = """
             proxies:

@@ -51,6 +51,7 @@ jobs:
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         env:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
+          WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_ENCRYPTED_IP_LIST_URL: ${{ vars.WHITEDNS_ENCRYPTED_IP_LIST_URL }}
         run: ./gradlew testDebugUnitTest assembleDebug
 
@@ -83,6 +84,7 @@ jobs:
           WHITEDNS_MIHOMO_SUBSCRIPTION_KEY: ${{ secrets.WHITEDNS_MIHOMO_SUBSCRIPTION_KEY }}
           WHITEDNS_ENCRYPTED_IP_LIST_KEY: ${{ secrets.WHITEDNS_ENCRYPTED_IP_LIST_KEY }}
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
+          WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_ENCRYPTED_IP_LIST_URL: ${{ vars.WHITEDNS_ENCRYPTED_IP_LIST_URL }}
         run: ./scripts/release.sh
 

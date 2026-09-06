@@ -4,13 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_FLCLASH_DIR="${FLCLASH_DIR:-${ROOT_DIR}/FlClash}"
 FLCLASH_REPOSITORY="https://github.com/chen08209/FlClash.git"
+MIHOMO_REPOSITORY="https://github.com/MetaCubeX/mihomo.git"
 FLCLASH_COMMIT="ac2f6b919ec1ad395b61b4bb1e714a39c750babe"
-MIHOMO_COMMIT="7bdcd60da9db10b681d7507af96d4fad797f3774"
-MIHOMO_VERSION="v1.19.25-1-g7bdcd60"
+FLCLASH_PATCH="${ROOT_DIR}/scripts/patches/flclash-v1.19.30.patch"
+MIHOMO_PATCH="${ROOT_DIR}/scripts/patches/mihomo-v1.19.30-flclash.patch"
+MIHOMO_COMMIT="ac017cdd246ce8bd547653d927e7bf77d7ee73d5"
+MIHOMO_VERSION="v1.19.30"
 OUT_JNI_DIR="${ROOT_DIR}/app/src/main/jniLibs"
 OUT_INCLUDE_DIR="${ROOT_DIR}/app/src/main/cpp/includes"
 VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
-CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}"
+CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}-whitedns-awg3"
 API_LEVEL="${ANDROID_API_LEVEL:-26}"
 ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
 
@@ -62,22 +65,71 @@ SOURCE_SUBMODULE_DIR="${SOURCE_FLCLASH_DIR}/core/Clash.Meta"
 git clone --no-hardlinks --no-checkout "${SOURCE_FLCLASH_DIR}" "${FLCLASH_DIR}"
 git -C "${FLCLASH_DIR}" checkout --detach "${FLCLASH_COMMIT}"
 
+if ! git -C "${FLCLASH_DIR}" apply --check "${FLCLASH_PATCH}"; then
+  echo "Unable to apply the pinned FlClash v1.19.30 compatibility patch." >&2
+  exit 1
+fi
+git -C "${FLCLASH_DIR}" apply "${FLCLASH_PATCH}"
+
 rm -rf "${SUBMODULE_DIR}"
 if git -C "${SOURCE_SUBMODULE_DIR}" rev-parse --git-dir >/dev/null 2>&1 &&
   git -C "${SOURCE_SUBMODULE_DIR}" cat-file -e "${MIHOMO_COMMIT}^{commit}" 2>/dev/null; then
   git clone --no-hardlinks --no-checkout "${SOURCE_SUBMODULE_DIR}" "${SUBMODULE_DIR}"
   git -C "${SUBMODULE_DIR}" checkout --detach "${MIHOMO_COMMIT}"
 else
-  echo "Fetching FlClash's pinned Mihomo commit..."
-  git -C "${FLCLASH_DIR}" submodule set-url \
-    core/Clash.Meta https://github.com/chen08209/Clash.Meta.git
-  git -C "${FLCLASH_DIR}" submodule update --init --depth 1 core/Clash.Meta
+  echo "Fetching pinned Mihomo ${MIHOMO_VERSION} source..."
+  mkdir -p "${SUBMODULE_DIR}"
+  git -C "${SUBMODULE_DIR}" init
+  git -C "${SUBMODULE_DIR}" remote add origin "${MIHOMO_REPOSITORY}"
+  git -C "${SUBMODULE_DIR}" fetch --depth 1 origin "${MIHOMO_COMMIT}"
+  git -C "${SUBMODULE_DIR}" checkout --detach "${MIHOMO_COMMIT}"
 fi
 
 if [[ "$(git -C "${SUBMODULE_DIR}" rev-parse HEAD)" != "${MIHOMO_COMMIT}" ]]; then
   echo "FlClash Mihomo checkout must be pinned to ${MIHOMO_COMMIT}: ${SUBMODULE_DIR}" >&2
   exit 1
 fi
+
+if ! git -C "${SUBMODULE_DIR}" apply --check "${MIHOMO_PATCH}"; then
+  echo "Unable to apply the pinned Mihomo AWG3 and FlClash compatibility patch." >&2
+  exit 1
+fi
+git -C "${SUBMODULE_DIR}" apply "${MIHOMO_PATCH}"
+
+validate_amnezia_v3_support() {
+  local wireguard_source="${SUBMODULE_DIR}/adapter/outbound/wireguard.go"
+  local marker
+  local markers=(
+    'Version int `proxy:"version,omitempty"`'
+    'HeaderProtectionKey'
+    'ContentPaddingAddition'
+    'RekeyAfterTime'
+    'RekeyTimeout'
+    'RejectAfterTime'
+    'KeepaliveTimeout'
+    'MaxHandshakeAttempts'
+    'RandomTrailers'
+    'DisableCookies'
+    'amneziav3.NewDevice'
+    'header_protection_key='
+    'content_padding_addition='
+    'rekey_after_time='
+    'rekey_timeout='
+    'reject_after_time='
+    'keepalive_timeout='
+    'max_handshake_attempts='
+    'random_trailers=1'
+    'disable_cookies=1'
+  )
+  for marker in "${markers[@]}"; do
+    if ! grep -Fq "${marker}" "${wireguard_source}"; then
+      echo "Pinned Mihomo core lacks AmneziaWG v3 support marker: ${marker}" >&2
+      exit 1
+    fi
+  done
+}
+
+validate_amnezia_v3_support
 
 if ! command -v go >/dev/null 2>&1; then
   echo "Go is required to build the FlClash Mihomo core." >&2
@@ -175,6 +227,7 @@ build_abi() {
       GOOS=android \
       GOARCH="${goarch}" \
       ${goarm:+GOARM="${goarm}"} \
+      GOCACHE="${BUILD_TMP_DIR}/go-build-cache" \
       CGO_ENABLED=1 \
       CC="${cc}" \
       CFLAGS="-O3 -Werror" \

@@ -5,6 +5,7 @@
     <string name="notification_title">WhiteVPN</string>
     <string name="notification_starting">در حال اتصال</string>
     <string name="notification_connected">متصل</string>
+    <string name="notification_connected_public">متصل با سرورهای عمومی</string>
     <string name="notification_action_disconnect">قطع اتصال</string>
     <string name="notification_action_reconnect">اتصال دوباره</string>
     <string name="footer_copyright">کپی‌رایت WhiteVPN</string>
@@ -54,6 +55,8 @@
     <string name="subscription_from_clipboard">از کلیپ‌بورد</string>
     <string name="subscription_clipboard_empty">کلیپ‌بورد حاوی سابسکریپشن یا کانفیگ نیست.</string>
     <string name="subscription_builtin_detail">داخلی · %1$s</string>
+    <string name="subscription_private_name">WhiteVPN اختصاصی</string>
+    <string name="subscription_public_name">WhiteVPN عمومی</string>
     <string name="subscription_detail">%1$s · %2$s · %3$s</string>
     <string name="subscription_never_updated">هرگز</string>
     <string name="subscription_selected_badge">انتخاب‌شده</string>

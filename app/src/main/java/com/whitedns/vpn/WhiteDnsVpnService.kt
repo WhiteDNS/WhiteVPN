@@ -45,9 +45,13 @@ internal class MihomoCoreSetupTimeoutException :
     IOException("Mihomo core setup did not finish within 60 seconds")
 
 internal data class ConnectionStartupExclusion(
+    val subscriptionId: String = "",
     val endpoint: CleanIpResult? = null,
     val profileFingerprint: String = "",
-)
+) {
+    fun forSubscription(id: String): ConnectionStartupExclusion =
+        takeIf { subscriptionId == id } ?: ConnectionStartupExclusion()
+}
 
 internal enum class AutomaticBridgeFailurePhase {
     ConfigCoreOrController,
@@ -146,6 +150,47 @@ internal object PostConnectHealthPolicy {
 internal object DefaultNetworkDnsReplayPolicy {
     const val MAX_RETRY_ATTEMPTS = 1
 }
+
+internal object BuiltInSubscriptionStartupPolicy {
+    fun sourceIds(selectedSubscriptionId: String, explicitProfile: ConnectionProfile?): List<String> =
+        if (
+            SubscriptionStore.isBuiltInSubscription(selectedSubscriptionId) &&
+            explicitProfile == null
+        ) {
+            SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS
+        } else {
+            listOf(selectedSubscriptionId)
+        }
+
+    fun canFallback(error: Throwable): Boolean =
+        error is IOException &&
+            error !is MihomoCoreBusyException &&
+            error !is MihomoCoreSetupTimeoutException
+
+    suspend fun <T> firstSuccessful(
+        sourceIds: List<String>,
+        onFallback: (from: String, to: String, error: Throwable) -> Unit = { _, _, _ -> },
+        attempt: suspend (String) -> T,
+    ): T {
+        require(sourceIds.isNotEmpty())
+        sourceIds.forEachIndexed { index, sourceId ->
+            try {
+                return attempt(sourceId)
+            } catch (error: Throwable) {
+                if (index == sourceIds.lastIndex || !canFallback(error)) throw error
+                onFallback(sourceId, sourceIds[index + 1], error)
+            }
+        }
+        error("No subscription source was attempted")
+    }
+}
+
+internal fun connectedNotificationTextRes(subscriptionId: String): Int =
+    if (subscriptionId == SubscriptionStore.PUBLIC_SUBSCRIPTION_ID) {
+        R.string.notification_connected_public
+    } else {
+        R.string.notification_connected
+    }
 
 internal object VpnTunnelNetwork {
     const val IPV4_ADDRESS = "172.19.0.1"
@@ -611,13 +656,15 @@ class WhiteDnsVpnService : VpnService() {
         }
         DiagnosticLogger.info(this, "$eventPrefix.start")
         val exclusion = ConnectionStartupExclusion(
+            subscriptionId = activeSubscriptionId,
             endpoint = activeEndpoint,
             profileFingerprint = activeConnectionFingerprint,
         )
         DiagnosticLogger.info(
             this,
             "$eventPrefix.connection.excluded",
-            "endpoint=${exclusion.endpoint != null} profile=${exclusion.profileFingerprint.isNotBlank()}",
+            "subscription=${exclusion.subscriptionId} endpoint=${exclusion.endpoint != null} " +
+                "profile=${exclusion.profileFingerprint.isNotBlank()}",
         )
         publishState(VpnState.Starting)
         startForeground(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_starting)))
@@ -1260,7 +1307,6 @@ class WhiteDnsVpnService : VpnService() {
         networkMonitor.start()
 
         val selectedSubscriptionId = subscriptionStore.readSelectedSubscriptionId()
-        val showServer = selectedSubscriptionId != SubscriptionStore.DEFAULT_SUBSCRIPTION_ID
         val chainSettings = connectionChainPreferenceStore.read()
         if (chainSettings.isActive) {
             if (quickSpeedRequested) {
@@ -1286,83 +1332,119 @@ class WhiteDnsVpnService : VpnService() {
             )
             return
         }
-        val snapshot = configRepository.fetchOrCachedMihomoConfig()
-        ensureStartupActive(eventPrefix)
-        val eligibleProfiles = eligibleProfilesForRuntime(snapshot.catalog)
-        val requestedExplicitProfile = connectionSelectionPreferenceStore.readSelectedProfile(
-            selectedSubscriptionId,
-            snapshot.catalog.profiles,
-        )
-        val selectedAutomaticTypes = connectionSelectionPreferenceStore.readAutomaticTypes(
-            selectedSubscriptionId,
-            snapshot.catalog.profiles,
-        )
-        val explicitProfile = requestedExplicitProfile?.let { requested ->
-            eligibleProfiles.firstOrNull { it.fingerprint == requested.fingerprint }
-        }
-        if (requestedExplicitProfile != null && explicitProfile == null) {
-            connectionSelectionPreferenceStore.saveSelectedProfile(selectedSubscriptionId, null)
-            DiagnosticLogger.warn(
-                this,
-                "connection.selection.ineligible",
-                "profile=${requestedExplicitProfile.tag} fallback=automatic",
+
+        val snapshots = mutableMapOf<String, MihomoSubscriptionSnapshot>()
+        var explicitProfile: ConnectionProfile? = null
+        if (connectionSelectionPreferenceStore.hasSelectedProfile(selectedSubscriptionId)) {
+            val selectedSnapshot = configRepository.fetchOrCachedMihomoConfig(selectedSubscriptionId)
+            snapshots[selectedSubscriptionId] = selectedSnapshot
+            val requested = connectionSelectionPreferenceStore.readSelectedProfile(
+                selectedSubscriptionId,
+                selectedSnapshot.catalog.profiles,
             )
+            explicitProfile = requested?.let { profile ->
+                eligibleProfilesForRuntime(selectedSnapshot.catalog)
+                    .firstOrNull { it.fingerprint == profile.fingerprint }
+            }
+            if (requested == null || explicitProfile == null) {
+                connectionSelectionPreferenceStore.saveSelectedProfile(selectedSubscriptionId, null)
+                DiagnosticLogger.warn(
+                    this,
+                    "connection.selection.ineligible",
+                    "profile=${requested?.tag.orEmpty()} fallback=automatic",
+                )
+            }
         }
+
+        val selectedAutomaticTypes = connectionSelectionPreferenceStore
+            .readAutomaticTypes(selectedSubscriptionId)
         val selectedCountryCode = locationPreferenceStore.readSelectedCountryCode()
             .takeIf { explicitProfile == null }
-        val automaticProfiles = ConnectionTypeSelectionPolicy.filterProfiles(
-            eligibleProfiles,
-            selectedAutomaticTypes,
-        )
-        if (explicitProfile == null && automaticProfiles.isEmpty()) {
-            throw IOException("No eligible connections match the selected types")
-        }
-        val profiles = explicitProfile?.let(::listOf) ?: profilesForSelectedLocation(
-            profiles = automaticProfiles,
-            selectedCountryCode = selectedCountryCode,
-        )
-        DiagnosticLogger.info(
-            this,
-            "connection.selection",
-            "mode=${if (explicitProfile == null) "automatic" else "explicit"} " +
-                "profile=${explicitProfile?.tag.orEmpty()} types=${selectedAutomaticTypes.sorted().joinToString(",")}",
-        )
         val splitTunnelPlan = resolveSplitTunnelRuntimePlan()
         val frontingIps = frontingIpPreferenceStore.readFrontingIps()
-        val preferences = captureSessionPlanPreferences(
-            selectedSubscriptionId = selectedSubscriptionId,
-            explicitProfile = explicitProfile,
-            selectedAutomaticTypes = selectedAutomaticTypes,
-            frontingIps = frontingIps,
-        )
         if (quickSpeedRequested && frontingIps.isNotEmpty()) {
             DiagnosticLogger.info(this, "mihomo.quickSpeed.skipped", "reason=fronting")
         }
-        val (startedRuntime, startupNotice) = withContext(Dispatchers.IO) {
-            if (frontingIps.isNotEmpty()) {
-                connectWithFrontingIpsOrOriginal(
-                    eventPrefix = eventPrefix,
-                    snapshot = snapshot,
-                    profiles = profiles,
-                    splitTunnelPlan = splitTunnelPlan,
-                    selectedCountryCode = selectedCountryCode,
-                    exclusion = exclusion,
-                    frontingIps = frontingIps,
-                    preferences = preferences,
-                    availableProfiles = eligibleProfiles,
+
+        val sourceIds = BuiltInSubscriptionStartupPolicy.sourceIds(
+            selectedSubscriptionId,
+            explicitProfile,
+        )
+        val (startedRuntime, startupNotice, showServer) =
+            BuiltInSubscriptionStartupPolicy.firstSuccessful(
+                sourceIds = sourceIds,
+                onFallback = { from, to, error ->
+                    DiagnosticLogger.warn(
+                        this,
+                        "connection.subscription.fallback",
+                        "from=$from to=$to",
+                        error,
+                    )
+                },
+            ) { sourceId ->
+                val snapshot = snapshots[sourceId]
+                    ?: configRepository.fetchOrCachedMihomoConfig(sourceId)
+                ensureStartupActive(eventPrefix)
+                val eligibleProfiles = eligibleProfilesForRuntime(snapshot.catalog)
+                val sourceExplicitProfile = explicitProfile.takeIf { sourceId == selectedSubscriptionId }
+                val automaticProfiles = ConnectionTypeSelectionPolicy.filterProfiles(
+                    eligibleProfiles,
+                    selectedAutomaticTypes,
                 )
-            } else {
-                connectWithOriginal(
-                    snapshot = snapshot,
-                    splitTunnelPlan = splitTunnelPlan,
+                if (sourceExplicitProfile == null && automaticProfiles.isEmpty()) {
+                    throw IOException("No eligible connections match the selected types")
+                }
+                val profiles = sourceExplicitProfile?.let(::listOf) ?: profilesForSelectedLocation(
+                    profiles = automaticProfiles,
                     selectedCountryCode = selectedCountryCode,
-                    preferences = preferences,
-                    availableProfiles = eligibleProfiles,
-                    excludedProfileFingerprint = exclusion.profileFingerprint,
-                    quickSpeedRequested = quickSpeedRequested,
-                ) to null
+                )
+                if (profiles.isEmpty()) {
+                    throw IOException("No eligible connections match the selected location")
+                }
+                DiagnosticLogger.info(
+                    this,
+                    "connection.selection",
+                    "subscription=$sourceId mode=${if (sourceExplicitProfile == null) "automatic" else "explicit"} " +
+                        "profile=${sourceExplicitProfile?.tag.orEmpty()} types=${selectedAutomaticTypes.sorted().joinToString(",")}",
+                )
+                val preferences = captureSessionPlanPreferences(
+                    selectedSubscriptionId = sourceId,
+                    explicitProfile = sourceExplicitProfile,
+                    selectedAutomaticTypes = selectedAutomaticTypes,
+                    frontingIps = frontingIps,
+                )
+                val sourceExclusion = exclusion.forSubscription(sourceId)
+                val (startedRuntime, startupNotice) = withContext(Dispatchers.IO) {
+                    if (frontingIps.isNotEmpty()) {
+                        connectWithFrontingIpsOrOriginal(
+                            eventPrefix = eventPrefix,
+                            snapshot = snapshot,
+                            profiles = profiles,
+                            splitTunnelPlan = splitTunnelPlan,
+                            selectedCountryCode = selectedCountryCode,
+                            exclusion = sourceExclusion,
+                            frontingIps = frontingIps,
+                            preferences = preferences,
+                            availableProfiles = eligibleProfiles,
+                        )
+                    } else {
+                        connectWithOriginal(
+                            snapshot = snapshot,
+                            splitTunnelPlan = splitTunnelPlan,
+                            selectedCountryCode = selectedCountryCode,
+                            preferences = preferences,
+                            availableProfiles = eligibleProfiles,
+                            excludedProfileFingerprint = sourceExclusion.profileFingerprint,
+                            quickSpeedRequested = quickSpeedRequested,
+                        ) to null
+                    }
+                }
+                Triple(
+                    startedRuntime,
+                    startupNotice,
+                    !SubscriptionStore.isBuiltInSubscription(sourceId),
+                )
             }
-        }
         applyStartedRuntime(
             startedRuntimeCandidate = startedRuntime,
             eventPrefix = eventPrefix,
@@ -1473,7 +1555,7 @@ class WhiteDnsVpnService : VpnService() {
     ): StartedMihomoRuntime {
         val subscriptions = subscriptionStore.readUserSubscriptions()
         val sourceIds = buildList {
-            add(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID)
+            addAll(SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS)
             addAll(subscriptions.map(UserSubscription::id))
         }.distinct()
         val cachedSources = sourceIds.mapNotNull { subscriptionId ->
@@ -1482,7 +1564,13 @@ class WhiteDnsVpnService : VpnService() {
             ConnectionChainSource(
                 subscriptionId = subscriptionId,
                 subscriptionName = subscriptions.firstOrNull { it.id == subscriptionId }?.name
-                    ?: getString(R.string.app_name),
+                    ?: getString(
+                        if (subscriptionId == SubscriptionStore.PUBLIC_SUBSCRIPTION_ID) {
+                            R.string.subscription_public_name
+                        } else {
+                            R.string.subscription_private_name
+                        },
+                    ),
                 snapshot = snapshot,
             )
         }
@@ -2828,7 +2916,7 @@ class WhiteDnsVpnService : VpnService() {
         sessionStartedAtElapsedMs = SystemClock.elapsedRealtime()
         publishState(VpnState.Started, notice)
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_connected)))
+            .notify(NOTIFICATION_ID, serviceNotification(connectedNotificationText()))
         DiagnosticLogger.info(
             this,
             "$eventPrefix.started",
@@ -4027,7 +4115,7 @@ class WhiteDnsVpnService : VpnService() {
                 serviceNotification(
                     getString(
                         if (preservedState == VpnState.Started) {
-                            R.string.notification_connected
+                            connectedNotificationTextRes(activeSubscriptionId)
                         } else {
                             R.string.notification_starting
                         },
@@ -4436,7 +4524,7 @@ class WhiteDnsVpnService : VpnService() {
                         publishState(VpnState.Started)
                         getSystemService(NotificationManager::class.java).notify(
                             NOTIFICATION_ID,
-                            serviceNotification(getString(R.string.notification_connected)),
+                            serviceNotification(connectedNotificationText()),
                         )
                         startBackgroundSubscriptionRefresh()
                     }
@@ -4672,6 +4760,9 @@ class WhiteDnsVpnService : VpnService() {
 
         return builder.build()
     }
+
+    private fun connectedNotificationText(): String =
+        getString(connectedNotificationTextRes(activeSubscriptionId))
 
     private fun serviceActionPendingIntent(action: String): PendingIntent {
         val requestCode = when (action) {

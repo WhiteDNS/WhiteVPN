@@ -39,6 +39,7 @@ internal object SubConvConverter {
                     "vless" -> parseVless(line, names)
                     "vmess" -> parseVmess(line, names)
                     "trojan" -> parseTrojan(line, names)
+                    "anytls" -> parseAnyTls(line, names)
                     "hysteria2", "hy2" -> parseHysteria2(line, names)
                     "socks", "socks5" -> parseSocks(line, names)
                     "ss" -> parseShadowsocks(line, names)
@@ -233,6 +234,26 @@ internal object SubConvConverter {
                 }
                 put("client-fingerprint", query["fp"].orEmpty().ifBlank { "chrome" })
                 query["pcs"]?.takeIf(String::isNotBlank)?.let { put("fingerprint", it) }
+            }
+    }
+
+    private fun parseAnyTls(line: String, names: NameRegistry): JSONObject {
+        val uri = parseUri(line)
+        val endpoint = endpoint(uri)
+        if (endpoint.userInfo.isBlank()) throw ParseError()
+        val query = parseQuery(uri.rawQuery)
+        val sni = query["sni"].orEmpty().ifBlank { query["peer"].orEmpty() }
+        return JSONObject()
+            .put("name", names.register(name(uri)))
+            .put("type", "anytls")
+            .put("server", endpoint.host)
+            .put("port", endpoint.port)
+            .put("password", endpoint.userInfo)
+            .put("udp", true)
+            .put("skip-cert-verify", false)
+            .apply {
+                sni.takeIf(String::isNotBlank)?.let { put("sni", it) }
+                query["hpkp"]?.takeIf(String::isNotBlank)?.let { put("fingerprint", it) }
             }
     }
 

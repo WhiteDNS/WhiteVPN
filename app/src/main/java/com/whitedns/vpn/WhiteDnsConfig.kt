@@ -24,6 +24,7 @@ object WhiteDnsConfig {
 
     // Injected at build time from the environment with production defaults; see app/build.gradle.kts.
     val MIHOMO_SUBSCRIPTION_URL: String get() = BuildConfig.MIHOMO_SUBSCRIPTION_URL
+    val PRIVATE_MIHOMO_SUBSCRIPTION_URL: String get() = BuildConfig.PRIVATE_MIHOMO_SUBSCRIPTION_URL
     val ENCRYPTED_IP_LIST_URL: String get() = BuildConfig.ENCRYPTED_IP_LIST_URL
 
     // Release builds fail when these are unset; debug builds get an empty string.
@@ -107,16 +108,18 @@ class ConfigRepository(private val context: Context) {
 
     suspend fun fetchOrCachedCatalog(): SubscriptionCatalog = fetchOrCachedMihomoConfig().catalog
 
-    suspend fun refreshDefaultMihomoConfig(): MihomoSubscriptionSnapshot = withContext(Dispatchers.IO) {
+    suspend fun refreshBuiltInMihomoConfig(
+        subscriptionId: String,
+    ): MihomoSubscriptionSnapshot = withContext(Dispatchers.IO) {
         subscriptionSnapshots.resolve(
-            SubscriptionStore.DEFAULT_SUBSCRIPTION_ID,
+            subscriptionId,
             SubscriptionRefreshPolicy.Force,
         ).snapshot.also { snapshot ->
-            pruneProfileCaches(snapshot.catalog)
+            pruneProfileCaches(subscriptionId, snapshot.catalog)
             DiagnosticLogger.info(
                 context,
                 "subscription.fetch.manual.success",
-                "profiles=${snapshot.catalog.profiles.size} groups=${snapshot.summary.groups.size}",
+                "subscription=$subscriptionId profiles=${snapshot.catalog.profiles.size} groups=${snapshot.summary.groups.size}",
             )
         }
     }
@@ -125,7 +128,7 @@ class ConfigRepository(private val context: Context) {
         var successful = 0
         var failed = 0
         var fresh = 0
-        val ids = listOf(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) +
+        val ids = SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS +
             userSubscriptionManager.list().map(UserSubscription::id)
         ids.forEach { id ->
             try {
@@ -161,7 +164,7 @@ class ConfigRepository(private val context: Context) {
             }
             .getOrNull()
             ?.also { snapshot ->
-                pruneProfileCaches(snapshot.catalog)
+                pruneProfileCaches(selectedId, snapshot.catalog)
                 DiagnosticLogger.info(
                     context,
                     "subscription.cache.local",
@@ -181,24 +184,29 @@ class ConfigRepository(private val context: Context) {
         return runCatching { subscriptionSnapshots.cached(subscriptionId) }.getOrNull()
     }
 
-    suspend fun fetchOrCachedMihomoConfig(): MihomoSubscriptionSnapshot = withContext(Dispatchers.IO) {
-        val selectedId = subscriptionStore.readSelectedSubscriptionId()
-        val resolution = subscriptionSnapshots.resolve(selectedId)
-        pruneProfileCaches(resolution.snapshot.catalog)
+    suspend fun fetchOrCachedMihomoConfig(
+        subscriptionId: String = subscriptionStore.readSelectedSubscriptionId(),
+    ): MihomoSubscriptionSnapshot = withContext(Dispatchers.IO) {
+        val resolution = subscriptionSnapshots.resolve(subscriptionId)
+        pruneProfileCaches(subscriptionId, resolution.snapshot.catalog)
         DiagnosticLogger.info(
             context,
             "subscription.snapshot.resolved",
-            "subscription=$selectedId origin=${resolution.origin} profiles=${resolution.snapshot.catalog.profiles.size} groups=${resolution.snapshot.summary.groups.size} fetchedAt=${resolution.snapshot.catalog.fetchedAt}",
+            "subscription=$subscriptionId origin=${resolution.origin} profiles=${resolution.snapshot.catalog.profiles.size} groups=${resolution.snapshot.summary.groups.size} fetchedAt=${resolution.snapshot.catalog.fetchedAt}",
         )
         resolution.snapshot
     }
 
-    private fun pruneProfileCaches(catalog: SubscriptionCatalog) {
+    private fun pruneProfileCaches(subscriptionId: String, catalog: SubscriptionCatalog) {
         val delayRemoved = subscriptionStore.pruneConnectionDelayRecords(
-            subscriptionId = subscriptionStore.readSelectedSubscriptionId(),
+            subscriptionId = subscriptionId,
             profiles = catalog.profiles,
         )
-        val lastSelectedRemoved = scanStateStore.pruneLastSelectedProfile(catalog.profiles)
+        val lastSelectedRemoved = if (subscriptionId == subscriptionStore.readSelectedSubscriptionId()) {
+            scanStateStore.pruneLastSelectedProfile(catalog.profiles)
+        } else {
+            false
+        }
         if (delayRemoved > 0 || lastSelectedRemoved) {
             DiagnosticLogger.info(
                 context,

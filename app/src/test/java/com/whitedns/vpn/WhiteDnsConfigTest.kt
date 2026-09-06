@@ -14,6 +14,10 @@ class WhiteDnsConfigTest {
     @Test
     fun subscriptionUrlComesFromBuildTimeConfiguration() {
         assertEquals(BuildConfig.MIHOMO_SUBSCRIPTION_URL, WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL)
+        assertEquals(
+            BuildConfig.PRIVATE_MIHOMO_SUBSCRIPTION_URL,
+            WhiteDnsConfig.PRIVATE_MIHOMO_SUBSCRIPTION_URL,
+        )
     }
 
     @Test

@@ -35,9 +35,9 @@ Subscriptions can be added as an HTTPS URL or pasted directly. WhiteVPN accepts 
 
 ## Built-in subscription
 
-No subscription is required for first use. The default build uses the public [WhiteDNS Mihomo subscription](https://github.com/iampedii/whitedns-sub/blob/main/mihomo.yaml), refreshes it every 30 minutes while connected, and keeps the last valid copy for temporary network failures.
+No subscription is required for first use. Automatic built-in connections try WhiteVPN Private first, then the public [WhiteDNS Mihomo subscription](https://github.com/iampedii/whitedns-sub/blob/main/mihomo.yaml). Each source refreshes every 30 minutes while connected and keeps its own last valid copy for temporary network failures.
 
-Distributors can replace the source at build time with `WHITEDNS_MIHOMO_SUBSCRIPTION_URL`. Custom subscriptions remain separate and can be tested, selected, refreshed, edited or removed in the app.
+Official builds inject the required private source through the `WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL` secret. Local builds can set the same environment variable or `privateMihomoSubscriptionUrl` in `secrets.properties`. Distributors can replace the public source with `WHITEDNS_MIHOMO_SUBSCRIPTION_URL`. Custom subscriptions remain separate and can be tested, selected, refreshed, edited or removed in the app.
 
 ## Community
 

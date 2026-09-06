@@ -70,6 +70,25 @@ class SubscriptionStoreTest {
         assertFalse(File(context.filesDir, "profile-delay-cache.json.tmp").exists())
     }
 
+    @Test
+    fun builtInSelectionsAndCatalogsStayIndependent() {
+        val privateCatalog = SubscriptionCatalog(listOf(profile("private", "private-catalog")), 100L)
+        val publicCatalog = SubscriptionCatalog(listOf(profile("public", "public-catalog")), 200L)
+        try {
+            store.saveCatalog(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID, privateCatalog)
+            store.saveCatalog(SubscriptionStore.PUBLIC_SUBSCRIPTION_ID, publicCatalog)
+            store.saveSelectedSubscriptionId(SubscriptionStore.PUBLIC_SUBSCRIPTION_ID)
+
+            assertEquals("private", store.readCatalog(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID)?.profiles?.single()?.tag)
+            assertEquals("public", store.readCatalog(SubscriptionStore.PUBLIC_SUBSCRIPTION_ID)?.profiles?.single()?.tag)
+            assertEquals(SubscriptionStore.PUBLIC_SUBSCRIPTION_ID, store.readSelectedSubscriptionId())
+        } finally {
+            File(context.filesDir, "private-subscription-catalog.json").delete()
+            File(context.filesDir, "subscription-catalog.json").delete()
+            store.saveSelectedSubscriptionId(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID)
+        }
+    }
+
     private fun record(
         profile: ConnectionProfile,
         delayMs: Int?,
@@ -93,5 +112,6 @@ class SubscriptionStoreTest {
         transport = "",
         validationHost = "$tag.example.com",
         fingerprint = fingerprint,
+        outboundJson = "{}",
     )
 }

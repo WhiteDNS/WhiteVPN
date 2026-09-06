@@ -278,6 +278,22 @@ class UserSubscriptionImporterTest {
     }
 
     @Test
+    fun importerConvertsAnyTlsShareLinks() {
+        val imported = UserSubscriptionImporter.import(
+            "anytls://password%21@anytls.example.com:443?peer=cn.bing.com&insecure=1&udp=1#AnyTLS",
+            nowMs = 123L,
+        )
+        val snapshot = MihomoConfigParser.parse(imported.yaml, 123L)
+
+        assertEquals(UserSubscriptionFormat.Links, imported.format)
+        assertEquals("anytls", snapshot.catalog.profiles.single().type)
+        assertTrue(imported.yaml.contains("password: 'password!'"))
+        assertTrue(imported.yaml.contains("sni: 'cn.bing.com'"))
+        assertTrue(imported.yaml.contains("udp: true"))
+        assertTrue(imported.yaml.contains("skip-cert-verify: false"))
+    }
+
+    @Test
     fun importerConvertsBase64WireGuardLinksAndTheirMihomoOptions() {
         val link = "wireguard://private%2Bkey%3D@engage.example.com:2408" +
             "?address=172.16.0.2%2F32%2C2606%3A4700%3A110%3A8765%3A%3A2%2F128" +
@@ -331,6 +347,53 @@ class UserSubscriptionImporterTest {
         assertEquals(UserSubscriptionFormat.Mihomo, imported.format)
         assertEquals(1, imported.connectionCount)
         assertEquals(2, MihomoConfigParser.parse(imported.yaml).summary.groups.size)
+    }
+
+    @Test
+    fun importerPreservesCompleteNativeMihomoAmneziaV3Config() {
+        val source = """
+            proxies:
+              - name: AWG3
+                type: wireguard
+                server: 192.0.2.10
+                port: 443
+                amnezia-wg-option:
+                  version: 3
+                  jc: 4
+                  jmin: 40
+                  jmax: 70
+                  s1: 16
+                  s2: 17
+                  s3: 18
+                  s4: 19
+                  h1: 101
+                  h2: 102
+                  h3: 103
+                  h4: 104
+                  i1: '<b 0x01020304>'
+                  i2: '<b 0x05060708>'
+                  header-protection-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+                  content-padding-addition: '8-24'
+                  rekey-after-time: '90s'
+                  rekey-timeout: '4s'
+                  reject-after-time: '150s'
+                  keepalive-timeout: '25s'
+                  max-handshake-attempts: '8'
+                  random-trailers: true
+                  disable-cookies: true
+            proxy-groups:
+              - name: Proxy
+                type: select
+                proxies: [AWG3]
+            rules:
+              - MATCH,Proxy
+        """.trimIndent()
+
+        val imported = UserSubscriptionImporter.import(source)
+
+        assertEquals(UserSubscriptionFormat.Mihomo, imported.format)
+        assertEquals(1, imported.connectionCount)
+        assertEquals(source, imported.yaml)
     }
 
     @Test
