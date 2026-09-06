@@ -151,12 +151,12 @@ internal class AndroidSubscriptionSnapshotAdapter(
     private val store: SubscriptionStore,
 ) : SubscriptionSnapshotPersistence {
     override fun read(id: String): SubscriptionSnapshotEntry? {
-        if (id == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
-            val file = defaultSnapshotFile()
+        if (SubscriptionStore.isBuiltInSubscription(id)) {
+            val file = builtInSnapshotFile(id)
             return SubscriptionSnapshotEntry(
-                source = managedSource(),
+                source = managedSource(id),
                 cachedYaml = file.takeIf { it.isFile && it.length() > 0L }?.readText(),
-                fetchedAt = store.readCatalog()?.fetchedAt
+                fetchedAt = store.readCatalog(id)?.fetchedAt
                     ?: file.lastModified().takeIf { it > 0L }
                     ?: 0L,
             )
@@ -183,10 +183,10 @@ internal class AndroidSubscriptionSnapshotAdapter(
     }
 
     override fun save(id: String, subscription: CompiledSubscription) {
-        if (id == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
-            val file = defaultSnapshotFile()
+        if (SubscriptionStore.isBuiltInSubscription(id)) {
+            val file = builtInSnapshotFile(id)
             replaceSubscriptionSnapshot(file, subscription.snapshot.rawConfig) {
-                store.saveCatalog(subscription.snapshot.catalog)
+                store.saveCatalog(id, subscription.snapshot.catalog)
             }
             return
         }
@@ -207,10 +207,11 @@ internal class AndroidSubscriptionSnapshotAdapter(
     }
 
     override fun recordFailure(id: String, error: Throwable) {
-        if (id == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
+        if (SubscriptionStore.isBuiltInSubscription(id)) {
             DiagnosticLogger.warn(
                 context,
-                "subscription.default.refresh.failed",
+                "subscription.builtin.refresh.failed",
+                "subscription=$id",
                 error = error,
             )
             return
@@ -226,8 +227,12 @@ internal class AndroidSubscriptionSnapshotAdapter(
         }
     }
 
-    private fun managedSource(): SubscriptionSource.ManagedHttps {
-        val url = WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL
+    private fun managedSource(id: String): SubscriptionSource.ManagedHttps {
+        val url = if (id == SubscriptionStore.PRIVATE_SUBSCRIPTION_ID) {
+            WhiteDnsConfig.PRIVATE_MIHOMO_SUBSCRIPTION_URL
+        } else {
+            WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL
+        }
         val encrypted = runCatching {
             URI(url).path.orEmpty().contains("encrypted", ignoreCase = true)
         }
@@ -239,8 +244,14 @@ internal class AndroidSubscriptionSnapshotAdapter(
         )
     }
 
-    private fun defaultSnapshotFile(): File =
-        File(context.filesDir, "mihomo/encrypted_mihomo_subscription.yaml")
+    private fun builtInSnapshotFile(id: String): File = File(
+        context.filesDir,
+        if (id == SubscriptionStore.PUBLIC_SUBSCRIPTION_ID) {
+            "mihomo/encrypted_mihomo_subscription.yaml"
+        } else {
+            "mihomo/private_mihomo_subscription.yaml"
+        },
+    )
 }
 
 internal data class SubscriptionSnapshotEntry(

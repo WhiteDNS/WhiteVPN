@@ -49,6 +49,17 @@ val mihomoSubscriptionUrl = httpsBuildUrl(
     "WHITEDNS_MIHOMO_SUBSCRIPTION_URL",
     "https://raw.githubusercontent.com/iampedii/whitedns-sub/refs/heads/main/mihomo.yaml",
 )
+val privateMihomoSubscriptionUrl = (
+    System.getenv("WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL")?.takeIf { it.isNotBlank() }
+        ?: payloadSecrets.getProperty("privateMihomoSubscriptionUrl")?.takeIf { it.isNotBlank() }
+        ?: error(
+            "WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL or privateMihomoSubscriptionUrl is required",
+        )
+    ).also {
+    require(it.startsWith("https://")) {
+        "WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL must use HTTPS"
+    }
+}
 val encryptedIpListUrl = httpsBuildUrl(
     "WHITEDNS_ENCRYPTED_IP_LIST_URL",
     "https://whitedns-encrypted-ip-list.whitedns.workers.dev/v1/results/ips/encrypted",
@@ -79,13 +90,18 @@ android {
         applicationId = "com.whitedns.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 80
-        versionName = "1.6.5"
+        versionCode = 81
+        versionName = "1.6.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "fa")
 
         buildConfigField("String", "MIHOMO_SUBSCRIPTION_URL", buildConfigStringLiteral(mihomoSubscriptionUrl))
+        buildConfigField(
+            "String",
+            "PRIVATE_MIHOMO_SUBSCRIPTION_URL",
+            buildConfigStringLiteral(privateMihomoSubscriptionUrl),
+        )
         buildConfigField("String", "ENCRYPTED_IP_LIST_URL", buildConfigStringLiteral(encryptedIpListUrl))
         buildConfigField("String", "MIHOMO_SUBSCRIPTION_KEY", buildConfigStringLiteral(mihomoSubscriptionKey))
         buildConfigField("String", "ENCRYPTED_IP_LIST_KEY", buildConfigStringLiteral(encryptedIpListKey))

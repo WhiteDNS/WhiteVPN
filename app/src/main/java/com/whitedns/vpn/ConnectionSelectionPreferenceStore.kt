@@ -23,6 +23,8 @@ class ConnectionSelectionPreferenceStore(context: Context) {
         }.apply()
     }
 
+    fun hasSelectedProfile(subscriptionId: String): Boolean = prefs.contains(key(subscriptionId))
+
     fun readAutomaticTypes(
         subscriptionId: String,
         profiles: List<ConnectionProfile>,
@@ -32,6 +34,9 @@ class ConnectionSelectionPreferenceStore(context: Context) {
             profiles = profiles,
         )
     }
+
+    fun readAutomaticTypes(subscriptionId: String): Set<String> =
+        prefs.getStringSet(typesKey(subscriptionId), emptySet()).orEmpty().toSet()
 
     fun saveAutomaticTypes(
         subscriptionId: String,

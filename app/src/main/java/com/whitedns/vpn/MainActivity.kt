@@ -158,6 +158,7 @@ class MainActivity : Activity() {
     private lateinit var connectionOrb: ConnectionOrbView
     private lateinit var statusDot: View
     private lateinit var statusText: TextView
+    private lateinit var publicServerNotice: TextView
     private lateinit var connectionDetailsText: TextView
     private lateinit var timerText: TextView
     private lateinit var downloadSpeedText: TextView
@@ -302,6 +303,7 @@ class MainActivity : Activity() {
         setContentView(buildAppShell())
         renderState(VpnState.Stopped)
         refreshLocationOptions()
+        fetchPrivateSubscriptionOnLoad()
         if (savedInstanceState?.getBoolean(STATE_CONNECTION_TESTING_PAGE) == true) {
             val chainSlot = ConnectionChainSlot.fromWireName(
                 savedInstanceState.getString(STATE_CHAIN_PICKER_SLOT),
@@ -633,25 +635,31 @@ class MainActivity : Activity() {
                     selectedName,
                 )
         }
-        val whiteDnsCount = store.readCatalog()?.profiles?.size ?: 0
-        subscriptionsList.addView(
-            subscriptionCard(
-                title = "WhiteVPN",
-                detail = getString(R.string.subscription_builtin_detail, connectionCountLabel(whiteDnsCount)),
-                selected = selectedId == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID,
-                error = "",
-                onTestConnections = {
-                    openSubscriptionConnectionTesting(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID)
-                },
-                actions = listOf(
-                    R.string.subscription_action_select to {
-                        userSubscriptionManager.select(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID)
-                        onSubscriptionSelected()
-                    },
-                    R.string.subscription_action_refresh to { refreshDefaultSubscription() },
+        SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS.forEachIndexed { index, subscriptionId ->
+            val name = builtInSubscriptionName(subscriptionId)
+            val count = store.readCatalog(subscriptionId)?.profiles?.size ?: 0
+            subscriptionsList.addView(
+                subscriptionCard(
+                    title = name,
+                    detail = getString(R.string.subscription_builtin_detail, connectionCountLabel(count)),
+                    selected = selectedId == subscriptionId,
+                    error = "",
+                    onTestConnections = { openSubscriptionConnectionTesting(subscriptionId) },
+                    actions = listOf(
+                        R.string.subscription_action_select to {
+                            userSubscriptionManager.select(subscriptionId)
+                            onSubscriptionSelected()
+                        },
+                        R.string.subscription_action_refresh to {
+                            refreshBuiltInSubscription(subscriptionId, name)
+                        },
+                    ),
                 ),
-            ),
-        )
+                LinearLayout.LayoutParams(-1, -2).apply {
+                    if (index > 0) topMargin = dp(8)
+                },
+            )
+        }
         userSubscriptionManager.list().forEach { item ->
             val updated = item.updatedAt.takeIf { it > 0 }?.let {
                 DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(it)
@@ -861,8 +869,8 @@ class MainActivity : Activity() {
             userSubscriptionManager.select(subscriptionId)
             onSubscriptionSelected()
         }
-        val profiles = if (subscriptionId == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
-            store.readCatalog()?.profiles
+        val profiles = if (SubscriptionStore.isBuiltInSubscription(subscriptionId)) {
+            store.readCatalog(subscriptionId)?.profiles
         } else {
             runCatching { userSubscriptionManager.cachedSnapshot(subscriptionId) }
                 .getOrNull()
@@ -1064,12 +1072,12 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun refreshDefaultSubscription() {
+    private fun refreshBuiltInSubscription(subscriptionId: String, name: String) {
         runSubscriptionAction(
-            startMessage = getString(R.string.subscription_refreshing, "WhiteVPN"),
-            refreshProfiles = userSubscriptionManager.selectedId() == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID,
+            startMessage = getString(R.string.subscription_refreshing, name),
+            refreshProfiles = userSubscriptionManager.selectedId() == subscriptionId,
         ) {
-            val refreshed = ConfigRepository(this@MainActivity).refreshDefaultMihomoConfig()
+            val refreshed = ConfigRepository(this@MainActivity).refreshBuiltInMihomoConfig(subscriptionId)
             getString(R.string.subscription_refreshed, connectionCountLabel(refreshed.catalog.profiles.size))
         }
     }
@@ -1130,8 +1138,17 @@ class MainActivity : Activity() {
 
     private fun selectedSubscriptionName(): String {
         val store = SubscriptionStore(this)
-        return store.readUserSubscription(store.readSelectedSubscriptionId())?.name ?: "WhiteVPN"
+        val selectedId = store.readSelectedSubscriptionId()
+        return store.readUserSubscription(selectedId)?.name ?: builtInSubscriptionName(selectedId)
     }
+
+    private fun builtInSubscriptionName(id: String): String = getString(
+        if (id == SubscriptionStore.PUBLIC_SUBSCRIPTION_ID) {
+            R.string.subscription_public_name
+        } else {
+            R.string.subscription_private_name
+        },
+    )
 
     private fun renderConnectionDetails(state: VpnState) {
         if (!::connectionDetailsText.isInitialized) return
@@ -1503,6 +1520,17 @@ class MainActivity : Activity() {
             setTextColor(TEXT_SECONDARY)
             includeFontPadding = false
         }
+        publicServerNotice = TextView(this).apply {
+            setText(R.string.notification_connected_public)
+            gravity = Gravity.CENTER
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            textSize = 12f
+            typeface = WhiteDnsBodyBoldTypeface
+            setTextColor(AMBER)
+            includeFontPadding = false
+            visibility = View.GONE
+        }
         timerText = TextView(this).apply {
             gravity = Gravity.CENTER
             layoutDirection = View.LAYOUT_DIRECTION_LTR
@@ -1699,6 +1727,10 @@ class MainActivity : Activity() {
             addView(
                 connectionOrb,
                 LinearLayout.LayoutParams(-2, -2),
+            )
+            addView(
+                publicServerNotice,
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
             )
             // Connection status and traffic metrics
             addView(
@@ -3460,7 +3492,11 @@ class MainActivity : Activity() {
         val subscriptions = userSubscriptionManager.list()
         val repository = ConfigRepository(this)
         return buildList {
-            add(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID to getString(R.string.app_name))
+            addAll(
+                SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS.map {
+                    it to builtInSubscriptionName(it)
+                },
+            )
             addAll(subscriptions.map { it.id to it.name })
         }.filter { (subscriptionId, _) -> subscriptionIds == null || subscriptionId in subscriptionIds }
             .mapNotNull { (subscriptionId, subscriptionName) ->
@@ -3873,8 +3909,8 @@ class MainActivity : Activity() {
             val cachedCatalog = withContext(Dispatchers.IO) {
                 val store = SubscriptionStore(this@MainActivity)
                 val selectedId = store.readSelectedSubscriptionId()
-                if (selectedId == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID) {
-                    store.readCatalog()
+                if (SubscriptionStore.isBuiltInSubscription(selectedId)) {
+                    store.readCatalog(selectedId)
                 } else {
                     userSubscriptionManager.cachedSnapshot(selectedId)?.catalog
                 }
@@ -3891,6 +3927,25 @@ class MainActivity : Activity() {
 
             if (fetchedCatalog != null) {
                 updateLocationOptions(fetchedCatalog.profiles, resetMissingSelection = true)
+            }
+        }
+    }
+
+    private fun fetchPrivateSubscriptionOnLoad() {
+        if (userSubscriptionManager.selectedId() == SubscriptionStore.PRIVATE_SUBSCRIPTION_ID) return
+        activityScope.launch {
+            runCatching {
+                ConfigRepository(this@MainActivity).fetchOrCachedMihomoConfig(
+                    SubscriptionStore.PRIVATE_SUBSCRIPTION_ID,
+                )
+            }.onSuccess {
+                renderSubscriptions()
+            }.onFailure { error ->
+                DiagnosticLogger.warn(
+                    this@MainActivity,
+                    "activity.privateSubscription.fetch.failed",
+                    error = error,
+                )
             }
         }
     }
@@ -4565,9 +4620,7 @@ class MainActivity : Activity() {
                             null -> R.string.connection_protocol_support_udp_unknown
                         },
                     )
-                    holder.detail.text = if (
-                        selectedSubscriptionId == SubscriptionStore.DEFAULT_SUBSCRIPTION_ID
-                    ) {
+                    holder.detail.text = if (SubscriptionStore.isBuiltInSubscription(selectedSubscriptionId)) {
                         profile.type.uppercase(Locale.US)
                     } else {
                         getString(
@@ -5428,9 +5481,9 @@ class MainActivity : Activity() {
         LocationSelectorOption(countryCode = null, label = getString(R.string.option_automatic))
 
     private fun showSubscriptionSelectorMenu(anchor: View) {
-        val subscriptions = listOf(
-            SubscriptionStore.DEFAULT_SUBSCRIPTION_ID to "WhiteVPN",
-        ) + userSubscriptionManager.list().map { it.id to it.name }
+        val subscriptions = SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS.map {
+            it to builtInSubscriptionName(it)
+        } + userSubscriptionManager.list().map { it.id to it.name }
         val selectedId = userSubscriptionManager.selectedId()
         whiteDnsPopupMenu(anchor).apply {
             subscriptions.forEachIndexed { index, (id, name) ->
@@ -6670,6 +6723,10 @@ class MainActivity : Activity() {
             else -> getString(R.string.route_automatic)
         }
         connectionCountryText.setTextColor(if (state == VpnState.Started) accent else TEXT_SECONDARY)
+        publicServerNotice.visibility = if (
+            state == VpnState.Started &&
+            activeRuntimeSubscriptionId == SubscriptionStore.PUBLIC_SUBSCRIPTION_ID
+        ) View.VISIBLE else View.GONE
         renderConnectionDetails(state)
         refreshActionButton.visibility = if (state == VpnState.Started) View.VISIBLE else View.INVISIBLE
         refreshActionButton.isEnabled = state == VpnState.Started

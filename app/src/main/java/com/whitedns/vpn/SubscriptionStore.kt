@@ -110,7 +110,7 @@ class SubscriptionStore(private val context: Context) {
         .ifBlank { DEFAULT_SUBSCRIPTION_ID }
 
     fun saveSelectedSubscriptionId(id: String) {
-        val validId = if (id == DEFAULT_SUBSCRIPTION_ID || readUserSubscription(id) != null) {
+        val validId = if (isBuiltInSubscription(id) || readUserSubscription(id) != null) {
             id
         } else {
             DEFAULT_SUBSCRIPTION_ID
@@ -121,8 +121,8 @@ class SubscriptionStore(private val context: Context) {
             .apply()
     }
 
-    fun readCatalog(): SubscriptionCatalog? {
-        val file = catalogFile()
+    fun readCatalog(subscriptionId: String = DEFAULT_SUBSCRIPTION_ID): SubscriptionCatalog? {
+        val file = catalogFile(subscriptionId)
         if (!file.exists() || file.length() == 0L) return null
         return runCatching {
             val root = JSONObject(file.readText())
@@ -152,7 +152,7 @@ class SubscriptionStore(private val context: Context) {
         }.getOrNull()
     }
 
-    fun saveCatalog(catalog: SubscriptionCatalog) {
+    fun saveCatalog(subscriptionId: String, catalog: SubscriptionCatalog) {
         val profiles = JSONArray()
         catalog.profiles.forEach { profile ->
             profiles.put(
@@ -168,7 +168,7 @@ class SubscriptionStore(private val context: Context) {
             )
         }
         writeFile(
-            catalogFile(),
+            catalogFile(subscriptionId),
             JSONObject()
                 .put("fetchedAt", catalog.fetchedAt)
                 .put("profiles", profiles)
@@ -344,7 +344,10 @@ class SubscriptionStore(private val context: Context) {
         writeTextAtomically(delaysFile(), items.toString())
     }
 
-    private fun catalogFile(): File = File(context.filesDir, CATALOG_FILE)
+    private fun catalogFile(subscriptionId: String): File = File(
+        context.filesDir,
+        if (subscriptionId == PUBLIC_SUBSCRIPTION_ID) PUBLIC_CATALOG_FILE else PRIVATE_CATALOG_FILE,
+    )
 
     private fun delaysFile(): File = File(context.filesDir, DELAYS_FILE)
 
@@ -384,8 +387,14 @@ class SubscriptionStore(private val context: Context) {
     }
 
     companion object {
-        const val DEFAULT_SUBSCRIPTION_ID = "whitedns"
-        private const val CATALOG_FILE = "subscription-catalog.json"
+        const val PRIVATE_SUBSCRIPTION_ID = "whitevpn-private"
+        const val PUBLIC_SUBSCRIPTION_ID = "whitedns"
+        const val DEFAULT_SUBSCRIPTION_ID = PRIVATE_SUBSCRIPTION_ID
+        val BUILT_IN_SUBSCRIPTION_IDS = listOf(PRIVATE_SUBSCRIPTION_ID, PUBLIC_SUBSCRIPTION_ID)
+        fun isBuiltInSubscription(id: String): Boolean = id in BUILT_IN_SUBSCRIPTION_IDS
+
+        private const val PRIVATE_CATALOG_FILE = "private-subscription-catalog.json"
+        private const val PUBLIC_CATALOG_FILE = "subscription-catalog.json"
         private const val DELAYS_FILE = "profile-delay-cache.json"
         private const val USER_SUBSCRIPTIONS_FILE = "user-subscriptions.json"
         private const val USER_SUBSCRIPTION_PREFS = "white_dns_user_subscriptions"

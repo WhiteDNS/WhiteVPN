@@ -1,6 +1,7 @@
 package com.whitedns.vpn
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -8,6 +9,126 @@ import org.junit.Test
 import java.io.IOException
 
 class VpnServicePolicyTest {
+    @Test
+    fun builtInAutomaticConnectionsTryPrivateThenPublic() {
+        assertEquals(
+            listOf(
+                SubscriptionStore.PRIVATE_SUBSCRIPTION_ID,
+                SubscriptionStore.PUBLIC_SUBSCRIPTION_ID,
+            ),
+            BuiltInSubscriptionStartupPolicy.sourceIds(
+                SubscriptionStore.PUBLIC_SUBSCRIPTION_ID,
+                explicitProfile = null,
+            ),
+        )
+        assertEquals(
+            listOf("custom"),
+            BuiltInSubscriptionStartupPolicy.sourceIds("custom", explicitProfile = null),
+        )
+
+        val explicit = ConnectionProfile(
+            tag = "Explicit",
+            type = "vless",
+            server = "example.com",
+            port = 443,
+            transport = "tcp",
+            validationHost = "example.com",
+            fingerprint = "explicit",
+            outboundJson = "{}",
+        )
+        assertEquals(
+            listOf(SubscriptionStore.PUBLIC_SUBSCRIPTION_ID),
+            BuiltInSubscriptionStartupPolicy.sourceIds(
+                SubscriptionStore.PUBLIC_SUBSCRIPTION_ID,
+                explicit,
+            ),
+        )
+    }
+
+    @Test
+    fun builtInFallbackOnlyConsumesOrdinaryIoFailures() {
+        assertTrue(BuiltInSubscriptionStartupPolicy.canFallback(IOException("unavailable")))
+        assertFalse(BuiltInSubscriptionStartupPolicy.canFallback(CancellationException("canceled")))
+        assertFalse(BuiltInSubscriptionStartupPolicy.canFallback(MihomoCoreBusyException()))
+        assertFalse(BuiltInSubscriptionStartupPolicy.canFallback(MihomoCoreSetupTimeoutException()))
+    }
+
+    @Test
+    fun builtInFallbackStopsAtTheFirstSuccessAndPropagatesTerminalFailures() = runBlocking {
+        val attempts = mutableListOf<String>()
+        assertEquals(
+            "private connected",
+            BuiltInSubscriptionStartupPolicy.firstSuccessful(
+                SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS,
+            ) { sourceId ->
+                attempts += sourceId
+                "private connected"
+            },
+        )
+        assertEquals(listOf(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID), attempts)
+
+        attempts.clear()
+        val result = BuiltInSubscriptionStartupPolicy.firstSuccessful(
+            SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS,
+        ) { sourceId ->
+            attempts += sourceId
+            if (sourceId == SubscriptionStore.PRIVATE_SUBSCRIPTION_ID) {
+                throw IOException("private unavailable")
+            }
+            "public connected"
+        }
+        assertEquals("public connected", result)
+        assertEquals(SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS, attempts)
+
+        val terminal = runCatching {
+            BuiltInSubscriptionStartupPolicy.firstSuccessful(
+                SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS,
+            ) { throw IOException(it) }
+        }.exceptionOrNull()
+        assertEquals(SubscriptionStore.PUBLIC_SUBSCRIPTION_ID, terminal?.message)
+
+        attempts.clear()
+        val canceled = runCatching {
+            BuiltInSubscriptionStartupPolicy.firstSuccessful(
+                SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS,
+            ) { sourceId ->
+                attempts += sourceId
+                throw CancellationException("canceled")
+            }
+        }.exceptionOrNull()
+        assertTrue(canceled is CancellationException)
+        assertEquals(listOf(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID), attempts)
+    }
+
+    @Test
+    fun publicRuntimeUsesPublicConnectionNotice() {
+        assertEquals(
+            R.string.notification_connected_public,
+            connectedNotificationTextRes(SubscriptionStore.PUBLIC_SUBSCRIPTION_ID),
+        )
+        assertEquals(
+            R.string.notification_connected,
+            connectedNotificationTextRes(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID),
+        )
+    }
+
+    @Test
+    fun recoveryExclusionsApplyOnlyToTheirRuntimeSource() {
+        val exclusion = ConnectionStartupExclusion(
+            subscriptionId = SubscriptionStore.PUBLIC_SUBSCRIPTION_ID,
+            profileFingerprint = "public-profile",
+        )
+
+        assertEquals(
+            "public-profile",
+            exclusion.forSubscription(SubscriptionStore.PUBLIC_SUBSCRIPTION_ID).profileFingerprint,
+        )
+        assertEquals(
+            "",
+            exclusion.forSubscription(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID).profileFingerprint,
+        )
+    }
+
     @Test
     fun systemStartedServiceConnectsWhileAppActionsStayExplicit() {
         assertEquals(Actions.CONNECT, Actions.resolveServiceAction(null, appInitiated = false))
