@@ -127,17 +127,39 @@ class ConnectionDelayFeaturePolicyTest {
             ),
         )
 
-        assertTrue(ConnectionSpeedTestState.snapshot("speed-sub")?.isRunning == true)
+        assertTrue(ConnectionSpeedTestState.snapshot("speed-sub", "profile")?.isRunning == true)
         assertTrue(ConnectionSpeedTestState.isAnyRunning())
-        assertNull(ConnectionSpeedTestState.snapshot("other-speed-sub"))
+        assertNull(ConnectionSpeedTestState.snapshot("other-speed-sub", "profile"))
 
         ConnectionSpeedTestState.update("speed-test") {
             it.copy(status = Actions.SPEED_TEST_COMPLETED)
         }
 
-        assertFalse(ConnectionSpeedTestState.snapshot("speed-sub")?.isRunning == true)
+        assertFalse(ConnectionSpeedTestState.snapshot("speed-sub", "profile")?.isRunning == true)
         assertFalse(ConnectionSpeedTestState.isAnyRunning())
         assertEquals("delay-test", ConnectionDelayTestState.snapshot("speed-sub")?.testId)
+    }
+
+    @Test
+    fun manualSpeedTestsKeepIndependentRowsAndIgnoreStaleUpdates() {
+        val first = ConnectionSpeedTestSession("first-speed", "parallel-sub", "first")
+        val second = ConnectionSpeedTestSession("second-speed", "parallel-sub", "second")
+        val other = ConnectionSpeedTestSession("other-speed", "parallel-other-sub", "first")
+        listOf(first, second, other).forEach(ConnectionSpeedTestState::replace)
+
+        assertEquals(setOf(first, second), ConnectionSpeedTestState.runningSessions("parallel-sub").toSet())
+        ConnectionSpeedTestState.update(first.testId) { it.copy(status = Actions.SPEED_TEST_CANCELED) }
+        assertEquals(listOf(second), ConnectionSpeedTestState.runningSessions("parallel-sub"))
+        assertTrue(ConnectionSpeedTestState.snapshot("parallel-other-sub", "first")!!.isRunning)
+
+        val retry = first.copy(testId = "retry-speed")
+        ConnectionSpeedTestState.replace(retry)
+        assertNull(ConnectionSpeedTestState.update(first.testId) { it.copy(status = Actions.SPEED_TEST_COMPLETED) })
+        assertEquals(retry, ConnectionSpeedTestState.snapshot("parallel-sub", "first"))
+        listOf(retry, second, other).forEach { session ->
+            ConnectionSpeedTestState.update(session.testId) { it.copy(status = Actions.SPEED_TEST_COMPLETED) }
+        }
+        assertTrue(ConnectionSpeedTestState.runningSessions("parallel-sub").isEmpty())
     }
 
     @Test

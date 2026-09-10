@@ -6,7 +6,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
-import java.net.URL
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -25,19 +24,7 @@ object WhiteDnsConfig {
     // Injected at build time from the environment with production defaults; see app/build.gradle.kts.
     val MIHOMO_SUBSCRIPTION_URL: String get() = BuildConfig.MIHOMO_SUBSCRIPTION_URL
     val PRIVATE_MIHOMO_SUBSCRIPTION_URL: String get() = BuildConfig.PRIVATE_MIHOMO_SUBSCRIPTION_URL
-    val ENCRYPTED_IP_LIST_URL: String get() = BuildConfig.ENCRYPTED_IP_LIST_URL
-
-    // Release builds fail when these are unset; debug builds get an empty string.
-    val MIHOMO_SUBSCRIPTION_KEY: String get() = BuildConfig.MIHOMO_SUBSCRIPTION_KEY
-    val ENCRYPTED_IP_LIST_KEY: String get() = BuildConfig.ENCRYPTED_IP_LIST_KEY
 }
-
-internal fun decodeSubscriptionPayload(url: URL, payload: String, key: String): String =
-    if (url.path.contains("encrypted", ignoreCase = true)) {
-        EncryptedPayloadCodec.decryptText(payload, key, label = "encrypted Mihomo subscription")
-    } else {
-        payload
-    }
 
 internal fun parseCachedMihomoConfig(
     yaml: String,

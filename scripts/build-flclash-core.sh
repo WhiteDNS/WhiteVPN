@@ -13,8 +13,12 @@ MIHOMO_VERSION="v1.19.30"
 OUT_JNI_DIR="${ROOT_DIR}/app/src/main/jniLibs"
 OUT_INCLUDE_DIR="${ROOT_DIR}/app/src/main/cpp/includes"
 VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
-CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}-whitedns-awg3"
+# Pin the compiler as well as source: dependency-only and security-patch changes
+# must never reuse an old libclash.so.
+export GOTOOLCHAIN=go1.26.8
+PATCH_DIGEST="$(cat "${FLCLASH_PATCH}" "${MIHOMO_PATCH}" | shasum -a 256 | cut -d ' ' -f 1)"
 API_LEVEL="${ANDROID_API_LEVEL:-26}"
+CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}-${GOTOOLCHAIN}-${PATCH_DIGEST}"
 ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
 
 outputs_exist() {
@@ -227,7 +231,7 @@ build_abi() {
       GOOS=android \
       GOARCH="${goarch}" \
       ${goarm:+GOARM="${goarm}"} \
-      GOCACHE="${BUILD_TMP_DIR}/go-build-cache" \
+      GOCACHE="${GOCACHE:-${BUILD_TMP_DIR}/go-build-cache}" \
       CGO_ENABLED=1 \
       CC="${cc}" \
       CFLAGS="-O3 -Werror" \
@@ -243,6 +247,12 @@ build_abi() {
   install -m 0644 "${tmp_out}/libclash.h" "${include_out}/libclash.h"
   install -m 0644 "${CORE_DIR}/bride.h" "${include_out}/bride.h"
 }
+
+# Exercise the policy and socket-cleanup regressions on the build host.
+(
+  cd "${CORE_DIR}"
+  go test github.com/metacubex/mihomo/config github.com/metacubex/mihomo/listener -run WhiteVPN
+)
 
 for abi in "${ABIS[@]}"; do
   build_abi "${abi}"

@@ -54,27 +54,7 @@ object StartupScanPolicy {
             .map { (endpoint, port) -> CleanIpResult(endpoint.ip, port, 1L, 0.0, checkedAt) }
     }
 
-    fun exhaustiveEncryptedCandidates(
-        candidateIps: List<String>,
-        subscriptionPorts: List<Int>,
-        checkedAt: Long,
-        excludedEndpoint: CleanIpResult? = null,
-    ): List<CleanIpResult> {
-        return excludeEndpoint(
-            candidates = ipPortCandidates(candidateIps, orderedConnectionPorts(subscriptionPorts), checkedAt),
-            excludedEndpoint = excludedEndpoint,
-        )
-    }
-
-    fun untriedFallbackCandidates(
-        primaryCandidates: List<CleanIpResult>,
-        fallbackCandidates: List<CleanIpResult>,
-    ): List<CleanIpResult> {
-        val tried = primaryCandidates.map { it.endpointKey() }.toSet()
-        return fallbackCandidates.filterNot { it.endpointKey() in tried }
-    }
-
-    fun cachedEncryptedCandidates(
+    fun cachedCandidates(
         subscriptionPorts: List<Int>,
         lastEndpoint: CleanIpResult?,
         cachedResults: List<CleanIpResult>,
@@ -112,20 +92,6 @@ object StartupScanPolicy {
                     .thenBy { firstIndex.getValue(it) },
             )
             .firstOrNull()
-    }
-
-    private fun ipPortCandidates(
-        ips: List<String>,
-        ports: List<Int>,
-        checkedAt: Long,
-    ): List<CleanIpResult> {
-        val cleanIps = ips
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-        return cleanIps.flatMap { ip ->
-            ports.map { port -> CleanIpResult(ip, port, 1L, 0.0, checkedAt) }
-        }
     }
 
     private fun CleanIpResult.endpointKey(): String = "$ip:$port"

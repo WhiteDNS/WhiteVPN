@@ -30,7 +30,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.23.x'
+          go-version: '1.26.8'
 
       - uses: android-actions/setup-android@v4
 
@@ -52,7 +52,6 @@ jobs:
         env:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
-          WHITEDNS_ENCRYPTED_IP_LIST_URL: ${{ vars.WHITEDNS_ENCRYPTED_IP_LIST_URL }}
         run: ./gradlew testDebugUnitTest assembleDebug
 
       - name: Configure release signing
@@ -81,11 +80,8 @@ jobs:
           WHITEDNS_RELEASE_STORE_PASSWORD: ${{ secrets.WHITEDNS_RELEASE_STORE_PASSWORD }}
           WHITEDNS_RELEASE_KEY_ALIAS: ${{ secrets.WHITEDNS_RELEASE_KEY_ALIAS }}
           WHITEDNS_RELEASE_KEY_PASSWORD: ${{ secrets.WHITEDNS_RELEASE_KEY_PASSWORD }}
-          WHITEDNS_MIHOMO_SUBSCRIPTION_KEY: ${{ secrets.WHITEDNS_MIHOMO_SUBSCRIPTION_KEY }}
-          WHITEDNS_ENCRYPTED_IP_LIST_KEY: ${{ secrets.WHITEDNS_ENCRYPTED_IP_LIST_KEY }}
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
-          WHITEDNS_ENCRYPTED_IP_LIST_URL: ${{ vars.WHITEDNS_ENCRYPTED_IP_LIST_URL }}
         run: ./scripts/release.sh
 
       - name: Upload debug APKs

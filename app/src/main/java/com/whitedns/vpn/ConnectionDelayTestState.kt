@@ -31,11 +31,11 @@ data class ConnectionSpeedTestSession(
 }
 
 object ConnectionSpeedTestState {
-    private val sessions = mutableMapOf<String, ConnectionSpeedTestSession>()
+    private val sessions = mutableMapOf<Pair<String, String>, ConnectionSpeedTestSession>()
 
     @Synchronized
     fun replace(value: ConnectionSpeedTestSession): ConnectionSpeedTestSession {
-        sessions[value.subscriptionId] = value
+        sessions[value.subscriptionId to value.fingerprint] = value
         return value
     }
 
@@ -45,11 +45,16 @@ object ConnectionSpeedTestState {
         transform: (ConnectionSpeedTestSession) -> ConnectionSpeedTestSession,
     ): ConnectionSpeedTestSession? {
         val current = sessions.values.firstOrNull { it.testId == testId } ?: return null
-        return transform(current).also { sessions[current.subscriptionId] = it }
+        return transform(current).also { sessions[current.subscriptionId to current.fingerprint] = it }
     }
 
     @Synchronized
-    fun snapshot(subscriptionId: String): ConnectionSpeedTestSession? = sessions[subscriptionId]
+    fun snapshot(subscriptionId: String, fingerprint: String): ConnectionSpeedTestSession? =
+        sessions[subscriptionId to fingerprint]
+
+    @Synchronized
+    fun runningSessions(subscriptionId: String): List<ConnectionSpeedTestSession> =
+        sessions.values.filter { it.subscriptionId == subscriptionId && it.isRunning }
 
     @Synchronized
     fun isAnyRunning(): Boolean = sessions.values.any(ConnectionSpeedTestSession::isRunning)

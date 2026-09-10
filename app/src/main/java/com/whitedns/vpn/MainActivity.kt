@@ -4091,12 +4091,10 @@ class MainActivity : Activity() {
         } else {
             mutableSetOf<String>()
         }
-        val restoredSpeedSession = ConnectionSpeedTestState.snapshot(selectedSubscriptionId)
-        var speedTestId = restoredSpeedSession?.testId
-        var speedTestingFingerprint = restoredSpeedSession
-            ?.takeIf(ConnectionSpeedTestSession::isRunning)
-            ?.fingerprint
-        var speedTestRunning = restoredSpeedSession?.isRunning == true
+        val speedTests = ConnectionSpeedTestState.runningSessions(selectedSubscriptionId)
+            .associateBy(ConnectionSpeedTestSession::fingerprint)
+            .toMutableMap()
+        var speedTestRunning = speedTests.isNotEmpty()
         fun selectedTypesLabel(): String = when {
             selectedTypes.size == availableTypes.size -> getString(R.string.connection_filter_all_types)
             selectedTypes.size == 1 -> selectedTypes.first().uppercase(Locale.US)
@@ -4148,7 +4146,6 @@ class MainActivity : Activity() {
             val checkIcon: View,
             val speedAction: FrameLayout,
             val speedButton: TextView,
-            val speedProgress: ProgressBar,
         )
 
         val content = MaxWidthLinearLayout(this).apply {
@@ -4472,18 +4469,12 @@ class MainActivity : Activity() {
                         }
                         visibility = View.GONE
                     }
-                    val speedProgress = ProgressBar(this@MainActivity).apply {
-                        isIndeterminate = true
-                        indeterminateTintList = ColorStateList.valueOf(TEAL)
-                        visibility = View.GONE
-                    }
                     val speedAction = FrameLayout(this@MainActivity).apply {
                         visibility = View.GONE
                         isClickable = true
                         isFocusable = true
                         setSelectableBackground()
                         addView(speedButton, FrameLayout.LayoutParams(-2, dp(32), Gravity.CENTER))
-                        addView(speedProgress, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
                     }
                     // Selection indicator (small dot)
                     val checkIcon = View(this@MainActivity).apply {
@@ -4542,7 +4533,6 @@ class MainActivity : Activity() {
                         checkIcon,
                         speedAction,
                         speedButton,
-                        speedProgress,
                     )
                     row.tag = holder
                 } else {
@@ -4636,9 +4626,9 @@ class MainActivity : Activity() {
                     } else {
                         null
                     }
-                    val speedKbps = delayRecord?.speedKbps
+                    val speedKbps = delayRecord?.speedKbps?.takeUnless { profile.fingerprint in speedTests }
                     val isTesting = profile.fingerprint in testingFingerprints
-                    val isSpeedTesting = speedTestRunning && speedTestingFingerprint == profile.fingerprint
+                    val isSpeedTesting = profile.fingerprint in speedTests
 
                     holder.delayBadge.text = when {
                         isTesting -> getString(R.string.connection_delay_testing)
@@ -4673,25 +4663,42 @@ class MainActivity : Activity() {
                     }
 
                     holder.speedAction.visibility = if (delayMs != null) View.VISIBLE else View.GONE
-                    holder.speedButton.visibility = if (delayMs != null && !isSpeedTesting) View.VISIBLE else View.GONE
-                    holder.speedProgress.visibility = if (isSpeedTesting) View.VISIBLE else View.GONE
-                    holder.speedAction.isEnabled = canRunConnectionTests &&
-                        delayMs != null && !testRunning && !speedTestRunning
-                    holder.speedAction.alpha = if (holder.speedAction.isEnabled) 1f else 0.45f
-                    holder.speedAction.contentDescription = getString(
-                        R.string.connection_speed_test_action,
-                        profile.tag,
+                    holder.speedButton.visibility = View.VISIBLE
+                    holder.speedButton.setText(
+                        if (isSpeedTesting) R.string.connection_test_stop else R.string.connection_speed_test_label,
                     )
+                    holder.speedButton.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                        if (isSpeedTesting) R.drawable.ic_stop else R.drawable.ic_speedometer, 0, 0, 0,
+                    )
+                    holder.speedAction.isEnabled = isSpeedTesting ||
+                        (canRunConnectionTests && delayMs != null && !testRunning)
+                    holder.speedAction.alpha = if (holder.speedAction.isEnabled) 1f else 0.45f
+                    holder.speedAction.contentDescription = if (isSpeedTesting) {
+                        "${getString(R.string.connection_test_stop)}: ${profile.tag}"
+                    } else {
+                        getString(R.string.connection_speed_test_action, profile.tag)
+                    }
                     holder.speedAction.setOnClickListener {
-                        if (!canRunConnectionTests || testRunning || speedTestRunning || delayMs == null) {
+                        speedTests[profile.fingerprint]?.let { running ->
+                            startService(
+                                Intent(this@MainActivity, WhiteDnsVpnService::class.java)
+                                    .setAction(Actions.CANCEL_CONNECTION_SPEED_TEST)
+                                    .putExtra(Actions.EXTRA_APP_INITIATED, true)
+                                    .putExtra(Actions.EXTRA_SPEED_TEST_ID, running.testId),
+                            )
+                            return@setOnClickListener
+                        }
+                        if (!canRunConnectionTests || testRunning || delayMs == null) {
                             return@setOnClickListener
                         }
                         delayRecord?.copy(speedKbps = null)?.let { clearedRecord ->
                             connectionDelayRecords = connectionDelayRecords +
                                 (profile.fingerprint to clearedRecord)
                         }
-                        speedTestId = SystemClock.elapsedRealtimeNanos().toString()
-                        speedTestingFingerprint = profile.fingerprint
+                        val speedTestId = SystemClock.elapsedRealtimeNanos().toString()
+                        speedTests[profile.fingerprint] = ConnectionSpeedTestSession(
+                            speedTestId, selectedSubscriptionId, profile.fingerprint,
+                        )
                         speedTestRunning = true
                         notifyDataSetChanged()
                         testButton.isEnabled = false
@@ -4717,7 +4724,6 @@ class MainActivity : Activity() {
                     protocolDescription,
                     holder.delayBadge.text?.toString()?.takeIf(String::isNotBlank),
                 ).joinToString(". ")
-                row.isEnabled = !speedTestRunning
                 row.setOnClickListener {
                     if (speedTestRunning) return@setOnClickListener
                     if (pickerMode) {
@@ -5125,10 +5131,11 @@ class MainActivity : Activity() {
         pageDelayTestListener = listener@{ intent ->
             if (intent.action == Actions.CONNECTION_SPEED_TEST_CHANGED) {
                 val broadcastTestId = intent.getStringExtra(Actions.EXTRA_SPEED_TEST_ID) ?: return@listener
-                if (broadcastTestId != speedTestId) return@listener
                 val broadcastSubscriptionId = intent.getStringExtra(Actions.EXTRA_SUBSCRIPTION_ID).orEmpty()
                 if (broadcastSubscriptionId != selectedSubscriptionId) return@listener
-                val session = ConnectionSpeedTestState.snapshot(selectedSubscriptionId)
+                val fingerprint = intent.getStringExtra(Actions.EXTRA_CONNECTION_FINGERPRINT).orEmpty()
+                if (speedTests[fingerprint]?.testId != broadcastTestId) return@listener
+                val session = ConnectionSpeedTestState.snapshot(selectedSubscriptionId, fingerprint)
                     ?.takeIf { it.testId == broadcastTestId }
                     ?: ConnectionSpeedTestSession(
                         testId = broadcastTestId,
@@ -5138,8 +5145,12 @@ class MainActivity : Activity() {
                             ?: Actions.SPEED_TEST_FAILED,
                         error = intent.getStringExtra(Actions.EXTRA_SPEED_TEST_ERROR).orEmpty(),
                     )
-                speedTestRunning = session.isRunning
-                speedTestingFingerprint = session.fingerprint.takeIf { session.isRunning }
+                if (session.isRunning) {
+                    speedTests[fingerprint] = session
+                } else {
+                    speedTests.remove(fingerprint)
+                }
+                speedTestRunning = speedTests.isNotEmpty()
                 if (!session.isRunning) {
                     connectionDelayRecords = subscriptionStore
                         .readConnectionDelayRecords(selectedSubscriptionId, selectorProfiles)

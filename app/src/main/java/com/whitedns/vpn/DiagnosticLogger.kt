@@ -145,13 +145,7 @@ object DiagnosticLogger {
      * the credential-bearing fields a Mihomo profile carries rather than a single known token.
      */
     internal fun String.sanitizeForLog(): String {
-        var sanitized = this
-        SECRET_VALUES.forEach { secret ->
-            if (secret.isNotBlank()) {
-                sanitized = sanitized.replace(secret, "<redacted>")
-            }
-        }
-        sanitized = CREDENTIAL_URI_REGEX.replace(sanitized, "<redacted-uri>")
+        var sanitized = CREDENTIAL_URI_REGEX.replace(this, "<redacted-uri>")
         sanitized = AUTHORIZATION_REGEX.replace(sanitized) { match ->
             "${match.groupValues[1]}<redacted>"
         }
@@ -159,12 +153,6 @@ object DiagnosticLogger {
             "${match.groupValues[1]}${match.groupValues[2]}<redacted>"
         }
     }
-
-    private val SECRET_VALUES: List<String>
-        get() = listOf(
-            WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
-            WhiteDnsConfig.ENCRYPTED_IP_LIST_KEY,
-        )
 
     private val CREDENTIAL_URI_REGEX = Regex(
         "\\b(?:ss|ssr|vmess|vless|trojan|tuic|hysteria2?|hy2|wireguard|wg|socks5h?|https?)://[^\\s\\\"'<>]+",

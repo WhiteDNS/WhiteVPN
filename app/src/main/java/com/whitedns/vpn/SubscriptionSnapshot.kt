@@ -36,29 +36,12 @@ internal sealed interface SubscriptionSource {
     data class RemoteHttps(val url: String) : SubscriptionSource
 
     data class Inline(val content: String) : SubscriptionSource
-
-    data class ManagedHttps(
-        val url: String,
-        val encrypted: Boolean,
-        val decryptionKey: String,
-    ) : SubscriptionSource
 }
 
 internal object SubscriptionSourceLoader {
     suspend fun load(source: SubscriptionSource): String = when (source) {
         is SubscriptionSource.Inline -> source.content
         is SubscriptionSource.RemoteHttps -> loadHttps(source.url)
-        is SubscriptionSource.ManagedHttps -> loadHttps(source.url).let { payload ->
-            if (source.encrypted) {
-                EncryptedPayloadCodec.decryptText(
-                    payload,
-                    source.decryptionKey,
-                    label = "encrypted Mihomo subscription",
-                )
-            } else {
-                payload
-            }
-        }
     }
 
     private suspend fun loadHttps(value: String): String = runInterruptible(Dispatchers.IO) {
@@ -227,26 +210,19 @@ internal class AndroidSubscriptionSnapshotAdapter(
         }
     }
 
-    private fun managedSource(id: String): SubscriptionSource.ManagedHttps {
+    private fun managedSource(id: String): SubscriptionSource.RemoteHttps {
         val url = if (id == SubscriptionStore.PRIVATE_SUBSCRIPTION_ID) {
             WhiteDnsConfig.PRIVATE_MIHOMO_SUBSCRIPTION_URL
         } else {
             WhiteDnsConfig.MIHOMO_SUBSCRIPTION_URL
         }
-        val encrypted = runCatching {
-            URI(url).path.orEmpty().contains("encrypted", ignoreCase = true)
-        }
-            .getOrDefault(false)
-        return SubscriptionSource.ManagedHttps(
-            url = url,
-            encrypted = encrypted,
-            decryptionKey = WhiteDnsConfig.MIHOMO_SUBSCRIPTION_KEY,
-        )
+        return SubscriptionSource.RemoteHttps(url)
     }
 
     private fun builtInSnapshotFile(id: String): File = File(
         context.filesDir,
         if (id == SubscriptionStore.PUBLIC_SUBSCRIPTION_ID) {
+            // Legacy filename contains plaintext YAML; retain existing offline snapshots.
             "mihomo/encrypted_mihomo_subscription.yaml"
         } else {
             "mihomo/private_mihomo_subscription.yaml"
