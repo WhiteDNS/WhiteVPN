@@ -18,6 +18,25 @@ import javax.net.ssl.SSLPeerUnverifiedException
 
 class MihomoRuntimeConfigBuilderTest {
     @Test
+    fun runtimeUsesBundledGeodataWithoutSubscriptionUpdaters() {
+        val runtime = MihomoRuntimeConfigBuilder.flClashRuntimeYaml(
+            rawYaml = """
+                proxies: [{name: example, type: socks5, server: 127.0.0.1, port: 1080}]
+                rules: ['GEOIP,IR,DIRECT', 'MATCH,example']
+                geo-auto-update: true
+                geo-update-interval: 168
+                geox-url: {geoip: 'https://example.com/custom.dat'}
+            """.trimIndent(),
+            secret = "test-only",
+        )
+        assertTrue(runtime.contains("GEOIP,IR,DIRECT"))
+        assertFalse(runtime.contains("geo-auto-update"))
+        assertFalse(runtime.contains("geo-update-interval"))
+        assertFalse(runtime.contains("geox-url"))
+        assertFalse(runtime.contains("custom.dat"))
+    }
+
+    @Test
     fun bundledGeoDataIsInstalledOnceBeforeCoreSetup() {
         val baseDir = Files.createTempDirectory("mihomo-geodata").toFile()
         val existing = File(baseDir, "GeoSite.dat").apply { writeText("newer-data") }

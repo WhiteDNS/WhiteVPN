@@ -8,6 +8,7 @@ object Actions {
     const val SWITCH_CONNECTION = "com.whitedns.vpn.action.SWITCH_CONNECTION"
     const val TEST_CONNECTION_DELAYS = "com.whitedns.vpn.action.TEST_CONNECTION_DELAYS"
     const val TEST_CONNECTION_SPEED = "com.whitedns.vpn.action.TEST_CONNECTION_SPEED"
+    const val CANCEL_CONNECTION_SPEED_TEST = "com.whitedns.vpn.action.CANCEL_CONNECTION_SPEED_TEST"
     const val PAUSE_CONNECTION_DELAY_TEST = "com.whitedns.vpn.action.PAUSE_CONNECTION_DELAY_TEST"
     const val RESUME_CONNECTION_DELAY_TEST = "com.whitedns.vpn.action.RESUME_CONNECTION_DELAY_TEST"
     const val CANCEL_CONNECTION_DELAY_TEST = "com.whitedns.vpn.action.CANCEL_CONNECTION_DELAY_TEST"

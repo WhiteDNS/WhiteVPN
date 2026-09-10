@@ -2,6 +2,15 @@ package com.whitedns.vpn
 
 import android.content.Context
 import com.follow.clash.core.Core
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -870,6 +879,10 @@ internal class MihomoRuntimeConfigBuilder(private val context: Context) {
             "global-client-fingerprint",
             "dns",
             "tun",
+            // Android installs bundled geodata; subscriptions cannot start native updaters.
+            "geo-auto-update",
+            "geo-update-interval",
+            "geox-url",
         )
         private val ROUTING_OVERRIDE_KEYS = setOf("rules", "rule-providers", "sub-rules")
         private const val IRAN_RULESET_URL =
@@ -2274,7 +2287,7 @@ object MihomoRuntimeHealth {
         }
     }
 
-    fun downloadSpeedKbpsThroughMixedProxy(
+    suspend fun downloadSpeedKbpsThroughMixedProxy(
         downloadBytes: Long = MihomoRuntimeDefaults.SPEED_TEST_BYTES,
         timeoutMs: Int = 10_000,
         onResponseReady: () -> Unit = {},
@@ -2293,28 +2306,48 @@ object MihomoRuntimeHealth {
         connection.useCaches = false
         connection.setRequestProperty("Accept-Encoding", "identity")
         connection.setRequestProperty("Connection", "close")
-        return connection.use {
-            if (responseCode !in 200..299) return@use null
-            onResponseReady()
-            val startedAtNanos = System.nanoTime()
-            var bytesRead = 0L
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            inputStream.use { input ->
-                while (bytesRead < targetBytes) {
-                    val count = input.read(
-                        buffer,
-                        0,
-                        minOf(buffer.size.toLong(), targetBytes - bytesRead).toInt(),
-                    )
-                    if (count <= 0) break
-                    bytesRead += count
-                }
+        return measureDownloadSpeed(connection, targetBytes, onResponseReady)
+    }
+
+    internal suspend fun measureDownloadSpeed(
+        connection: HttpURLConnection,
+        targetBytes: Long,
+        onResponseReady: () -> Unit = {},
+    ): Int? = coroutineScope {
+        // Thread interruption alone does not reliably unblock an HTTP socket read.
+        val disconnectOnCancel = launch(Dispatchers.IO, start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                connection.disconnect()
             }
-            ConnectionSpeed.completeKbps(
-                bytes = bytesRead,
-                expectedBytes = targetBytes,
-                elapsedNanos = System.nanoTime() - startedAtNanos,
-            )
+        }
+        try {
+            runInterruptible(Dispatchers.IO) {
+                if (connection.responseCode !in 200..299) return@runInterruptible null
+                onResponseReady()
+                val startedAtNanos = System.nanoTime()
+                var bytesRead = 0L
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                connection.inputStream.use { input ->
+                    while (bytesRead < targetBytes) {
+                        val count = input.read(
+                            buffer,
+                            0,
+                            minOf(buffer.size.toLong(), targetBytes - bytesRead).toInt(),
+                        )
+                        if (count <= 0) break
+                        bytesRead += count
+                    }
+                }
+                ConnectionSpeed.completeKbps(
+                    bytes = bytesRead,
+                    expectedBytes = targetBytes,
+                    elapsedNanos = System.nanoTime() - startedAtNanos,
+                )
+            }
+        } finally {
+            withContext(NonCancellable) { disconnectOnCancel.cancelAndJoin() }
         }
     }
 

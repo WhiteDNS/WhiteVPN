@@ -65,12 +65,12 @@ class MainActivityAppPreferencesTest {
 
             openAppPreferences()
 
-            onView(withContentDescription("Subscription: WhiteVPN")).check(matches(isDisplayed()))
+            onView(withContentDescription("Subscription: WhiteVPN Private")).check(matches(isDisplayed()))
             onView(withContentDescription("Theme: System default")).check(matches(isDisplayed()))
             onView(withContentDescription("App language: English")).check(matches(isDisplayed()))
 
-            onView(withContentDescription("Subscription: WhiteVPN")).perform(click())
-            onView(allOf(withText("WhiteVPN"), isDisplayed())).check(matches(isDisplayed()))
+            onView(withContentDescription("Subscription: WhiteVPN Private")).perform(click())
+            onView(allOf(withText("WhiteVPN Private"), isDisplayed())).check(matches(isDisplayed()))
             pressBack()
             onView(withContentDescription("Theme: System default")).perform(click())
             onView(allOf(withText("Dark"), isDisplayed())).check(matches(isDisplayed()))

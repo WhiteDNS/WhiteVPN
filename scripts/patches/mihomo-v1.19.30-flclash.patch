@@ -1,5 +1,5 @@
 diff --git a/adapter/adapter.go b/adapter/adapter.go
-index 6f20c08abb43eb0ddef4f2ccf989ab0254e7f5ed..22054f0709ef2193aa26a5ecb017142717237c1b 100644
+index 6f20c08..22054f0 100644
 --- a/adapter/adapter.go
 +++ b/adapter/adapter.go
 @@ -167,6 +167,10 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
@@ -14,7 +14,7 @@ index 6f20c08abb43eb0ddef4f2ccf989ab0254e7f5ed..22054f0709ef2193aa26a5ecb0171427
  		record := C.DelayHistory{Time: time.Now()}
  		if alive {
 diff --git a/adapter/outbound/wireguard.go b/adapter/outbound/wireguard.go
-index b856c5c846d55d4976081812365daa42006d1753..e4c784daf30473b7902a9ad4f29b4a412e1f682b 100644
+index b856c5c..e4c784d 100644
 --- a/adapter/outbound/wireguard.go
 +++ b/adapter/outbound/wireguard.go
 @@ -2,10 +2,13 @@ package outbound
@@ -434,7 +434,7 @@ index b856c5c846d55d4976081812365daa42006d1753..e4c784daf30473b7902a9ad4f29b4a41
  	var has6 bool
 diff --git a/adapter/outbound/wireguard_dpi_ttl_other.go b/adapter/outbound/wireguard_dpi_ttl_other.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..c322d1b3fe104ca08c740d067b8fd473be1b3a4d
+index 0000000..c322d1b
 --- /dev/null
 +++ b/adapter/outbound/wireguard_dpi_ttl_other.go
 @@ -0,0 +1,14 @@
@@ -454,7 +454,7 @@ index 0000000000000000000000000000000000000000..c322d1b3fe104ca08c740d067b8fd473
 +}
 diff --git a/adapter/outbound/wireguard_dpi_ttl_unix.go b/adapter/outbound/wireguard_dpi_ttl_unix.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..d552b878cbd306f46f7d1872bc915972d03b5e1f
+index 0000000..d552b87
 --- /dev/null
 +++ b/adapter/outbound/wireguard_dpi_ttl_unix.go
 @@ -0,0 +1,38 @@
@@ -498,7 +498,7 @@ index 0000000000000000000000000000000000000000..d552b878cbd306f46f7d1872bc915972
 +}
 diff --git a/adapter/outbound/wireguard_udp_desync_test.go b/adapter/outbound/wireguard_udp_desync_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..7de1c16f5244b9eb285abea7c9dfeeeca36c53b3
+index 0000000..7de1c16
 --- /dev/null
 +++ b/adapter/outbound/wireguard_udp_desync_test.go
 @@ -0,0 +1,181 @@
@@ -685,7 +685,7 @@ index 0000000000000000000000000000000000000000..7de1c16f5244b9eb285abea7c9dfeeec
 +}
 diff --git a/adapter/patch.go b/adapter/patch.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..4391c56be65041f228fe723798cb802afbcb6b38
+index 0000000..4391c56
 --- /dev/null
 +++ b/adapter/patch.go
 @@ -0,0 +1,5 @@
@@ -696,7 +696,7 @@ index 0000000000000000000000000000000000000000..4391c56be65041f228fe723798cb802a
 +var UrlTestHook UrlTestCheck
 diff --git a/adapter/provider/patch.go b/adapter/provider/patch.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..1f3306a62b3626f372a4b821994a2cd24c137630
+index 0000000..1f3306a
 --- /dev/null
 +++ b/adapter/provider/patch.go
 @@ -0,0 +1,5 @@
@@ -706,7 +706,7 @@ index 0000000000000000000000000000000000000000..1f3306a62b3626f372a4b821994a2cd2
 +	return pp.subscriptionInfo
 +}
 diff --git a/component/loopback/detector.go b/component/loopback/detector.go
-index 59d16ca8a49bfd2620207ec1980a011b89ab42fe..02f71373b4ea5fa895841f9119813be571fc07a3 100644
+index 59d16ca..02f7137 100644
 --- a/component/loopback/detector.go
 +++ b/component/loopback/detector.go
 @@ -17,7 +17,7 @@ import (
@@ -719,7 +719,7 @@ index 59d16ca8a49bfd2620207ec1980a011b89ab42fe..02f71373b4ea5fa895841f9119813be5
  	}
  }
 diff --git a/component/process/process.go b/component/process/process.go
-index 464f5a79bc445a904ee5711fc159f76622607e53..8b758b91c8e397de65e79c74aaf834b9cb3a25cb 100644
+index 464f5a7..8b758b9 100644
 --- a/component/process/process.go
 +++ b/component/process/process.go
 @@ -22,12 +22,10 @@ func FindProcessName(network string, srcIP netip.Addr, srcPort int) (uint32, str
@@ -737,7 +737,7 @@ index 464f5a79bc445a904ee5711fc159f76622607e53..8b758b91c8e397de65e79c74aaf834b9
  
  func FindPackageName(metadata *C.Metadata) (string, error) {
 diff --git a/component/resource/fetcher.go b/component/resource/fetcher.go
-index 464af2e702a2fbd174d96f4316cc7f9e598a2236..6d671c815861e83d8e404522acf6a7953d019cd7 100644
+index 464af2e..6d671c8 100644
 --- a/component/resource/fetcher.go
 +++ b/component/resource/fetcher.go
 @@ -236,7 +236,7 @@ func (f *Fetcher[V]) updateCallback(path string) {
@@ -751,7 +751,7 @@ index 464af2e702a2fbd174d96f4316cc7f9e598a2236..6d671c815861e83d8e404522acf6a795
  
 diff --git a/component/updater/patch.go b/component/updater/patch.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..f969393876dc103386371643ba1c432106db6ab0
+index 0000000..f969393
 --- /dev/null
 +++ b/component/updater/patch.go
 @@ -0,0 +1,67 @@
@@ -823,7 +823,7 @@ index 0000000000000000000000000000000000000000..f969393876dc103386371643ba1c4321
 +	}()
 +}
 diff --git a/component/updater/update_geo.go b/component/updater/update_geo.go
-index 63e6d1501266ee90be4698c9c2d096320186af61..19c5a211f6b8bacc27f2e36939c47d58fc929a36 100644
+index 63e6d15..19c5a21 100644
 --- a/component/updater/update_geo.go
 +++ b/component/updater/update_geo.go
 @@ -45,6 +45,10 @@ func SetGeoUpdateInterval(newGeoUpdateInterval int) {
@@ -903,10 +903,31 @@ index 63e6d1501266ee90be4698c9c2d096320186af61..19c5a211f6b8bacc27f2e36939c47d58
  	}
  	if len(data) == 0 {
 diff --git a/config/config.go b/config/config.go
-index 45efb291e339dee50aa4c9ffd9056e7f7ff37107..babbc4c2e906b4d4e1a316456b936726cf77ea67 100644
+index 45efb29..26ec59a 100644
 --- a/config/config.go
 +++ b/config/config.go
-@@ -989,6 +989,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
+@@ -28,6 +28,7 @@ import (
+ 	"github.com/metacubex/mihomo/component/sniffer"
+ 	"github.com/metacubex/mihomo/component/trie"
+ 	C "github.com/metacubex/mihomo/constant"
++	"github.com/metacubex/mihomo/constant/features"
+ 	P "github.com/metacubex/mihomo/constant/provider"
+ 	snifferTypes "github.com/metacubex/mihomo/constant/sniffer"
+ 	"github.com/metacubex/mihomo/dns"
+@@ -609,7 +610,11 @@ func UnmarshalRawConfig(buf []byte) (*RawConfig, error) {
+ 		return nil, fmt.Errorf("decrypt config error: %w", err)
+ 	}
+ 
+-	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
++	if features.Android {
++		if err := unmarshalWhiteVPNConfig(buf, rawCfg); err != nil {
++			return nil, err
++		}
++	} else if err := yaml.Unmarshal(buf, rawCfg); err != nil {
+ 		return nil, err
+ 	}
+ 
+@@ -989,6 +994,7 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
  		return nil, nil, err
  	}
  
@@ -916,7 +937,7 @@ index 45efb291e339dee50aa4c9ffd9056e7f7ff37107..babbc4c2e906b4d4e1a316456b936726
  
 diff --git a/config/patch.go b/config/patch.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..01c415ab732bdd2b92accec1e69411a6fcf7d957
+index 0000000..01c415a
 --- /dev/null
 +++ b/config/patch.go
 @@ -0,0 +1,20 @@
@@ -940,8 +961,146 @@ index 0000000000000000000000000000000000000000..01c415ab732bdd2b92accec1e69411a6
 +	defer proxyNameListMu.Unlock()
 +	proxyNameList = list
 +}
+diff --git a/config/whitevpn_policy.go b/config/whitevpn_policy.go
+new file mode 100644
+index 0000000..0199154
+--- /dev/null
++++ b/config/whitevpn_policy.go
+@@ -0,0 +1,63 @@
++package config
++
++import (
++	"bytes"
++	"fmt"
++	"io"
++	"net"
++	"strconv"
++
++	"gopkg.in/yaml.v3"
++)
++
++// Decode the final Android configuration once, before ParseRawConfig has side effects.
++// Subscription data may select outbound routing, but cannot add native servers.
++func unmarshalWhiteVPNConfig(buf []byte, raw *RawConfig) error {
++	decoder := yaml.NewDecoder(bytes.NewReader(buf))
++	var document yaml.Node
++	if err := decoder.Decode(&document); err != nil {
++		return err
++	}
++	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
++		return fmt.Errorf("WhiteVPN config must be a mapping")
++	}
++	var extra yaml.Node
++	if err := decoder.Decode(&extra); err != io.EOF {
++		return fmt.Errorf("WhiteVPN config must contain exactly one YAML document")
++	}
++	root := document.Content[0]
++	for i := 0; i < len(root.Content); i += 2 {
++		key := root.Content[i]
++		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
++			return fmt.Errorf("WhiteVPN config keys must be strings; root merges are unsupported")
++		}
++		switch key.Value {
++		case "proxies", "proxy-groups", "proxy-providers", "rules", "rule-providers", "sub-rules",
++			"hosts", "sniffer", "profile", "tls", "experimental",
++			"mode", "unified-delay", "log-level", "ipv6", "tcp-concurrent", "find-process-mode",
++			"global-client-fingerprint", "global-ua", "etag-support", "keep-alive-idle",
++			"keep-alive-interval", "disable-keep-alive", "geodata-mode", "geodata-loader", "geosite-matcher",
++			"mixed-port", "allow-lan", "bind-address", "authentication", "skip-auth-prefixes",
++			"lan-allowed-ips", "lan-disallowed-ips", "external-controller", "secret", "dns", "tun":
++		default:
++			return fmt.Errorf("unsupported WhiteVPN config key %q", key.Value)
++		}
++	}
++	// Node.Decode enforces duplicate keys, resolves nested aliases, and produces the
++	// exact typed object subsequently consumed by ParseRawConfig.
++	if err := root.Decode(raw); err != nil {
++		return err
++	}
++	host, port, err := net.SplitHostPort(raw.ExternalController)
++	portNumber, portErr := strconv.Atoi(port)
++	if err != nil || host != "127.0.0.1" || portErr != nil || portNumber < 1 || portNumber > 65535 || raw.Secret == "" {
++		return fmt.Errorf("WhiteVPN controller must use authenticated IPv4 loopback")
++	}
++	if raw.MixedPort != 2080 || raw.DNS.Listen != "127.0.0.1:1053" || raw.Tun.Enable {
++		return fmt.Errorf("WhiteVPN requires its app-managed proxy, DNS and VPN sockets")
++	}
++	if raw.TLS.Certificate != "" || raw.TLS.PrivateKey != "" || raw.TLS.ClientAuthType != "" || raw.TLS.ClientAuthCert != "" || raw.TLS.EchKey != "" {
++		return fmt.Errorf("WhiteVPN does not support TLS server configuration")
++	}
++	return nil
++}
+diff --git a/config/whitevpn_policy_test.go b/config/whitevpn_policy_test.go
+new file mode 100644
+index 0000000..ccba671
+--- /dev/null
++++ b/config/whitevpn_policy_test.go
+@@ -0,0 +1,63 @@
++package config
++
++import (
++	"strings"
++	"testing"
++)
++
++const whitevpnControl = `mixed-port: 2080
++external-controller: 127.0.0.1:19090
++secret: test-only
++allow-lan: false
++dns: {enable: true, listen: '127.0.0.1:1053'}
++tun: {enable: false}
++proxies:
++  - &proxy {name: first, type: socks5, server: 127.0.0.1, port: 1080}
++  - {<<: *proxy, name: second}
++proxy-groups: [{name: select, type: select, proxies: [first, second]}]
++rules: [MATCH,select]
++`
++
++func TestWhiteVPNConfigBoundary(t *testing.T) {
++	for _, input := range []string{whitevpnControl, strings.Replace(whitevpnControl, "allow-lan: false", "allow-lan: true\nbind-address: 0.0.0.0", 1)} {
++		raw := DefaultRawConfig()
++		if err := unmarshalWhiteVPNConfig([]byte(input), raw); err != nil {
++			t.Fatal(err)
++		}
++		if len(raw.Proxy) != 2 || raw.Proxy[1]["server"] != "127.0.0.1" {
++			t.Fatal("legitimate nested alias was not retained")
++		}
++	}
++	for name, attack := range map[string]string{
++		"listener":        "listeners: [{name: injected, type: http, listen: 0.0.0.0, port: 18080}]\n",
++		"quoted listener": "'listeners': [{name: injected, type: http, listen: 0.0.0.0, port: 18080}]\n",
++		"tunnel":          "tunnels: [{network: [tcp, udp], address: '0.0.0.0:18081', target: '127.0.0.1:80'}]\n",
++		"root merge":      "<<: {listeners: [{name: injected, type: http, port: 18080}]}\n",
++		"unknown":         "future-server: {enable: true}\n",
++		"alternate port":  "socks-port: 18082\n",
++		"controller unix": "external-controller-unix: /tmp/controller.sock\n",
++		"controller tls":  "external-controller-tls: '0.0.0.0:8443'\n",
++		"ui updater":      "external-ui-url: https://example.com/ui.zip\n",
++		"ntp":             "ntp: {enable: true, write-to-system: true}\n",
++		"tls server":      "tls: {certificate: certificate, private-key: key}\n",
++		"duplicate":       "mixed-port: 8080\n",
++		"document":        "---\nlisteners: []\n",
++	} {
++		t.Run(name, func(t *testing.T) {
++			if err := unmarshalWhiteVPNConfig([]byte(whitevpnControl+attack), DefaultRawConfig()); err == nil {
++				t.Fatal("accepted hostile configuration")
++			}
++		})
++	}
++	for _, input := range []string{
++		"[]", "null", "{}",
++		strings.Replace(whitevpnControl, "127.0.0.1:19090", "0.0.0.0:19090", 1),
++		strings.Replace(whitevpnControl, "127.0.0.1:1053", "0.0.0.0:1053", 1),
++		strings.Replace(whitevpnControl, "secret: test-only", "secret: ''", 1),
++		strings.Replace(whitevpnControl, "tun: {enable: false}", "tun: {enable: true}", 1),
++	} {
++		if err := unmarshalWhiteVPNConfig([]byte(input), DefaultRawConfig()); err == nil {
++			t.Fatal("accepted invalid runtime boundary")
++		}
++	}
++}
 diff --git a/constant/adapters.go b/constant/adapters.go
-index a28ac547a7bcd287404546fd8555f8ef7c0e362c..0cf51f5fa93a1fe0e3a8967238a231f6445ffb6d 100644
+index a28ac54..0cf51f5 100644
 --- a/constant/adapters.go
 +++ b/constant/adapters.go
 @@ -61,9 +61,10 @@ const (
@@ -958,7 +1117,7 @@ index a28ac547a7bcd287404546fd8555f8ef7c0e362c..0cf51f5fa93a1fe0e3a8967238a231f6
  type Connection interface {
 diff --git a/constant/features/android.go b/constant/features/android.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..c1174f0804f63870aac82efef8432038c2e63673
+index 0000000..c1174f0
 --- /dev/null
 +++ b/constant/features/android.go
 @@ -0,0 +1,5 @@
@@ -969,7 +1128,7 @@ index 0000000000000000000000000000000000000000..c1174f0804f63870aac82efef8432038
 +const Android = true
 diff --git a/constant/features/android_stub.go b/constant/features/android_stub.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..282493e7c759f07766d541e1bd00cb9414575137
+index 0000000..282493e
 --- /dev/null
 +++ b/constant/features/android_stub.go
 @@ -0,0 +1,5 @@
@@ -980,7 +1139,7 @@ index 0000000000000000000000000000000000000000..282493e7c759f07766d541e1bd00cb94
 +const Android = false
 diff --git a/constant/features/cmfa.go b/constant/features/cmfa.go
 deleted file mode 100644
-index 9a81d82ffe5c9e016a8aeba434e30ed6c2606250..0000000000000000000000000000000000000000
+index 9a81d82..0000000
 --- a/constant/features/cmfa.go
 +++ /dev/null
 @@ -1,5 +0,0 @@
@@ -991,7 +1150,7 @@ index 9a81d82ffe5c9e016a8aeba434e30ed6c2606250..00000000000000000000000000000000
 -const CMFA = true
 diff --git a/constant/features/cmfa_stub.go b/constant/features/cmfa_stub.go
 deleted file mode 100644
-index f7ef082741045fbabbaf5cac9cea78a94a51079e..0000000000000000000000000000000000000000
+index f7ef082..0000000
 --- a/constant/features/cmfa_stub.go
 +++ /dev/null
 @@ -1,5 +0,0 @@
@@ -1001,7 +1160,7 @@ index f7ef082741045fbabbaf5cac9cea78a94a51079e..00000000000000000000000000000000
 -
 -const CMFA = false
 diff --git a/constant/features/tags.go b/constant/features/tags.go
-index 524c4d77e50e22b762b48ba1dc4209dc12e7025a..ac12385cc0132a1ad23a1b22d8ebb56304a3fa53 100644
+index 524c4d7..ac12385 100644
 --- a/constant/features/tags.go
 +++ b/constant/features/tags.go
 @@ -1,9 +1,6 @@
@@ -1015,7 +1174,7 @@ index 524c4d77e50e22b762b48ba1dc4209dc12e7025a..ac12385cc0132a1ad23a1b22d8ebb563
  		tags = append(tags, "with_low_memory")
  	}
 diff --git a/constant/path.go b/constant/path.go
-index f2463a4a235e7c10f24aaeb6ebadb1430b14d245..590928d0b6cfc523da73c582dd6015f121b6781a 100644
+index f2463a4..590928d 100644
 --- a/constant/path.go
 +++ b/constant/path.go
 @@ -86,7 +86,7 @@ func (p *path) Resolve(path string) string {
@@ -1058,7 +1217,7 @@ index f2463a4a235e7c10f24aaeb6ebadb1430b14d245..590928d0b6cfc523da73c582dd6015f1
  				return P.Join(p.homeDir, fi.Name())
  			}
 diff --git a/dns/patch_android.go b/dns/patch_android.go
-index cad718b6930ba627f261b51c2fcf5c43621f8ce9..138e95d57bfda8d853d9b817f3c43e56dd5e08f4 100644
+index cad718b..138e95d 100644
 --- a/dns/patch_android.go
 +++ b/dns/patch_android.go
 @@ -1,4 +1,4 @@
@@ -1068,7 +1227,7 @@ index cad718b6930ba627f261b51c2fcf5c43621f8ce9..138e95d57bfda8d853d9b817f3c43e56
  package dns
  
 diff --git a/dns/system_common.go b/dns/system_common.go
-index e6dabdcfff1411b8115c3f50b1fbcda5826a6ec1..78c4a86f28131474ff27801e21d1165aa18ab081 100644
+index e6dabdc..78c4a86 100644
 --- a/dns/system_common.go
 +++ b/dns/system_common.go
 @@ -1,4 +1,4 @@
@@ -1078,7 +1237,7 @@ index e6dabdcfff1411b8115c3f50b1fbcda5826a6ec1..78c4a86f28131474ff27801e21d1165a
  package dns
  
 diff --git a/hub/executor/executor.go b/hub/executor/executor.go
-index 796face2f1b9eb498035ce8d2cf72e62ea5a0b0c..dc7c66b9376f67135e1d33becc4b54d6bf619422 100644
+index 796face..dc7c66b 100644
 --- a/hub/executor/executor.go
 +++ b/hub/executor/executor.go
 @@ -104,8 +104,8 @@ func ApplyConfig(cfg *config.Config, force bool) {
@@ -1122,7 +1281,7 @@ index 796face2f1b9eb498035ce8d2cf72e62ea5a0b0c..dc7c66b9376f67135e1d33becc4b54d6
  func updateSniffer(snifferConfig *sniffer.Config) {
 diff --git a/hub/executor/patch.go b/hub/executor/patch.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..1cbbbbc0c0a06cad673a607d1ffb8ed06f6dfc4c
+index 0000000..1cbbbbc
 --- /dev/null
 +++ b/hub/executor/patch.go
 @@ -0,0 +1,5 @@
@@ -1132,7 +1291,7 @@ index 0000000000000000000000000000000000000000..1cbbbbc0c0a06cad673a607d1ffb8ed0
 +
 +var DefaultProviderLoadedHook ProviderLoadedHook
 diff --git a/hub/route/patch_android.go b/hub/route/patch_android.go
-index 5eba2796467ff3bb339f16618de057394b5f0f97..4b6dcf25acb9bf0983b0b89973ca0497bc359360 100644
+index 5eba279..4b6dcf2 100644
 --- a/hub/route/patch_android.go
 +++ b/hub/route/patch_android.go
 @@ -1,4 +1,4 @@
@@ -1142,7 +1301,7 @@ index 5eba2796467ff3bb339f16618de057394b5f0f97..4b6dcf25acb9bf0983b0b89973ca0497
  package route
  
 diff --git a/hub/route/server.go b/hub/route/server.go
-index 6d37d4802bfe4e5caef8fc224479a1225c38ab8e..b1659cd085d278193a94ed860e3bfd9a8721d95e 100644
+index 6d37d48..b1659cd 100644
 --- a/hub/route/server.go
 +++ b/hub/route/server.go
 @@ -181,9 +181,7 @@ func start(cfg *Config) {
@@ -1158,7 +1317,7 @@ index 6d37d4802bfe4e5caef8fc224479a1225c38ab8e..b1659cd085d278193a94ed860e3bfd9a
  
 diff --git a/listener/http/patch_android.go b/listener/http/patch_android.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..a763c95e853b15d73008bdbeb2bb253beef7cf03
+index 0000000..a763c95
 --- /dev/null
 +++ b/listener/http/patch_android.go
 @@ -0,0 +1,9 @@
@@ -1172,7 +1331,7 @@ index 0000000000000000000000000000000000000000..a763c95e853b15d73008bdbeb2bb253b
 +	return l.listener
 +}
 diff --git a/listener/listener.go b/listener/listener.go
-index 3a0a8aad415dc078529a86417048522796fd2a3d..ececbc41fd6bf11788a88b30399e0c0fbc75ec03 100644
+index 3a0a8aa..81794dc 100644
 --- a/listener/listener.go
 +++ b/listener/listener.go
 @@ -512,10 +512,8 @@ func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
@@ -1188,15 +1347,24 @@ index 3a0a8aad415dc078529a86417048522796fd2a3d..ececbc41fd6bf11788a88b30399e0c0f
  		return
  	}
  
+@@ -725,5 +723,5 @@ func closeTunListener() {
+ }
+ 
+ func Cleanup() {
+-	closeTunListener()
++	StopListener()
+ }
 diff --git a/listener/patch.go b/listener/patch.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..6ab5aa1182cb5c87f6716b754c7981286c9e7c04
+index 0000000..a755844
 --- /dev/null
 +++ b/listener/patch.go
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,71 @@
 +package listener
 +
 +func StopListener() {
++	PatchInboundListeners(nil, nil, true)
++	PatchTunnel(nil, nil)
 +
 +	if socksListener != nil {
 +		_ = socksListener.Close()
@@ -1253,11 +1421,6 @@ index 0000000000000000000000000000000000000000..6ab5aa1182cb5c87f6716b754c798128
 +		shadowSocksListener = nil
 +	}
 +
-+	if shadowSocksListener != nil {
-+		_ = shadowSocksListener.Close()
-+		shadowSocksListener = nil
-+	}
-+
 +	if vmessListener != nil {
 +		_ = vmessListener.Close()
 +		vmessListener = nil
@@ -1269,7 +1432,7 @@ index 0000000000000000000000000000000000000000..6ab5aa1182cb5c87f6716b754c798128
 +	}
 +}
 diff --git a/listener/sing_tun/server.go b/listener/sing_tun/server.go
-index 3e5ef59197e456f4273b31da62fa7244ca437ee8..281f6348665095f8f24f1897a8b4dc5149b29bfe 100644
+index 3e5ef59..281f634 100644
 --- a/listener/sing_tun/server.go
 +++ b/listener/sing_tun/server.go
 @@ -469,12 +469,6 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
@@ -1286,7 +1449,7 @@ index 3e5ef59197e456f4273b31da62fa7244ca437ee8..281f6348665095f8f24f1897a8b4dc51
  	if err != nil {
  		err = E.Cause(err, "configure tun interface")
 diff --git a/listener/sing_tun/server_android.go b/listener/sing_tun/server_android.go
-index f180bd3051b96bec9e241468fca3388b56aa6c20..71ac263590efb8a8eafbe22ab85d45bc138ac864 100644
+index f180bd3..71ac263 100644
 --- a/listener/sing_tun/server_android.go
 +++ b/listener/sing_tun/server_android.go
 @@ -1,77 +1,11 @@
@@ -1371,7 +1534,7 @@ index f180bd3051b96bec9e241468fca3388b56aa6c20..71ac263590efb8a8eafbe22ab85d45bc
 -}
 diff --git a/listener/sing_tun/server_notandroid.go b/listener/sing_tun/server_notandroid.go
 deleted file mode 100644
-index e393d4ca0dacfaa371e6d5bad654009493009716..0000000000000000000000000000000000000000
+index e393d4c..0000000
 --- a/listener/sing_tun/server_notandroid.go
 +++ /dev/null
 @@ -1,11 +0,0 @@
@@ -1386,9 +1549,63 @@ index e393d4ca0dacfaa371e6d5bad654009493009716..00000000000000000000000000000000
 -func (l *Listener) buildAndroidRules(tunOptions *tun.Options) error {
 -	return nil
 -}
+diff --git a/listener/whitevpn_cleanup_test.go b/listener/whitevpn_cleanup_test.go
+new file mode 100644
+index 0000000..042d03f
+--- /dev/null
++++ b/listener/whitevpn_cleanup_test.go
+@@ -0,0 +1,48 @@
++package listener
++
++import (
++	"net"
++	"testing"
++
++	C "github.com/metacubex/mihomo/constant"
++	LC "github.com/metacubex/mihomo/listener/config"
++)
++
++func TestWhiteVPNShutdownClosesPatchedSockets(t *testing.T) {
++	for name, stop := range map[string]func(){"stop": StopListener, "shutdown": Cleanup} {
++		t.Run(name, func(t *testing.T) {
++			defer Cleanup()
++			inbound, err := ParseListener(map[string]any{"name": "test", "type": "http", "listen": "127.0.0.1", "port": 0})
++			if err != nil {
++				t.Fatal(err)
++			}
++			PatchInboundListeners(map[string]C.InboundListener{"test": inbound}, nil, true)
++			PatchTunnel([]LC.Tunnel{{Network: []string{"tcp", "udp"}, Address: "127.0.0.1:0", Target: "127.0.0.1:1", Proxy: "DIRECT"}}, nil)
++			if len(inboundListeners) != 1 || len(tunnelTCPListeners) != 1 || len(tunnelUDPListeners) != 1 {
++				t.Fatal("test sockets did not open")
++			}
++			var tcp, udp string
++			for _, listener := range tunnelTCPListeners {
++				tcp = listener.Address()
++			}
++			for _, listener := range tunnelUDPListeners {
++				udp = listener.Address()
++			}
++			stop()
++			if len(inboundListeners)+len(tunnelTCPListeners)+len(tunnelUDPListeners) != 0 {
++				t.Fatal("listener retained after shutdown")
++			}
++			l, err := net.Listen("tcp", tcp)
++			if err != nil {
++				t.Fatal(err)
++			}
++			l.Close()
++			p, err := net.ListenPacket("udp", udp)
++			if err != nil {
++				t.Fatal(err)
++			}
++			p.Close()
++			stop() // Repeated stop must be safe.
++		})
++	}
++}
 diff --git a/rules/provider/patch_android.go b/rules/provider/patch_android.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..a45b9c52c6d0495c203a8147d544e3701fb1c37a
+index 0000000..a45b9c5
 --- /dev/null
 +++ b/rules/provider/patch_android.go
 @@ -0,0 +1,17 @@
@@ -1411,7 +1628,7 @@ index 0000000000000000000000000000000000000000..a45b9c52c6d0495c203a8147d544e370
 +}
 diff --git a/tunnel/patch.go b/tunnel/patch.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..1d27020cb600a893cfb6592a4129736ea0263a46
+index 0000000..1d27020
 --- /dev/null
 +++ b/tunnel/patch.go
 @@ -0,0 +1,43 @@
@@ -1459,7 +1676,7 @@ index 0000000000000000000000000000000000000000..1d27020cb600a893cfb6592a4129736e
 +	return ap
 +}
 diff --git a/tunnel/statistic/manager.go b/tunnel/statistic/manager.go
-index c69746dbcbac1d8fb1cc7f22e7bd538a3e62385c..f38ed07676f02b6e6b383ea1192605ec2f7865fc 100644
+index c69746d..f38ed07 100644
 --- a/tunnel/statistic/manager.go
 +++ b/tunnel/statistic/manager.go
 @@ -26,18 +26,27 @@ func init() {
@@ -1548,7 +1765,7 @@ index c69746dbcbac1d8fb1cc7f22e7bd538a3e62385c..f38ed07676f02b6e6b383ea1192605ec
  
 diff --git a/tunnel/statistic/patch.go b/tunnel/statistic/patch.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..3f170ee8731139b0aa5fa66294cad34a9b6bf1c6
+index 0000000..3f170ee
 --- /dev/null
 +++ b/tunnel/statistic/patch.go
 @@ -0,0 +1,19 @@
@@ -1573,7 +1790,7 @@ index 0000000000000000000000000000000000000000..3f170ee8731139b0aa5fa66294cad34a
 +}
 diff --git a/tunnel/statistic/patch_android.go b/tunnel/statistic/patch_android.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c4b43b05965b129a86e9f2223c445c723e4c642
+index 0000000..1c4b43b
 --- /dev/null
 +++ b/tunnel/statistic/patch_android.go
 @@ -0,0 +1,3 @@
@@ -1581,7 +1798,7 @@ index 0000000000000000000000000000000000000000..1c4b43b05965b129a86e9f2223c445c7
 +
 +package statistic
 diff --git a/tunnel/statistic/tracker.go b/tunnel/statistic/tracker.go
-index 2fbb1cf9e350605e47c2ebf478ac6ab0f4ebf472..fa9860a04c2dc4bb37ba791569d86c56583a11d7 100644
+index 2fbb1cf..fa9860a 100644
 --- a/tunnel/statistic/tracker.go
 +++ b/tunnel/statistic/tracker.go
 @@ -53,7 +53,7 @@ func (tt *tcpTracker) Read(b []byte) (int, error) {
@@ -1715,7 +1932,7 @@ index 2fbb1cf9e350605e47c2ebf478ac6ab0f4ebf472..fa9860a04c2dc4bb37ba791569d86c56
  	}
  
 diff --git a/tunnel/tunnel.go b/tunnel/tunnel.go
-index 86dbc14ae428ba7927dd2dc3ab52d78f0ddb1e87..be215f562b2e71e7ba8eafc5b5e57fd2839dfa43 100644
+index 86dbc14..be215f5 100644
 --- a/tunnel/tunnel.go
 +++ b/tunnel/tunnel.go
 @@ -231,6 +231,7 @@ func UpdateProxies(newProxies map[string]C.Proxy, newProviders map[string]P.Prox

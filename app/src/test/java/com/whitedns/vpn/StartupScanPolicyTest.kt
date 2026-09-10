@@ -78,40 +78,12 @@ class StartupScanPolicyTest {
     }
 
     @Test
-    fun exhaustiveEncryptedCandidatesCoverEveryIpPortPair() {
-        val candidates = StartupScanPolicy.exhaustiveEncryptedCandidates(
-            candidateIps = listOf("104.16.0.1", "", "104.16.0.2"),
-            subscriptionPorts = listOf(443, 2053),
-            checkedAt = 3,
-        )
-
-        assertEquals(
-            listOf("104.16.0.1:443", "104.16.0.1:2053", "104.16.0.2:443", "104.16.0.2:2053"),
-            candidates.map { "${it.ip}:${it.port}" },
-        )
-    }
-
-    @Test
-    fun untriedFallbackCandidatesSkipQuickCandidatesAfterQuickFailure() {
-        val quick = listOf(CleanIpResult("104.16.0.1", 443, 10, 0.0, 1))
-        val exhaustive = listOf(
-            CleanIpResult("104.16.0.1", 443, 1, 0.0, 2),
-            CleanIpResult("104.16.0.1", 8443, 1, 0.0, 2),
-            CleanIpResult("104.16.0.2", 443, 1, 0.0, 2),
-        )
-
-        val fallback = StartupScanPolicy.untriedFallbackCandidates(quick, exhaustive)
-
-        assertEquals(listOf("104.16.0.1:8443", "104.16.0.2:443"), fallback.map { "${it.ip}:${it.port}" })
-    }
-
-    @Test
-    fun cachedEncryptedCandidatesUseAllSubscriptionPortsAndPreferLastEndpoint() {
+    fun cachedCandidatesUseAllSubscriptionPortsAndPreferLastEndpoint() {
         val last = CleanIpResult("104.16.0.2", 8443, 120, 0.0, 1)
         val fast = CleanIpResult("104.16.0.1", 443, 10, 0.0, 2)
         val wrongPort = CleanIpResult("104.16.0.3", 2053, 1, 0.0, 3)
 
-        val candidates = StartupScanPolicy.cachedEncryptedCandidates(
+        val candidates = StartupScanPolicy.cachedCandidates(
             subscriptionPorts = listOf(443, 8443),
             lastEndpoint = last,
             cachedResults = listOf(fast, wrongPort),

@@ -24,19 +24,12 @@ fun releaseStoreFile(path: String) = File(path).let { candidate ->
     if (candidate.isAbsolute) candidate else rootProject.file(path)
 }
 
-// Payload decryption keys. These used to be literals in WhiteDnsConfig.kt, which put them in every
-// APK and in the git history. They are injected at build time instead — see secrets.properties.example.
-val payloadSecretsFile = rootProject.file("secrets.properties")
-val payloadSecrets = Properties().apply {
-    if (payloadSecretsFile.isFile) {
-        payloadSecretsFile.inputStream().use { load(it) }
+// Private subscription endpoint configuration; no payload decryption keys are packaged.
+val buildPropertiesFile = rootProject.file("secrets.properties")
+val buildProperties = Properties().apply {
+    if (buildPropertiesFile.isFile) {
+        buildPropertiesFile.inputStream().use { load(it) }
     }
-}
-
-fun payloadSecret(propertyName: String, environmentName: String): String {
-    return System.getenv(environmentName)?.takeIf { it.isNotBlank() }
-        ?: payloadSecrets.getProperty(propertyName)?.takeIf { it.isNotBlank() }
-        ?: ""
 }
 
 fun httpsBuildUrl(environmentName: String, defaultValue: String): String {
@@ -51,7 +44,7 @@ val mihomoSubscriptionUrl = httpsBuildUrl(
 )
 val privateMihomoSubscriptionUrl = (
     System.getenv("WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL")?.takeIf { it.isNotBlank() }
-        ?: payloadSecrets.getProperty("privateMihomoSubscriptionUrl")?.takeIf { it.isNotBlank() }
+        ?: buildProperties.getProperty("privateMihomoSubscriptionUrl")?.takeIf { it.isNotBlank() }
         ?: error(
             "WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL or privateMihomoSubscriptionUrl is required",
         )
@@ -60,14 +53,6 @@ val privateMihomoSubscriptionUrl = (
         "WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL must use HTTPS"
     }
 }
-val encryptedIpListUrl = httpsBuildUrl(
-    "WHITEDNS_ENCRYPTED_IP_LIST_URL",
-    "https://whitedns-encrypted-ip-list.whitedns.workers.dev/v1/results/ips/encrypted",
-)
-val mihomoSubscriptionKey = payloadSecret("mihomoSubscriptionKey", "WHITEDNS_MIHOMO_SUBSCRIPTION_KEY")
-val encryptedIpListKey = payloadSecret("encryptedIpListKey", "WHITEDNS_ENCRYPTED_IP_LIST_KEY")
-val hasPayloadSecrets = mihomoSubscriptionKey.isNotBlank() && encryptedIpListKey.isNotBlank()
-
 fun buildConfigStringLiteral(value: String): String =
     "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\u0024") + "\""
 
@@ -90,8 +75,8 @@ android {
         applicationId = "com.whitedns.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 81
-        versionName = "1.6.6"
+        versionCode = 82
+        versionName = "1.6.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "fa")
@@ -102,9 +87,6 @@ android {
             "PRIVATE_MIHOMO_SUBSCRIPTION_URL",
             buildConfigStringLiteral(privateMihomoSubscriptionUrl),
         )
-        buildConfigField("String", "ENCRYPTED_IP_LIST_URL", buildConfigStringLiteral(encryptedIpListUrl))
-        buildConfigField("String", "MIHOMO_SUBSCRIPTION_KEY", buildConfigStringLiteral(mihomoSubscriptionKey))
-        buildConfigField("String", "ENCRYPTED_IP_LIST_KEY", buildConfigStringLiteral(encryptedIpListKey))
 
         externalNativeBuild {
             cmake {
@@ -238,13 +220,6 @@ val validateReleaseInputs = tasks.register("validateReleaseInputs") {
         val store = releaseStoreFile(releaseStoreFilePath!!)
         if (!store.isFile) {
             throw GradleException("Release keystore not found: ${store.absolutePath}")
-        }
-        if (!hasPayloadSecrets) {
-            throw GradleException(
-                "Payload decryption keys are not configured. Set WHITEDNS_MIHOMO_SUBSCRIPTION_KEY " +
-                    "and WHITEDNS_ENCRYPTED_IP_LIST_KEY, or create secrets.properties from " +
-                    "secrets.properties.example.",
-            )
         }
     }
 }
