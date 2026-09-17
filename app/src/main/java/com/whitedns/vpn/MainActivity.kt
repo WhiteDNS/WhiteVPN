@@ -110,6 +110,29 @@ class MainActivity : Activity() {
     private val buttonModel = ConnectButtonModel()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var updateSettingsBadge: TextView? = null
+    private val appUpdateUi by lazy {
+        AppUpdateUi(this, activityScope, palette) { available ->
+            updateSettingsBadge?.let { badge ->
+                badge.visibility = if (available) View.VISIBLE else View.GONE
+                (badge.parent as? View)?.contentDescription = getString(R.string.update_settings_title) +
+                    if (available) ", ${getString(R.string.update_available_title)}" else ""
+            }
+            if (::appTabs.isInitialized) {
+                appTabs.getTabAt(0)?.let { tab ->
+                    tab.contentDescription = getString(R.string.tab_settings)
+                    if (available) {
+                        tab.orCreateBadge.apply {
+                            backgroundColor = TEAL
+                            setContentDescriptionNumberless(getString(R.string.update_available_title))
+                        }
+                    } else {
+                        tab.removeBadge()
+                    }
+                }
+            }
+        }
+    }
     private lateinit var privacyPolicyStore: PrivacyPolicyAcceptanceStore
     private lateinit var appLanguagePreferenceStore: AppLanguagePreferenceStore
     private lateinit var appThemePreferenceStore: AppThemePreferenceStore
@@ -1203,6 +1226,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        VpnWidgetProvider.refresh(this)
         DiagnosticLogger.info(this, "activity.onStart")
         // Resume orb animation when app comes to foreground
         if (::connectionOrb.isInitialized) connectionOrb.resumeAnimation()
@@ -1243,6 +1267,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        VpnWidgetProvider.refresh(this)
         DiagnosticLogger.info(this, "activity.onStop")
         // Pause orb animation when app goes to background to save battery
         if (::connectionOrb.isInitialized) connectionOrb.pauseAnimation()
@@ -1252,6 +1277,16 @@ class MainActivity : Activity() {
         connectionDelayTestListener = null
         unregisterReceiver(stateReceiver)
         super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        appUpdateUi.onResume()
+    }
+
+    override fun onPause() {
+        appUpdateUi.onPause()
+        super.onPause()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -1280,6 +1315,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Android API")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (appUpdateUi.onActivityResult(requestCode)) return
         val scanResult = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
         if (scanResult != null) {
             normalizedSubscriptionSource(scanResult.contents)?.let { source ->
@@ -2963,6 +2999,7 @@ class MainActivity : Activity() {
             content: View,
             addDivider: Boolean = true,
             onOpen: (() -> Unit)? = null,
+            badge: View? = null,
         ) {
             categoriesPanel.addView(
                 LinearLayout(this).apply {
@@ -3006,6 +3043,12 @@ class MainActivity : Activity() {
                         },
                         LinearLayout.LayoutParams(0, -2, 1f),
                     )
+                    badge?.let {
+                        addView(it, LinearLayout.LayoutParams(-2, -2).apply {
+                            marginStart = dp(12)
+                            marginEnd = dp(12)
+                        })
+                    }
                     addView(
                         TextView(this@MainActivity).apply {
                             setText(R.string.chevron_forward)
@@ -3089,6 +3132,29 @@ class MainActivity : Activity() {
                 setOnClickListener { showResetSettingsDialog() }
             },
             LinearLayout.LayoutParams(-1, dp(64)),
+        )
+        categoriesPanel.addView(
+            View(this).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+            LinearLayout.LayoutParams(-1, dp(1)).apply {
+                marginStart = dp(16)
+                marginEnd = dp(16)
+            },
+        )
+        updateSettingsBadge = TextView(this).apply {
+            setText(R.string.update_badge)
+            textSize = 12f
+            typeface = WhiteDnsBodyBoldTypeface
+            setTextColor(TEAL)
+            includeFontPadding = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            visibility = View.GONE
+        }
+        addCategory(
+            R.string.update_settings_title,
+            R.string.update_check,
+            appUpdateUi.createView(advancedSettingsPanel()),
+            addDivider = false,
+            badge = updateSettingsBadge,
         )
         indexBody.addView(
             categoriesPanel,
@@ -3932,6 +3998,7 @@ class MainActivity : Activity() {
     }
 
     private fun fetchPrivateSubscriptionOnLoad() {
+        if (!SubscriptionStore.isBuiltInSubscription(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID)) return
         if (userSubscriptionManager.selectedId() == SubscriptionStore.PRIVATE_SUBSCRIPTION_ID) return
         activityScope.launch {
             runCatching {
@@ -4707,7 +4774,7 @@ class MainActivity : Activity() {
                         typeFilterButton.alpha = 0.5f
                         countryFilterButton.isEnabled = false
                         countryFilterButton.alpha = 0.5f
-                        startService(
+                        startForegroundService(
                             Intent(this@MainActivity, WhiteDnsVpnService::class.java)
                                 .setAction(Actions.TEST_CONNECTION_SPEED)
                                 .putExtra(Actions.EXTRA_APP_INITIATED, true)
@@ -5040,7 +5107,7 @@ class MainActivity : Activity() {
             filteredProfiles = visibleProfiles()
             adapter.notifyDataSetChanged()
             updateTestControls()
-            startService(
+            startForegroundService(
                 Intent(this, WhiteDnsVpnService::class.java)
                     .setAction(Actions.TEST_CONNECTION_DELAYS)
                     .putExtra(Actions.EXTRA_APP_INITIATED, true)
@@ -5528,6 +5595,7 @@ class MainActivity : Activity() {
                 dialog.dismiss()
                 if (mode == selected) return@setSingleChoiceItems
                 appThemePreferenceStore.save(mode)
+                VpnWidgetProvider.refresh(this)
                 recreate()
             }
             .setNegativeButton(R.string.split_tunnel_cancel, null)
@@ -5548,6 +5616,7 @@ class MainActivity : Activity() {
                 dialog.dismiss()
                 if (language == selected) return@setSingleChoiceItems
                 AppLocale.apply(applicationContext, language)
+                VpnWidgetProvider.refresh(this)
                 WhiteDnsTileService.requestTileRefresh(this)
                 recreate()
             }
@@ -6883,26 +6952,7 @@ class MainActivity : Activity() {
     }
 
     private fun checkForUpdates() {
-        activityScope.launch {
-            val release = runCatching { GitHubReleaseClient.latest() }
-                .onFailure { DiagnosticLogger.warn(this@MainActivity, "update.check.failed", error = it) }
-                .getOrNull()
-                ?: return@launch
-            if (!AppUpdatePolicy.isNewer(release.version, BuildConfig.VERSION_NAME)) return@launch
-
-            MaterialAlertDialogBuilder(this@MainActivity)
-                .setTitle(R.string.update_available_title)
-                .setMessage(
-                    getString(
-                        R.string.update_available_message,
-                        release.version.removePrefix("v"),
-                    ),
-                )
-                .setNegativeButton(R.string.update_later, null)
-                .setPositiveButton(R.string.update_view_release) { _, _ -> openExternalUrl(release.url) }
-                .create()
-                .showWhiteDnsDialog()
-        }
+        appUpdateUi.check(manual = false)
     }
 
     private fun openFooterLink() = openExternalUrl(getString(R.string.footer_url))

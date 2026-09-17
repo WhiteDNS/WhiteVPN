@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="widget_description">اتصال یا قطع اتصال WhiteVPN از صفحهٔ اصلی</string>
+    <string name="widget_connect">اتصال</string>
+    <string name="widget_disconnected">قطع اتصال</string>
+    <string name="widget_open_app">باز کردن WhiteVPN</string>
     <string name="app_name">WhiteVPN</string>
     <string name="notification_channel_vpn">اتصال VPN</string>
     <string name="notification_title">WhiteVPN</string>
@@ -95,8 +99,30 @@
     <string name="version_label">نسخه %1$s</string>
     <string name="update_available_title">نسخه جدید آماده است</string>
     <string name="update_available_message">نسخه %1$s وایت‌وی‌پی‌ان در گیت‌هاب منتشر شده است.</string>
-    <string name="update_view_release">دریافت نسخه</string>
-    <string name="update_later">بعداً</string>
+    <string name="update_view_release">مشاهده در گیت‌هاب</string>
+    <string name="update_settings_title">به‌روزرسانی برنامه</string>
+    <string name="update_badge">جدید</string>
+    <string name="update_check">بررسی نسخه جدید</string>
+    <string name="update_skip">رد کردن این نسخه</string>
+    <string name="update_download">به‌روزرسانی</string>
+    <string name="update_installed_version">نسخه نصب‌شده: %1$s</string>
+    <string name="update_latest_version">آخرین نسخه: %1$s</string>
+    <string name="update_checking">در حال بررسی نسخه جدید…</string>
+    <string name="update_up_to_date">آخرین نسخه را دارید.</string>
+    <string name="update_not_ready">نسخه مناسب برای برنامه شما هنوز آماده نیست. کمی بعد دوباره بررسی کنید یا صفحه انتشار را در گیت‌هاب ببینید.</string>
+    <string name="update_check_failed">بررسی نسخه جدید انجام نشد. اتصال اینترنت را بررسی کنید و دوباره تلاش کنید.</string>
+    <string name="update_preparing">در حال آماده‌سازی دانلود…</string>
+    <string name="update_downloading">در حال دانلود نسخه جدید…</string>
+    <string name="update_download_progress">در حال دانلود نسخه جدید: %1$s</string>
+    <string name="update_download_paused">دانلود متوقف شده است. با برقراری اتصال، ادامه پیدا می‌کند.</string>
+    <string name="update_verifying">در حال بررسی فایل دانلودشده…</string>
+    <string name="update_ready">نسخه %1$s آماده نصب است.</string>
+    <string name="update_download_failed">دانلود یا بررسی فایل انجام نشد. اتصال اینترنت و فضای خالی دستگاه را بررسی کنید و دوباره تلاش کنید.</string>
+    <string name="update_cancel_download">لغو دانلود</string>
+    <string name="update_retry">دانلود دوباره</string>
+    <string name="update_install">نصب نسخه جدید</string>
+    <string name="update_permission_denied">در تنظیمات اندروید، اجازه نصب را به وایت‌وی‌پی‌ان بدهید و سپس «نصب نسخه جدید» را بزنید.</string>
+    <string name="update_install_failed">صفحه نصب باز نشد. تنظیمات نصب در اندروید را بررسی کنید و دوباره تلاش کنید.</string>
     <string name="output_automatic">🌐  خروجی خودکار</string>
     <string name="metric_connection_time">زمان اتصال</string>
     <string name="metric_download">دریافت</string>

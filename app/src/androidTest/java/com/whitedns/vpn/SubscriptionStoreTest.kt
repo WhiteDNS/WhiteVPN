@@ -71,6 +71,25 @@ class SubscriptionStoreTest {
     }
 
     @Test
+    fun savedPrivateSelectionUsesAvailableDefaultWithoutChangingCustomSelection() {
+        val preferences = context.getSharedPreferences("white_dns_user_subscriptions", 0)
+        val previous = preferences.getString("selected_subscription", null)
+        try {
+            preferences.edit().putString("selected_subscription", "whitevpn-private").commit()
+            assertEquals(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID, store.readSelectedSubscriptionId())
+            store.saveSelectedSubscriptionId(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID)
+            assertEquals(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID, store.readSelectedSubscriptionId())
+            if (BuildConfig.PRIVATE_MIHOMO_SUBSCRIPTION_URL.isBlank()) {
+                assertNull(AndroidSubscriptionSnapshotAdapter(context, store).read("whitevpn-private"))
+            }
+            preferences.edit().putString("selected_subscription", "custom").commit()
+            assertEquals("custom", store.readSelectedSubscriptionId())
+        } finally {
+            preferences.edit().putString("selected_subscription", previous).commit()
+        }
+    }
+
+    @Test
     fun builtInSelectionsAndCatalogsStayIndependent() {
         val privateCatalog = SubscriptionCatalog(listOf(profile("private", "private-catalog")), 100L)
         val publicCatalog = SubscriptionCatalog(listOf(profile("public", "public-catalog")), 200L)
