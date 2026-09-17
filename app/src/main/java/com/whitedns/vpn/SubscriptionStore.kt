@@ -106,6 +106,7 @@ class SubscriptionStore(private val context: Context) {
     fun readSelectedSubscriptionId(): String = context
         .getSharedPreferences(USER_SUBSCRIPTION_PREFS, Context.MODE_PRIVATE)
         .getString(KEY_SELECTED_SUBSCRIPTION, DEFAULT_SUBSCRIPTION_ID)
+        .takeUnless { it == PRIVATE_SUBSCRIPTION_ID && !isBuiltInSubscription(it) }
         .orEmpty()
         .ifBlank { DEFAULT_SUBSCRIPTION_ID }
 
@@ -389,8 +390,11 @@ class SubscriptionStore(private val context: Context) {
     companion object {
         const val PRIVATE_SUBSCRIPTION_ID = "whitevpn-private"
         const val PUBLIC_SUBSCRIPTION_ID = "whitedns"
-        const val DEFAULT_SUBSCRIPTION_ID = PRIVATE_SUBSCRIPTION_ID
-        val BUILT_IN_SUBSCRIPTION_IDS = listOf(PRIVATE_SUBSCRIPTION_ID, PUBLIC_SUBSCRIPTION_ID)
+        val BUILT_IN_SUBSCRIPTION_IDS = listOfNotNull(
+            PRIVATE_SUBSCRIPTION_ID.takeIf { BuildConfig.PRIVATE_MIHOMO_SUBSCRIPTION_URL.isNotBlank() },
+            PUBLIC_SUBSCRIPTION_ID,
+        )
+        val DEFAULT_SUBSCRIPTION_ID = BUILT_IN_SUBSCRIPTION_IDS.first()
         fun isBuiltInSubscription(id: String): Boolean = id in BUILT_IN_SUBSCRIPTION_IDS
 
         private const val PRIVATE_CATALOG_FILE = "private-subscription-catalog.json"

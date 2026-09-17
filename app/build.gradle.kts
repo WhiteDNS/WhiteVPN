@@ -45,11 +45,9 @@ val mihomoSubscriptionUrl = httpsBuildUrl(
 val privateMihomoSubscriptionUrl = (
     System.getenv("WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL")?.takeIf { it.isNotBlank() }
         ?: buildProperties.getProperty("privateMihomoSubscriptionUrl")?.takeIf { it.isNotBlank() }
-        ?: error(
-            "WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL or privateMihomoSubscriptionUrl is required",
-        )
+        ?: ""
     ).also {
-    require(it.startsWith("https://")) {
+    require(it.isEmpty() || it.startsWith("https://")) {
         "WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL must use HTTPS"
     }
 }
@@ -75,8 +73,8 @@ android {
         applicationId = "com.whitedns.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 82
-        versionName = "1.6.7"
+        versionCode = 83
+        versionName = "1.6.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "fa")

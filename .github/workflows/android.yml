@@ -31,13 +31,27 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.8'
+          # Native outputs are cached below; Go sources are fetched during the build.
+          cache: false
 
       - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
       - name: Install Android toolchain
         run: |
           sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+
+      - name: Cache FlClash core
+        uses: actions/cache@v5
+        with:
+          path: |
+            app/src/main/jniLibs
+            app/src/main/cpp/includes
+          # Exact inputs only: source/compiler pins and patches live in the script;
+          # the workflow pins the NDK. Never restore a different native build.
+          key: ${{ runner.os }}-${{ runner.arch }}-flclash-${{ hashFiles('scripts/build-flclash-core.sh', 'scripts/patches/*.patch', '.github/workflows/android.yml') }}
 
       - name: Configure Firebase
         env:

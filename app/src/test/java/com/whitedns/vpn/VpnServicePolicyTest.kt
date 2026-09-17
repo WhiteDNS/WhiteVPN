@@ -10,12 +10,9 @@ import java.io.IOException
 
 class VpnServicePolicyTest {
     @Test
-    fun builtInAutomaticConnectionsTryPrivateThenPublic() {
+    fun builtInAutomaticConnectionsUseAvailableSourcesInOrder() {
         assertEquals(
-            listOf(
-                SubscriptionStore.PRIVATE_SUBSCRIPTION_ID,
-                SubscriptionStore.PUBLIC_SUBSCRIPTION_ID,
-            ),
+            SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS,
             BuiltInSubscriptionStartupPolicy.sourceIds(
                 SubscriptionStore.PUBLIC_SUBSCRIPTION_ID,
                 explicitProfile = null,
@@ -55,11 +52,12 @@ class VpnServicePolicyTest {
 
     @Test
     fun builtInFallbackStopsAtTheFirstSuccessAndPropagatesTerminalFailures() = runBlocking {
+        val sourceIds = listOf(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID, SubscriptionStore.PUBLIC_SUBSCRIPTION_ID)
         val attempts = mutableListOf<String>()
         assertEquals(
             "private connected",
             BuiltInSubscriptionStartupPolicy.firstSuccessful(
-                SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS,
+                sourceIds,
             ) { sourceId ->
                 attempts += sourceId
                 "private connected"
@@ -69,7 +67,7 @@ class VpnServicePolicyTest {
 
         attempts.clear()
         val result = BuiltInSubscriptionStartupPolicy.firstSuccessful(
-            SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS,
+            sourceIds,
         ) { sourceId ->
             attempts += sourceId
             if (sourceId == SubscriptionStore.PRIVATE_SUBSCRIPTION_ID) {
@@ -78,11 +76,11 @@ class VpnServicePolicyTest {
             "public connected"
         }
         assertEquals("public connected", result)
-        assertEquals(SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS, attempts)
+        assertEquals(sourceIds, attempts)
 
         val terminal = runCatching {
             BuiltInSubscriptionStartupPolicy.firstSuccessful(
-                SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS,
+                sourceIds,
             ) { throw IOException(it) }
         }.exceptionOrNull()
         assertEquals(SubscriptionStore.PUBLIC_SUBSCRIPTION_ID, terminal?.message)
@@ -90,7 +88,7 @@ class VpnServicePolicyTest {
         attempts.clear()
         val canceled = runCatching {
             BuiltInSubscriptionStartupPolicy.firstSuccessful(
-                SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS,
+                sourceIds,
             ) { sourceId ->
                 attempts += sourceId
                 throw CancellationException("canceled")
@@ -211,6 +209,20 @@ class VpnServicePolicyTest {
         assertTrue(shouldStopServiceAfterConnectionTest(VpnState.Stopped))
         assertTrue(shouldStopServiceAfterConnectionTest(VpnState.DailyLimitReached))
         assertTrue(shouldStopServiceAfterConnectionTest(VpnState.Error("failed")))
+    }
+
+    @Test
+    fun finishingOrRejectedTestsCannotStopOtherTestsOrAVpnHandoff() {
+        val states = listOf(
+            VpnState.Starting, VpnState.Started, VpnState.Stopping,
+            VpnState.Stopped, VpnState.DailyLimitReached, VpnState.Error("failed"),
+        )
+        states.forEach { state ->
+            assertFalse(shouldStopServiceAfterConnectionTest(state, hasTests = true))
+        }
+        listOf(VpnState.Starting, VpnState.Started, VpnState.Stopping).forEach { state ->
+            assertFalse(shouldStopServiceAfterConnectionTest(state, hasTests = false))
+        }
     }
 
     @Test

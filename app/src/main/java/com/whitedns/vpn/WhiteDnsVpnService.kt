@@ -9,6 +9,7 @@ import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.follow.clash.core.Core
@@ -76,8 +77,8 @@ internal fun shouldRetryOriginalAfterAutomaticBridgeFailure(
 internal fun shouldPublishStartupError(startupActive: Boolean, state: VpnState): Boolean =
     startupActive && (state == VpnState.Starting || state == VpnState.Started)
 
-internal fun shouldStopServiceAfterConnectionTest(state: VpnState): Boolean =
-    state == VpnState.Stopped || state == VpnState.DailyLimitReached || state is VpnState.Error
+internal fun shouldStopServiceAfterConnectionTest(state: VpnState, hasTests: Boolean = false): Boolean =
+    !hasTests && (state == VpnState.Stopped || state == VpnState.DailyLimitReached || state is VpnState.Error)
 
 internal fun disconnectTerminalState(coreStopped: Boolean, errorMessage: String): VpnState =
     if (coreStopped) VpnState.Stopped else VpnState.Error(errorMessage)
@@ -210,6 +211,26 @@ internal object VpnTunnelNetwork {
     val coreDnsServers = dnsServers.joinToString(",")
 }
 
+// Process-local: a cached Started value is not evidence that this service still exists.
+@Volatile
+internal var currentVpnServiceState: VpnState = VpnState.Stopped
+    private set
+
+@Volatile
+private var currentVpnService: WhiteDnsVpnService? = null
+
+internal const val ALWAYS_ON_VPN_SETTING = "always_on_vpn_app"
+
+internal fun vpnAlwaysOnEnabled(context: android.content.Context, fallback: Boolean = VpnRuntimeStateStore.readAlwaysOn(context)): Boolean =
+    runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            currentVpnService?.isAlwaysOn ?: fallback
+        } else {
+            // Android 8/9 predate isAlwaysOn(); this legacy setting is readable on those releases.
+            android.provider.Settings.Secure.getString(context.contentResolver, ALWAYS_ON_VPN_SETTING) == context.packageName
+        }
+    }.getOrDefault(fallback)
+
 class WhiteDnsVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -244,6 +265,8 @@ class WhiteDnsVpnService : VpnService() {
     private val connectionSpeedTestJobs = ConcurrentHashMap<String, Job>()
     private val connectionTestControllerMutex = Mutex()
     private var connectionTestRuntime: ConnectionTestRuntime? = null
+    private lateinit var connectionTestWakeLock: ConnectionTestWakeLock
+    private var destroyed = false
 
     private data class ConnectionTestRuntime(
         val subscriptionId: String,
@@ -390,7 +413,16 @@ class WhiteDnsVpnService : VpnService() {
             handleDefaultNetworkChanged(candidate)
         }
         createNotificationChannel()
+        val wakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "WhiteVPN:ConnectionTests")
+            .apply { setReferenceCounted(false) }
+        connectionTestWakeLock = ConnectionTestWakeLock(
+            scope,
+            acquire = { timeoutMs -> wakeLock.acquire(timeoutMs) },
+            release = { if (wakeLock.isHeld) wakeLock.release() },
+        )
         DiagnosticLogger.info(this, "service.onCreate")
+        currentVpnService = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -402,7 +434,12 @@ class WhiteDnsVpnService : VpnService() {
             "action=${intent?.action} appInitiated=$appInitiated alwaysOn=$alwaysOnActive lockdown=$lockdownActive " +
                 "startId=$startId flags=$flags state=${state.wireName}",
         )
-        when (Actions.resolveServiceAction(intent?.action, appInitiated)) {
+        val action = Actions.resolveServiceAction(intent?.action, appInitiated)
+        val startsConnectionTest = action == Actions.TEST_CONNECTION_DELAYS || action == Actions.TEST_CONNECTION_SPEED
+        if (startsConnectionTest && shouldStopServiceAfterConnectionTest(state)) {
+            startForeground(NOTIFICATION_ID, serviceNotification(getString(R.string.connection_delay_testing)))
+        }
+        when (action) {
             Actions.CONNECT -> startVpn()
             Actions.DISCONNECT -> stopVpn()
             Actions.RECONNECT -> reconnectVpn()
@@ -443,19 +480,24 @@ class WhiteDnsVpnService : VpnService() {
                 intent?.getStringExtra(Actions.EXTRA_DELAY_TEST_ID),
             )
         }
+        // Invalid or busy test requests still have to satisfy the foreground-start contract.
+        if (startsConnectionTest) finishConnectionTests()
         return START_NOT_STICKY
     }
 
     private fun updateAlwaysOnMode(appInitiated: Boolean) {
-        alwaysOnActive = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            isAlwaysOn()
-        } else {
-            alwaysOnActive || !appInitiated
-        }
+        val previousAlwaysOn = alwaysOnActive
+        val previousLockdown = lockdownActive
+        alwaysOnActive = vpnAlwaysOnEnabled(this, fallback = alwaysOnActive || !appInitiated)
         lockdownActive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled()
+        if (alwaysOnActive != previousAlwaysOn || lockdownActive != previousLockdown) {
+            publishState(state)
+        }
     }
 
     override fun onDestroy() {
+        destroyed = true
+        connectionTestWakeLock.close()
         DiagnosticLogger.info(this, "service.onDestroy", "state=${state.wireName}")
         startupJob?.cancel(CancellationException("Service destroyed"))
         connectionSwitchJob?.cancel(CancellationException("Service destroyed"))
@@ -466,6 +508,9 @@ class WhiteDnsVpnService : VpnService() {
         cancelPostConnectHealthWatchdog()
         stopCoreImmediately()
         scope.cancel()
+        currentVpnService = null
+        if (currentVpnServiceState !is VpnState.Error) currentVpnServiceState = VpnState.Stopped
+        VpnWidgetProvider.refresh(this)
         super.onDestroy()
     }
 
@@ -728,24 +773,27 @@ class WhiteDnsVpnService : VpnService() {
         connectionDelayTestPaused = false
         lateinit var job: Job
         job = scope.launch {
-            finishingSpeedJobs.forEach { it.join() }
-            previousJob?.cancelAndJoin()
             try {
-                ensureUnderlyingNetworkAvailable()
+                finishingSpeedJobs.forEach { it.join() }
+                previousJob?.cancelAndJoin()
                 val testSettings = connectionTestSettingsPreferenceStore.read()
-                val snapshot = configRepository.readCachedMihomoConfigOrNull(resolvedSubscriptionId)
-                    ?: throw IOException(getString(R.string.connection_empty))
-                val matchingType = ConnectionTypeSelectionPolicy.filterProfiles(
-                    snapshot.catalog.profiles,
-                    connectionTypes,
-                )
-                val profiles = if (targetFingerprints.isEmpty()) {
-                    matchingType
-                } else {
-                    matchingType.filter { it.fingerprint in targetFingerprints }
-                }
-                if (profiles.isEmpty()) {
-                    throw IOException(getString(R.string.connection_empty))
+                val (snapshot, profiles) = connectionTestWakeLock.hold {
+                    ensureUnderlyingNetworkAvailable()
+                    val snapshot = configRepository.readCachedMihomoConfigOrNull(resolvedSubscriptionId)
+                        ?: throw IOException(getString(R.string.connection_empty))
+                    val matchingType = ConnectionTypeSelectionPolicy.filterProfiles(
+                        snapshot.catalog.profiles,
+                        connectionTypes,
+                    )
+                    val profiles = if (targetFingerprints.isEmpty()) {
+                        matchingType
+                    } else {
+                        matchingType.filter { it.fingerprint in targetFingerprints }
+                    }
+                    if (profiles.isEmpty()) {
+                        throw IOException(getString(R.string.connection_empty))
+                    }
+                    snapshot to profiles
                 }
                 withConnectionTestController(resolvedSubscriptionId, snapshot, profiles) { controller, _ ->
                     val startedSession = ConnectionDelayTestState.update(testId) {
@@ -756,7 +804,7 @@ class WhiteDnsVpnService : VpnService() {
                             total = profiles.size,
                             available = 0,
                             finishedFingerprints = emptySet(),
-                            paused = false,
+                            paused = connectionDelayTestPaused,
                             error = "",
                         )
                     } ?: return@withConnectionTestController
@@ -794,33 +842,35 @@ class WhiteDnsVpnService : VpnService() {
                                         val index = nextDelayProfileIndex.getAndIncrement()
                                         if (index >= profiles.size) break
                                         val profile = profiles[index]
-                                        val delayMs = realConnectionDelayMs(
-                                            controller = controller,
-                                            profile = profile,
-                                            timeoutMs = testSettings.timeoutSeconds * 1_000,
-                                        )
-                                        enqueueRecord(
-                                            ConnectionDelayRecord(
-                                                subscriptionId = resolvedSubscriptionId,
-                                                fingerprint = profile.fingerprint,
-                                                delayMs = delayMs,
-                                                status = if (delayMs != null) {
-                                                    ConnectionDelayStatus.Success
-                                                } else {
-                                                    ConnectionDelayStatus.Failure
-                                                },
-                                                testedAt = System.currentTimeMillis(),
-                                            ),
-                                        )
-                                        val progressSession = progressMutex.withLock {
-                                            ConnectionDelayTestState.update(testId) { current ->
-                                                current.copy(
-                                                    status = Actions.DELAY_TEST_PROGRESS,
-                                                    completed = current.completed + 1,
-                                                    available = current.available + if (delayMs != null) 1 else 0,
-                                                    finishedFingerprints =
-                                                        current.finishedFingerprints + profile.fingerprint,
-                                                )
+                                        val progressSession = connectionTestWakeLock.hold {
+                                            val delayMs = realConnectionDelayMs(
+                                                controller = controller,
+                                                profile = profile,
+                                                timeoutMs = testSettings.timeoutSeconds * 1_000,
+                                            )
+                                            enqueueRecord(
+                                                ConnectionDelayRecord(
+                                                    subscriptionId = resolvedSubscriptionId,
+                                                    fingerprint = profile.fingerprint,
+                                                    delayMs = delayMs,
+                                                    status = if (delayMs != null) {
+                                                        ConnectionDelayStatus.Success
+                                                    } else {
+                                                        ConnectionDelayStatus.Failure
+                                                    },
+                                                    testedAt = System.currentTimeMillis(),
+                                                ),
+                                            )
+                                            progressMutex.withLock {
+                                                ConnectionDelayTestState.update(testId) { current ->
+                                                    current.copy(
+                                                        status = Actions.DELAY_TEST_PROGRESS,
+                                                        completed = current.completed + 1,
+                                                        available = current.available + if (delayMs != null) 1 else 0,
+                                                        finishedFingerprints =
+                                                            current.finishedFingerprints + profile.fingerprint,
+                                                    )
+                                                }
                                             }
                                         } ?: break
                                         publishConnectionDelayTest(
@@ -834,7 +884,7 @@ class WhiteDnsVpnService : VpnService() {
                         }
                     } finally {
                         withContext(NonCancellable + Dispatchers.IO) {
-                            flushPendingRecords()
+                            connectionTestWakeLock.hold { flushPendingRecords() }
                         }
                         DiagnosticLogger.info(
                             this@WhiteDnsVpnService,
@@ -885,14 +935,7 @@ class WhiteDnsVpnService : VpnService() {
                 connectionDelayTestPaused = false
                 activeConnectionDelayTestId = null
                 connectionDelayTestJob = null
-                if (connectionSpeedTestJobs.isNotEmpty()) return@invokeOnCompletion
-                if (state == VpnState.Started) {
-                    scope.launch(Dispatchers.IO) {
-                        runCatching { refreshLiveSelectorState() }
-                    }
-                } else if (shouldStopServiceAfterConnectionTest(state)) {
-                    stopSelf()
-                }
+                finishConnectionTests()
             }
         }
     }
@@ -925,65 +968,67 @@ class WhiteDnsVpnService : VpnService() {
         publishConnectionSpeedTest(preparingSession)
         lateinit var job: Job
         job = scope.launch {
-            var existingRecord: ConnectionDelayRecord? = null
-            try {
-                finishingDelayJob?.join()
-                ensureUnderlyingNetworkAvailable()
-                val snapshot = configRepository.readCachedMihomoConfigOrNull(subscriptionId)
-                    ?: throw IOException(getString(R.string.connection_speed_test_unavailable))
-                val profile = snapshot.catalog.profiles.firstOrNull { it.fingerprint == fingerprint }
-                    ?: throw IOException(getString(R.string.connection_speed_test_unavailable))
-                val record = subscriptionStore
-                    .readConnectionDelayRecords(subscriptionId, listOf(profile))
-                    .firstOrNull()
-                    ?.takeIf { it.status == ConnectionDelayStatus.Success && it.delayMs != null }
-                    ?: throw IOException(getString(R.string.connection_speed_test_unavailable))
-                val speedTestBytes = connectionTestSettingsPreferenceStore.read().speedTestBytes
+            connectionTestWakeLock.hold {
+                var existingRecord: ConnectionDelayRecord? = null
+                try {
+                    finishingDelayJob?.join()
+                    ensureUnderlyingNetworkAvailable()
+                    val snapshot = configRepository.readCachedMihomoConfigOrNull(subscriptionId)
+                        ?: throw IOException(getString(R.string.connection_speed_test_unavailable))
+                    val profile = snapshot.catalog.profiles.firstOrNull { it.fingerprint == fingerprint }
+                        ?: throw IOException(getString(R.string.connection_speed_test_unavailable))
+                    val record = subscriptionStore
+                        .readConnectionDelayRecords(subscriptionId, listOf(profile))
+                        .firstOrNull()
+                        ?.takeIf { it.status == ConnectionDelayStatus.Success && it.delayMs != null }
+                        ?: throw IOException(getString(R.string.connection_speed_test_unavailable))
+                    val speedTestBytes = connectionTestSettingsPreferenceStore.read().speedTestBytes
 
-                val speedKbps = withConnectionTestController(
-                    subscriptionId,
-                    snapshot,
-                    listOf(profile),
-                ) { controller, temporaryCore ->
-                    existingRecord = record
+                    val speedKbps = withConnectionTestController(
+                        subscriptionId,
+                        snapshot,
+                        listOf(profile),
+                    ) { controller, temporaryCore ->
+                        existingRecord = record
+                        ConnectionSpeedTestState.update(testId) {
+                            it.copy(status = Actions.SPEED_TEST_STARTED, error = "")
+                        }?.let(::publishConnectionSpeedTest)
+                        val preferredRoots = listOfNotNull(
+                            MihomoSelectionPolicy.trafficProbeGroup(snapshot.summary)?.name,
+                            MihomoSelectionPolicy.mainSelectorGroup(snapshot.summary)?.name,
+                        )
+                        connectionSpeedKbps(
+                            controller = controller,
+                            profile = profile,
+                            preferredRoots = preferredRoots,
+                            temporaryCore = temporaryCore,
+                            downloadBytes = speedTestBytes,
+                        ) ?: throw IOException(getString(R.string.connection_speed_test_failed))
+                    }
+
+                    subscriptionStore.saveConnectionDelayRecord(record.copy(speedKbps = speedKbps))
                     ConnectionSpeedTestState.update(testId) {
-                        it.copy(status = Actions.SPEED_TEST_STARTED, error = "")
+                        it.copy(status = Actions.SPEED_TEST_COMPLETED, error = "")
                     }?.let(::publishConnectionSpeedTest)
-                    val preferredRoots = listOfNotNull(
-                        MihomoSelectionPolicy.trafficProbeGroup(snapshot.summary)?.name,
-                        MihomoSelectionPolicy.mainSelectorGroup(snapshot.summary)?.name,
+                } catch (error: CancellationException) {
+                    existingRecord?.copy(speedKbps = null)?.let(subscriptionStore::saveConnectionDelayRecord)
+                    throw error
+                } catch (error: Throwable) {
+                    existingRecord?.copy(speedKbps = null)?.let(subscriptionStore::saveConnectionDelayRecord)
+                    DiagnosticLogger.warn(
+                        this@WhiteDnsVpnService,
+                        "connection.speed.failed",
+                        "fingerprint=$fingerprint",
+                        error,
                     )
-                    connectionSpeedKbps(
-                        controller = controller,
-                        profile = profile,
-                        preferredRoots = preferredRoots,
-                        temporaryCore = temporaryCore,
-                        downloadBytes = speedTestBytes,
-                    ) ?: throw IOException(getString(R.string.connection_speed_test_failed))
+                    ConnectionSpeedTestState.update(testId) {
+                        it.copy(
+                            status = Actions.SPEED_TEST_FAILED,
+                            error = error.message?.takeIf(String::isNotBlank)
+                                ?: getString(R.string.connection_speed_test_failed),
+                        )
+                    }?.let(::publishConnectionSpeedTest)
                 }
-
-                subscriptionStore.saveConnectionDelayRecord(record.copy(speedKbps = speedKbps))
-                ConnectionSpeedTestState.update(testId) {
-                    it.copy(status = Actions.SPEED_TEST_COMPLETED, error = "")
-                }?.let(::publishConnectionSpeedTest)
-            } catch (error: CancellationException) {
-                existingRecord?.copy(speedKbps = null)?.let(subscriptionStore::saveConnectionDelayRecord)
-                throw error
-            } catch (error: Throwable) {
-                existingRecord?.copy(speedKbps = null)?.let(subscriptionStore::saveConnectionDelayRecord)
-                DiagnosticLogger.warn(
-                    this@WhiteDnsVpnService,
-                    "connection.speed.failed",
-                    "fingerprint=$fingerprint",
-                    error,
-                )
-                ConnectionSpeedTestState.update(testId) {
-                    it.copy(
-                        status = Actions.SPEED_TEST_FAILED,
-                        error = error.message?.takeIf(String::isNotBlank)
-                            ?: getString(R.string.connection_speed_test_failed),
-                    )
-                }?.let(::publishConnectionSpeedTest)
             }
         }
         connectionSpeedTestJobs[testId] = job
@@ -994,14 +1039,19 @@ class WhiteDnsVpnService : VpnService() {
                 }?.let(::publishConnectionSpeedTest)
             }
             connectionSpeedTestJobs.remove(testId, job)
-            if (connectionSpeedTestJobs.isEmpty() && connectionDelayTestJob == null) {
-                if (state == VpnState.Started) {
-                    scope.launch(Dispatchers.IO) {
-                        runCatching { refreshLiveSelectorState() }
-                    }
-                } else if (shouldStopServiceAfterConnectionTest(state)) {
-                    stopSelf()
-                }
+            finishConnectionTests()
+        }
+    }
+
+    private fun finishConnectionTests() {
+        if (destroyed) return
+        val hasTests = connectionDelayTestJob != null || connectionSpeedTestJobs.isNotEmpty()
+        if (shouldStopServiceAfterConnectionTest(state, hasTests)) {
+            stopForegroundCompat()
+            stopSelf()
+        } else if (!hasTests && state == VpnState.Started) {
+            scope.launch(Dispatchers.IO) {
+                runCatching { refreshLiveSelectorState() }
             }
         }
     }
@@ -1012,92 +1062,96 @@ class WhiteDnsVpnService : VpnService() {
         requiredProfiles: List<ConnectionProfile>,
         block: suspend (MihomoControllerClient, temporaryCore: Boolean) -> T,
     ): T {
-        val runtime = connectionTestControllerMutex.withLock {
-            val shared = connectionTestRuntime
-            if (shared != null) {
-                if (shared.subscriptionId != subscriptionId) throw MihomoCoreBusyException()
-                if (requiredProfiles.any { required ->
-                        shared.profiles.none { it.fingerprint == required.fingerprint && it.tag == required.tag }
-                    }
-                ) {
-                    throw IOException(getString(R.string.connection_test_reconnect_required))
-                }
-                shared
-            } else {
-                var temporaryCore = false
-                try {
-                    val controller = if (
-                        state == VpnState.Started &&
-                        activeRuntimePaths != null &&
-                        coreLifecycle.isActive() &&
-                        !activeConnectionChained &&
-                        subscriptionId == activeSubscriptionId
+        val runtime = connectionTestWakeLock.hold {
+            connectionTestControllerMutex.withLock {
+                val shared = connectionTestRuntime
+                if (shared != null) {
+                    if (shared.subscriptionId != subscriptionId) throw MihomoCoreBusyException()
+                    if (requiredProfiles.any { required ->
+                            shared.profiles.none { it.fingerprint == required.fingerprint && it.tag == required.tag }
+                        }
                     ) {
-                        val paths = activeRuntimePaths ?: throw MihomoCoreBusyException()
-                        MihomoControllerClient(paths.secret, port = paths.controlPort).also { activeController ->
-                            if (requiredProfiles.any { required ->
-                                    activeAvailableProfiles.none { active ->
-                                        active.fingerprint == required.fingerprint && active.tag == required.tag
-                                    }
-                                }
-                            ) {
-                                throw IOException(getString(R.string.connection_test_reconnect_required))
-                            }
-                            val liveProxies = withContext(Dispatchers.IO) { activeController.getProxies() }
-                                .optJSONObject("proxies")
-                            if (liveProxies == null || requiredProfiles.any { !liveProxies.has(it.tag) }) {
-                                throw IOException(getString(R.string.connection_test_reconnect_required))
-                            }
-                        }
-                    } else {
-                        if (state == VpnState.Started) {
-                            throw IOException(getString(R.string.connection_test_reconnect_required))
-                        }
-                        if (!coreLifecycle.isIdle() && !stopCoreService()) {
-                            throw MihomoCoreBusyException()
-                        }
-                        val runtimeYaml = MihomoConnectionOptionsPatcher.patch(
-                            snapshot.rawConfig,
-                            connectionOptionsPreferenceStore.read(),
-                        )
-                        val paths = MihomoRuntimeConfigBuilder(this@WhiteDnsVpnService).writeProfileTest(
-                            ProfileTestRuntimePlan(
-                                rawYaml = runtimeYaml,
-                                routingMode = routingModePreferenceStore.read(),
-                                dns = DnsRuntimeSettings(
-                                    mode = dnsPrivacyPreferenceStore.readMode(),
-                                    dohUrl = dnsPrivacyPreferenceStore.readDohUrl(),
-                                    dotEndpoint = dnsPrivacyPreferenceStore.readDotEndpoint(),
-                                ),
-                            ),
-                        )
-                        temporaryCore = true
-                        setupCore(paths)
-                        MihomoControllerClient(paths.secret, port = paths.controlPort).also { probeController ->
-                            waitForController(probeController, paths)
-                        }
+                        throw IOException(getString(R.string.connection_test_reconnect_required))
                     }
-                    ConnectionTestRuntime(
-                        subscriptionId,
-                        controller,
-                        if (temporaryCore) snapshot.catalog.profiles else activeAvailableProfiles,
-                        temporaryCore,
-                    ).also { connectionTestRuntime = it }
-                } catch (error: Throwable) {
-                    if (temporaryCore) withContext(NonCancellable) { stopCoreService() }
-                    throw error
-                }
-            }.also { it.users += 1 }
+                    shared
+                } else {
+                    var temporaryCore = false
+                    try {
+                        val controller = if (
+                            state == VpnState.Started &&
+                            activeRuntimePaths != null &&
+                            coreLifecycle.isActive() &&
+                            !activeConnectionChained &&
+                            subscriptionId == activeSubscriptionId
+                        ) {
+                            val paths = activeRuntimePaths ?: throw MihomoCoreBusyException()
+                            MihomoControllerClient(paths.secret, port = paths.controlPort).also { activeController ->
+                                if (requiredProfiles.any { required ->
+                                        activeAvailableProfiles.none { active ->
+                                            active.fingerprint == required.fingerprint && active.tag == required.tag
+                                        }
+                                    }
+                                ) {
+                                    throw IOException(getString(R.string.connection_test_reconnect_required))
+                                }
+                                val liveProxies = withContext(Dispatchers.IO) { activeController.getProxies() }
+                                    .optJSONObject("proxies")
+                                if (liveProxies == null || requiredProfiles.any { !liveProxies.has(it.tag) }) {
+                                    throw IOException(getString(R.string.connection_test_reconnect_required))
+                                }
+                            }
+                        } else {
+                            if (state == VpnState.Started) {
+                                throw IOException(getString(R.string.connection_test_reconnect_required))
+                            }
+                            if (!coreLifecycle.isIdle() && !stopCoreService()) {
+                                throw MihomoCoreBusyException()
+                            }
+                            val runtimeYaml = MihomoConnectionOptionsPatcher.patch(
+                                snapshot.rawConfig,
+                                connectionOptionsPreferenceStore.read(),
+                            )
+                            val paths = MihomoRuntimeConfigBuilder(this@WhiteDnsVpnService).writeProfileTest(
+                                ProfileTestRuntimePlan(
+                                    rawYaml = runtimeYaml,
+                                    routingMode = routingModePreferenceStore.read(),
+                                    dns = DnsRuntimeSettings(
+                                        mode = dnsPrivacyPreferenceStore.readMode(),
+                                        dohUrl = dnsPrivacyPreferenceStore.readDohUrl(),
+                                        dotEndpoint = dnsPrivacyPreferenceStore.readDotEndpoint(),
+                                    ),
+                                ),
+                            )
+                            temporaryCore = true
+                            setupCore(paths)
+                            MihomoControllerClient(paths.secret, port = paths.controlPort).also { probeController ->
+                                waitForController(probeController, paths)
+                            }
+                        }
+                        ConnectionTestRuntime(
+                            subscriptionId,
+                            controller,
+                            if (temporaryCore) snapshot.catalog.profiles else activeAvailableProfiles,
+                            temporaryCore,
+                        ).also { connectionTestRuntime = it }
+                    } catch (error: Throwable) {
+                        if (temporaryCore) withContext(NonCancellable) { stopCoreService() }
+                        throw error
+                    }
+                }.also { it.users += 1 }
+            }
         }
         try {
             return block(runtime.controller, runtime.temporaryCore)
         } finally {
             withContext(NonCancellable) {
-                connectionTestControllerMutex.withLock {
-                    runtime.users -= 1
-                    if (runtime.users == 0) {
-                        connectionTestRuntime = null
-                        if (runtime.temporaryCore) stopCoreService()
+                connectionTestWakeLock.hold {
+                    connectionTestControllerMutex.withLock {
+                        runtime.users -= 1
+                        if (runtime.users == 0) {
+                            connectionTestRuntime = null
+                            if (runtime.temporaryCore) stopCoreService()
+                        }
                     }
                 }
             }
@@ -4534,6 +4588,7 @@ class WhiteDnsVpnService : VpnService() {
 
     private fun publishState(newState: VpnState, notice: String? = null) {
         state = newState
+        currentVpnServiceState = newState
         val countryFlag = if (newState == VpnState.Started) {
             activeConnectionCountryFlag
         } else {
@@ -4585,6 +4640,7 @@ class WhiteDnsVpnService : VpnService() {
                 .onFailure { DiagnosticLogger.warn(this, "tile.refresh.failed", error = it) }
         }
         DiagnosticLogger.info(this, "state.publish", "state=${newState.wireName} debugFrontingIp=${debugFrontingIp}")
+        VpnWidgetProvider.refresh(this)
         val intent = Intent(Actions.STATE_CHANGED)
             .setPackage(packageName)
             .putExtra(Actions.EXTRA_STATE, newState.wireName)
