@@ -188,6 +188,8 @@ class SubscriptionStore(private val context: Context) {
             .filter { record ->
                 (record.subscriptionId == subscriptionId || record.subscriptionId.isBlank()) &&
                     record.fingerprint in byFingerprint &&
+                    record.status == ConnectionDelayStatus.Success &&
+                    record.delayMs?.let { it > 0 } == true &&
                     record.testedAt > 0L &&
                     nowMs - record.testedAt in 0..ttlMs
             }
@@ -207,16 +209,27 @@ class SubscriptionStore(private val context: Context) {
 
     fun saveConnectionDelayRecords(records: List<ConnectionDelayRecord>) {
         val normalizedUpdates = ConnectionDelayRecordPolicy.latest(
-            records.mapNotNull(::normalizeConnectionDelayRecord),
+            records.mapNotNull(::normalizeConnectionDelayRecord)
+                .filter { it.status == ConnectionDelayStatus.Success && it.delayMs != null },
         )
         if (normalizedUpdates.isEmpty()) return
         synchronized(DELAY_RECORDS_LOCK) {
-            val updatedFingerprints = normalizedUpdates.mapTo(mutableSetOf()) { it.fingerprint }
-            val existing = readDelayRecords().filterNot { record ->
-                record.subscriptionId.isBlank() && record.fingerprint in updatedFingerprints
+            val merged = readDelayRecords()
+                .filter { it.status == ConnectionDelayStatus.Success && it.delayMs != null }
+                .toMutableList()
+            normalizedUpdates.forEach { update ->
+                val matching = merged.filter { existing ->
+                    existing.fingerprint == update.fingerprint &&
+                        (existing.subscriptionId == update.subscriptionId || existing.subscriptionId.isBlank())
+                }
+                if (matching.maxOfOrNull(ConnectionDelayRecord::testedAt)?.let { it > update.testedAt } == true) {
+                    return@forEach
+                }
+                merged.removeAll(matching.toSet())
+                merged += update
             }
             writeDelayRecords(
-                ConnectionDelayRecordPolicy.latest(normalizedUpdates + existing),
+                ConnectionDelayRecordPolicy.latest(merged),
             )
         }
     }
@@ -237,10 +250,8 @@ class SubscriptionStore(private val context: Context) {
             val valid = record.fingerprint in validFingerprints &&
                 record.testedAt > 0L &&
                 nowMs - record.testedAt in 0..ttlMs &&
-                (
-                    record.status == ConnectionDelayStatus.Failure ||
-                        record.delayMs?.let { it > 0 } == true
-                    )
+                record.status == ConnectionDelayStatus.Success &&
+                record.delayMs?.let { it > 0 } == true
             if (!valid) {
                 removed += 1
                 null
@@ -255,15 +266,42 @@ class SubscriptionStore(private val context: Context) {
         removed
     }
 
-    fun deleteConnectionDelayRecords(subscriptionId: String, fingerprints: Set<String>) {
-        if (fingerprints.isEmpty()) return
-        synchronized(DELAY_RECORDS_LOCK) {
+    fun deleteConnectionDelayRecords(subscriptionId: String, fingerprints: Set<String>): Int {
+        if (fingerprints.isEmpty()) return 0
+        return synchronized(DELAY_RECORDS_LOCK) {
             val existing = readDelayRecords()
             val kept = existing.filterNot {
-                it.subscriptionId == subscriptionId && it.fingerprint in fingerprints
+                (it.subscriptionId == subscriptionId || it.subscriptionId.isBlank()) &&
+                    it.fingerprint in fingerprints
             }
             if (kept.size != existing.size) writeDelayRecords(kept)
+            existing.size - kept.size
         }
+    }
+
+    fun clearConnectionDelayRecords(): Int = synchronized(DELAY_RECORDS_LOCK) {
+        val existing = readDelayRecords()
+        writeDelayRecords(emptyList())
+        existing.size
+    }
+
+    fun clearConnectionDelayRecords(subscriptionIds: Set<String>): Int {
+        if (subscriptionIds.isEmpty()) return 0
+        return synchronized(DELAY_RECORDS_LOCK) {
+            val existing = readDelayRecords()
+            val kept = existing.filterNot {
+                it.subscriptionId.isBlank() || it.subscriptionId in subscriptionIds
+            }
+            if (kept.size != existing.size) writeDelayRecords(kept)
+            existing.size - kept.size
+        }
+    }
+
+    fun deleteConnectionFailureRecords(): Int = synchronized(DELAY_RECORDS_LOCK) {
+        val existing = readDelayRecords()
+        val kept = existing.filter { it.status != ConnectionDelayStatus.Failure }
+        if (kept.size != existing.size) writeDelayRecords(kept)
+        existing.size - kept.size
     }
 
     private fun deleteConnectionDelayRecords(subscriptionId: String) {
@@ -408,5 +446,5 @@ class SubscriptionStore(private val context: Context) {
 }
 
 object ProfileDelayCacheDefaults {
-    const val DELAY_CACHE_TTL_MS = 24 * 60 * 60 * 1_000L
+    const val DELAY_CACHE_TTL_MS = 60 * 60 * 1_000L
 }

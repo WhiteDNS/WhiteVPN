@@ -6,8 +6,15 @@ import org.json.JSONObject
 class WhiteDnsScanStateStore(context: Context) {
     private val prefs = context.getSharedPreferences("white_dns_scan_state", Context.MODE_PRIVATE)
 
-    fun readLastEndpoint(): CleanIpResult? {
-        return CleanIpCacheCodec.decode(prefs.getString(KEY_LAST_ENDPOINT, null)).firstOrNull()
+    fun readLastEndpoint(
+        nowMs: Long = System.currentTimeMillis(),
+        ttlMs: Long = ProfileDelayCacheDefaults.DELAY_CACHE_TTL_MS,
+    ): CleanIpResult? {
+        val endpoint = CleanIpCacheCodec.decode(prefs.getString(KEY_LAST_ENDPOINT, null)).firstOrNull()
+            ?: return null
+        if (isFreshConnectionHint(endpoint.checkedAt, nowMs, ttlMs)) return endpoint
+        prefs.edit().remove(KEY_LAST_ENDPOINT).apply()
+        return null
     }
 
     fun saveLastEndpoint(endpoint: CleanIpResult) {
@@ -23,6 +30,7 @@ class WhiteDnsScanStateStore(context: Context) {
     fun readLastSelectedProfileSelection(
         profiles: List<ConnectionProfile>,
         nowMs: Long = System.currentTimeMillis(),
+        ttlMs: Long = ProfileDelayCacheDefaults.DELAY_CACHE_TTL_MS,
     ): SelectedConnectionProfile? {
         val value = prefs.getString(KEY_LAST_PROFILE, null) ?: return null
         val item = runCatching { JSONObject(value) }.getOrNull() ?: return null
@@ -36,10 +44,15 @@ class WhiteDnsScanStateStore(context: Context) {
             profile = profiles.firstOrNull { it.tag == tag }
         }
         profile ?: return null
+        val selectedAt = item.optLong("selectedAt", 0L)
+        if (!isFreshConnectionHint(selectedAt, nowMs, ttlMs)) {
+            prefs.edit().remove(KEY_LAST_PROFILE).apply()
+            return null
+        }
         return SelectedConnectionProfile(
             profile = profile,
             delayMs = item.optInt("delayMs", Int.MAX_VALUE).takeIf { it > 0 } ?: Int.MAX_VALUE,
-            selectedAt = item.optLong("selectedAt", nowMs).takeIf { it > 0L } ?: nowMs,
+            selectedAt = selectedAt,
         )
     }
 
@@ -64,6 +77,21 @@ class WhiteDnsScanStateStore(context: Context) {
     fun pruneLastSelectedProfile(profiles: List<ConnectionProfile>): Boolean {
         if (!prefs.contains(KEY_LAST_PROFILE)) return false
         if (readLastSelectedProfile(profiles) != null) return false
+        prefs.edit().remove(KEY_LAST_PROFILE).apply()
+        return true
+    }
+
+    fun clearLastSelectedProfile(profile: ConnectionProfile): Boolean {
+        val item = prefs.getString(KEY_LAST_PROFILE, null)
+            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: return false
+        val fingerprint = item.optString("fingerprint")
+        val matches = if (fingerprint.isNotBlank()) {
+            fingerprint == profile.fingerprint
+        } else {
+            item.optString("tag") == profile.tag
+        }
+        if (!matches) return false
         prefs.edit().remove(KEY_LAST_PROFILE).apply()
         return true
     }
@@ -96,6 +124,13 @@ class WhiteDnsScanStateStore(context: Context) {
         val editor = prefs.edit()
         keys.forEach(editor::remove)
         editor.apply()
+    }
+
+    fun clearConnectionHints() {
+        prefs.edit()
+            .remove(KEY_LAST_ENDPOINT)
+            .remove(KEY_LAST_PROFILE)
+            .apply()
     }
 
     fun clear() {

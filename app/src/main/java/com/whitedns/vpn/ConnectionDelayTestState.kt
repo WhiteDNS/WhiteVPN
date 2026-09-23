@@ -12,6 +12,7 @@ data class ConnectionDelayTestSession(
     val available: Int = 0,
     val paused: Boolean = false,
     val error: String = "",
+    val results: Map<String, ConnectionDelayRecord> = emptyMap(),
 ) {
     val isRunning: Boolean
         get() = status == Actions.DELAY_TEST_PREPARING ||
@@ -29,6 +30,13 @@ data class ConnectionSpeedTestSession(
     val isRunning: Boolean
         get() = status == Actions.SPEED_TEST_PREPARING || status == Actions.SPEED_TEST_STARTED
 }
+
+internal fun shouldKeepConnectionDelayResult(
+    status: ConnectionDelayStatus,
+    startedNetworkGeneration: Long,
+    currentNetworkGeneration: Long,
+): Boolean = status != ConnectionDelayStatus.Failure ||
+    startedNetworkGeneration == currentNetworkGeneration
 
 object ConnectionSpeedTestState {
     private val sessions = mutableMapOf<Pair<String, String>, ConnectionSpeedTestSession>()
@@ -62,6 +70,8 @@ object ConnectionSpeedTestState {
 
 object ConnectionDelayTestState {
     private val sessions = mutableMapOf<String, ConnectionDelayTestSession>()
+    private var networkFingerprint: String? = null
+    private var networkGeneration = 0L
 
     @Synchronized
     fun replace(value: ConnectionDelayTestSession): ConnectionDelayTestSession {
@@ -83,6 +93,37 @@ object ConnectionDelayTestState {
 
     @Synchronized
     fun isAnyRunning(): Boolean = sessions.values.any(ConnectionDelayTestSession::isRunning)
+
+    @Synchronized
+    fun snapshots(): List<ConnectionDelayTestSession> = sessions.values.toList()
+
+    @Synchronized
+    fun clearFailures(): Int {
+        var removed = 0
+        sessions.replaceAll { _, session ->
+            val kept = session.results.filterValues { it.status != ConnectionDelayStatus.Failure }
+            removed += session.results.size - kept.size
+            session.copy(results = kept)
+        }
+        return removed
+    }
+
+    @Synchronized
+    fun clearFailuresOnNetworkChange(fingerprint: String): Int? {
+        val changed = networkFingerprint?.let { it != fingerprint } == true
+        networkFingerprint = fingerprint
+        if (!changed) return null
+        networkGeneration += 1
+        return clearFailures()
+    }
+
+    @Synchronized
+    fun currentNetworkGeneration(): Long = networkGeneration
+
+    @Synchronized
+    fun clearResults() {
+        sessions.replaceAll { _, session -> session.copy(results = emptyMap()) }
+    }
 }
 
 object ConnectionTestResultOrder {

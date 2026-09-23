@@ -76,6 +76,7 @@ import com.google.zxing.integration.android.IntentIntegrator
 import com.journeyapps.barcodescanner.CaptureActivity
 import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.journeyapps.barcodescanner.Size
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -254,6 +255,8 @@ class MainActivity : Activity() {
     private var frontingIps: List<String> = emptyList()
     private var frontingIpInputUpdating: Boolean = false
     private var dnsPrivacyInputUpdating: Boolean = false
+    private var connectionRepairInProgress: Boolean = false
+    private lateinit var delayFailureNetworkMonitor: DefaultNetworkMonitor
     private var lastTransferRxBytes: Long = TrafficStats.UNSUPPORTED.toLong()
     private var lastTransferTxBytes: Long = TrafficStats.UNSUPPORTED.toLong()
     private var lastTransferSampleElapsedMs: Long = 0L
@@ -313,6 +316,7 @@ class MainActivity : Activity() {
         connectionSelectionPreferenceStore = ConnectionSelectionPreferenceStore(this)
         connectionTestSettingsPreferenceStore = ConnectionTestSettingsPreferenceStore(this)
         connectionChainPreferenceStore = ConnectionChainPreferenceStore(this)
+        delayFailureNetworkMonitor = DefaultNetworkMonitor(this)
         installedAppRepository = InstalledAppRepository(this)
         userSubscriptionManager = UserSubscriptionManager(this)
         connectFlowPending = savedInstanceState?.getBoolean(STATE_CONNECT_FLOW_PENDING) == true
@@ -1239,6 +1243,8 @@ class MainActivity : Activity() {
         // app broadcast STATE_CHANGED and paint a false "connected" state over the UI.
         // ContextCompat guards the pre-33 path with a signature-level permission.
         ContextCompat.registerReceiver(this, stateReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        delayFailureNetworkMonitor.setDefaultNetworkChangeListener(::handleDelayFailureNetworkChange)
+        delayFailureNetworkMonitor.start()
         applyRuntimeState(
             VpnRuntimeStateStore.read(this),
             VpnRuntimeStateStore.readSessionStartedAtElapsedMs(this),
@@ -1275,6 +1281,8 @@ class MainActivity : Activity() {
         privacyPolicyDialog?.dismiss()
         privacyPolicyDialog = null
         connectionDelayTestListener = null
+        delayFailureNetworkMonitor.setDefaultNetworkChangeListener(null)
+        delayFailureNetworkMonitor.stop()
         unregisterReceiver(stateReceiver)
         super.onStop()
     }
@@ -1309,8 +1317,26 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        delayFailureNetworkMonitor.stop()
         activityScope.cancel()
         super.onDestroy()
+    }
+
+    private fun handleDelayFailureNetworkChange(candidate: DefaultNetworkCandidate?) {
+        val removed = ConnectionDelayTestState
+            .clearFailuresOnNetworkChange(candidate.failureCacheFingerprint())
+            ?: return
+        activityScope.launch(Dispatchers.IO) {
+            SubscriptionStore(this@MainActivity).deleteConnectionFailureRecords()
+        }
+        if (removed == 0) return
+        ConnectionDelayTestState.snapshots().forEach { session ->
+            sendBroadcast(
+                Intent(Actions.CONNECTION_DELAY_TEST_CHANGED)
+                    .setPackage(packageName)
+                    .putExtra(Actions.EXTRA_DELAY_TEST_ID, session.testId),
+            )
+        }
     }
 
     @Deprecated("Deprecated in Android API")
@@ -3115,6 +3141,33 @@ class MainActivity : Activity() {
         )
         categoriesPanel.addView(
             MaterialButton(this).apply {
+                setText(R.string.connection_repair_title)
+                setAllCaps(false)
+                textSize = 16f
+                typeface = WhiteDnsBodyBoldTypeface
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                minHeight = dp(64)
+                insetTop = 0
+                insetBottom = 0
+                cornerRadius = 0
+                backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+                rippleColor = ColorStateList.valueOf(withAlpha(TEAL, 24))
+                setTextColor(TEAL)
+                elevation = 0f
+                stateListAnimator = null
+                setOnClickListener { showRepairConnectionDialog() }
+            },
+            LinearLayout.LayoutParams(-1, dp(64)),
+        )
+        categoriesPanel.addView(
+            View(this).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+            LinearLayout.LayoutParams(-1, dp(1)).apply {
+                marginStart = dp(16)
+                marginEnd = dp(16)
+            },
+        )
+        categoriesPanel.addView(
+            MaterialButton(this).apply {
                 setText(R.string.settings_reset)
                 setAllCaps(false)
                 textSize = 16f
@@ -3205,6 +3258,94 @@ class MainActivity : Activity() {
         root.addView(scrollView, FrameLayout.LayoutParams(-1, -1))
         renderAdvancedControls()
         return root
+    }
+
+    private fun showRepairConnectionDialog() {
+        if (connectionRepairInProgress) {
+            Toast.makeText(this, R.string.connection_repair_running, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (ConnectionDelayTestState.isAnyRunning() || ConnectionSpeedTestState.isAnyRunning()) {
+            Toast.makeText(this, R.string.connection_repair_test_running, Toast.LENGTH_LONG).show()
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.connection_repair_title)
+            .setMessage(R.string.connection_repair_message)
+            .setNegativeButton(R.string.split_tunnel_cancel, null)
+            .setPositiveButton(R.string.connection_repair_confirm) { _, _ -> repairConnection() }
+            .create()
+            .showWhiteDnsDialog()
+    }
+
+    private fun repairConnection() {
+        if (connectionRepairInProgress) return
+        if (ConnectionDelayTestState.isAnyRunning() || ConnectionSpeedTestState.isAnyRunning()) {
+            Toast.makeText(this, R.string.connection_repair_test_running, Toast.LENGTH_LONG).show()
+            return
+        }
+        connectionRepairInProgress = true
+        Toast.makeText(this, R.string.connection_repair_running, Toast.LENGTH_SHORT).show()
+        activityScope.launch {
+            try {
+                val (delayRecordsCleared, refreshFailures) = withContext(Dispatchers.IO) {
+                    val cleared = SubscriptionStore(this@MainActivity).clearConnectionDelayRecords()
+                    WhiteDnsScanStateStore(this@MainActivity).clearConnectionHints()
+                    CleanIpCache(this@MainActivity).clear()
+                    ConnectionDelayTestState.clearResults()
+                    val repository = ConfigRepository(this@MainActivity)
+                    var failures = 0
+                    SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS.forEach { subscriptionId ->
+                        try {
+                            repository.refreshBuiltInMihomoConfig(subscriptionId)
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (error: Throwable) {
+                            failures += 1
+                            DiagnosticLogger.warn(
+                                this@MainActivity,
+                                "connection.repair.subscription.failed",
+                                "subscription=$subscriptionId",
+                                error,
+                            )
+                        }
+                    }
+                    cleared to failures
+                }
+                connectionDelayRecords = emptyMap()
+                renderSubscriptions()
+                if (SubscriptionStore.isBuiltInSubscription(userSubscriptionManager.selectedId())) {
+                    refreshLocationOptions()
+                } else {
+                    renderConnectionSelection()
+                }
+                DiagnosticLogger.info(
+                    this@MainActivity,
+                    "connection.repair.done",
+                    "delayRecordsCleared=$delayRecordsCleared refreshFailures=$refreshFailures",
+                )
+                Toast.makeText(
+                    this@MainActivity,
+                    if (refreshFailures == 0) {
+                        R.string.connection_repair_done
+                    } else {
+                        R.string.connection_repair_partial
+                    },
+                    Toast.LENGTH_LONG,
+                ).show()
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Throwable) {
+                DiagnosticLogger.warn(this@MainActivity, "connection.repair.failed", error = error)
+                Toast.makeText(
+                    this@MainActivity,
+                    R.string.connection_repair_failed,
+                    Toast.LENGTH_LONG,
+                ).show()
+            } finally {
+                connectionRepairInProgress = false
+            }
+        }
     }
 
     private fun showResetSettingsDialog() {
@@ -4017,18 +4158,26 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun delayRecordsForUi(
+        store: SubscriptionStore,
+        subscriptionId: String,
+        profiles: List<ConnectionProfile>,
+    ): Map<String, ConnectionDelayRecord> = ConnectionDelayRecordPolicy.latest(
+        store.readConnectionDelayRecords(subscriptionId, profiles) +
+            ConnectionDelayTestState.snapshot(subscriptionId)?.results.orEmpty().values,
+    ).associateBy(ConnectionDelayRecord::fingerprint)
+
     private fun updateLocationOptions(
         profiles: List<ConnectionProfile>,
         resetMissingSelection: Boolean,
     ) {
         connectionProfiles = profiles
         val subscriptionStore = SubscriptionStore(this)
-        connectionDelayRecords = subscriptionStore
-            .readConnectionDelayRecords(
-                subscriptionId = subscriptionStore.readSelectedSubscriptionId(),
-                profiles = profiles,
-            )
-            .associateBy(ConnectionDelayRecord::fingerprint)
+        connectionDelayRecords = delayRecordsForUi(
+            subscriptionStore,
+            subscriptionStore.readSelectedSubscriptionId(),
+            profiles,
+        )
         val options = ConnectionLocationPolicy.selectorOptions(
             profiles = profiles,
             automaticLabel = getString(R.string.option_automatic),
@@ -4107,9 +4256,11 @@ class MainActivity : Activity() {
             .readCachedMihomoConfigOrNullNow(selectedSubscriptionId)
             ?.let(ConnectionChainPlanner::udpSupportByFingerprint)
             .orEmpty()
-        connectionDelayRecords = subscriptionStore
-            .readConnectionDelayRecords(selectedSubscriptionId, selectorProfiles)
-            .associateBy(ConnectionDelayRecord::fingerprint)
+        connectionDelayRecords = delayRecordsForUi(
+            subscriptionStore,
+            selectedSubscriptionId,
+            selectorProfiles,
+        )
         val selectedProfile = if (pickerMode) {
             configuredHop
                 ?.takeIf { it.mode == ConnectionChainHopMode.Fixed }
@@ -5158,12 +5309,11 @@ class MainActivity : Activity() {
         var delayResultsRefreshScheduled = false
 
         fun reloadDelayResults() {
-            connectionDelayRecords = subscriptionStore
-                .readConnectionDelayRecords(
-                    subscriptionId = selectedSubscriptionId,
-                    profiles = selectorProfiles,
-                )
-                .associateBy(ConnectionDelayRecord::fingerprint)
+            connectionDelayRecords = delayRecordsForUi(
+                subscriptionStore,
+                selectedSubscriptionId,
+                selectorProfiles,
+            )
             filteredProfiles = visibleProfiles()
             adapter.notifyDataSetChanged()
             lastDelayResultsRefreshAtMs = SystemClock.elapsedRealtime()
@@ -5219,9 +5369,11 @@ class MainActivity : Activity() {
                 }
                 speedTestRunning = speedTests.isNotEmpty()
                 if (!session.isRunning) {
-                    connectionDelayRecords = subscriptionStore
-                        .readConnectionDelayRecords(selectedSubscriptionId, selectorProfiles)
-                        .associateBy(ConnectionDelayRecord::fingerprint)
+                    connectionDelayRecords = delayRecordsForUi(
+                        subscriptionStore,
+                        selectedSubscriptionId,
+                        selectorProfiles,
+                    )
                 }
                 adapter.notifyDataSetChanged()
                 updateTestControls()

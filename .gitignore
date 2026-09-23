@@ -16,6 +16,7 @@ keystore.properties
 secrets.properties
 local.properties
 release/
+/output/
 .idea/
 .kotlin/
 .hallmark/

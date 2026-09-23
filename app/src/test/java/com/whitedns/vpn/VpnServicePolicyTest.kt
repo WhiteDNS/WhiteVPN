@@ -48,6 +48,11 @@ class VpnServicePolicyTest {
         assertFalse(BuiltInSubscriptionStartupPolicy.canFallback(CancellationException("canceled")))
         assertFalse(BuiltInSubscriptionStartupPolicy.canFallback(MihomoCoreBusyException()))
         assertFalse(BuiltInSubscriptionStartupPolicy.canFallback(MihomoCoreSetupTimeoutException()))
+        assertFalse(
+            BuiltInSubscriptionStartupPolicy.canFallback(
+                IOException("wrapped", TlsIntegrityException(IOException("certificate"))),
+            ),
+        )
     }
 
     @Test
@@ -96,6 +101,44 @@ class VpnServicePolicyTest {
         }.exceptionOrNull()
         assertTrue(canceled is CancellationException)
         assertEquals(listOf(SubscriptionStore.PRIVATE_SUBSCRIPTION_ID), attempts)
+
+        val mixedFailure = runCatching {
+            BuiltInSubscriptionStartupPolicy.firstSuccessful(sourceIds) { sourceId ->
+                if (sourceId == SubscriptionStore.PRIVATE_SUBSCRIPTION_ID) {
+                    throw AutomaticConnectionAttemptsExhaustedException()
+                }
+                throw IOException("public unavailable")
+            }
+        }.exceptionOrNull()
+        assertTrue(automaticConnectionAttemptsExhausted(mixedFailure!!))
+        assertEquals("public unavailable", mixedFailure.cause?.message)
+        assertTrue(
+            shouldAutomaticallyRepairStartup(
+                mixedFailure,
+                preservingRuntime = false,
+                connectionChainActive = false,
+                explicitProfileSelected = false,
+            ),
+        )
+    }
+
+    @Test
+    fun startupFailurePriorityKeepsSecurityAndExhaustionSignals() {
+        val ordinary = IOException("latest")
+        val tls = TlsIntegrityException(IOException("certificate"))
+        val exhaustion = AutomaticConnectionAttemptsExhaustedException(IOException("exhausted"))
+
+        assertTrue(tlsIntegrityFailed(preferredStartupFailure(tls, ordinary)))
+        assertFalse(
+            shouldAutomaticallyRepairStartup(
+                preferredStartupFailure(tls, ordinary),
+                preservingRuntime = false,
+                connectionChainActive = false,
+                explicitProfileSelected = false,
+            ),
+        )
+        assertTrue(automaticConnectionAttemptsExhausted(preferredStartupFailure(exhaustion, ordinary)))
+        assertTrue(automaticConnectionAttemptsExhausted(preferredStartupFailure(ordinary, exhaustion)))
     }
 
     @Test
@@ -152,16 +195,26 @@ class VpnServicePolicyTest {
     }
 
     @Test
-    fun failedRefreshCanKeepConnectedStateOnlyWhenTheOldRuntimeIsHealthy() {
-        listOf(200, 204, 302, 399).forEach { status ->
-            assertTrue(PostConnectHealthPolicy.isHealthyStatus(status))
-        }
-        listOf(-1, 0, 199, 400, 500).forEach { status ->
-            assertFalse(PostConnectHealthPolicy.isHealthyStatus(status))
-        }
-        assertEquals(VpnState.Starting, PostConnectHealthPolicy.preservedRuntimeState(false, -1))
-        assertEquals(VpnState.Started, PostConnectHealthPolicy.preservedRuntimeState(true, 204))
-        assertEquals(null, PostConnectHealthPolicy.preservedRuntimeState(true, -1))
+    fun unknownExternalHealthKeepsTheActiveRuntime() {
+        val reachable = RuntimeHealthPolicy.classify(mixedProxyReachable = true, statusCode = 204)
+        val unknown = RuntimeHealthPolicy.classify(mixedProxyReachable = true)
+        val filtered = RuntimeHealthPolicy.classify(mixedProxyReachable = true, statusCode = 451)
+        val unavailable = RuntimeHealthPolicy.classify(mixedProxyReachable = false)
+
+        assertEquals(RuntimeHealthState.Reachable, reachable.state)
+        assertEquals(RuntimeHealthState.Unknown, unknown.state)
+        assertEquals(RuntimeHealthState.Unknown, filtered.state)
+        assertEquals(
+            RuntimeHealthState.Unavailable,
+            RuntimeHealthPolicy.classify(
+                mixedProxyReachable = true,
+                certificateFailure = IOException("certificate"),
+            ).state,
+        )
+        assertEquals(VpnState.Starting, PostConnectHealthPolicy.preservedRuntimeState(false, unavailable))
+        assertEquals(VpnState.Started, PostConnectHealthPolicy.preservedRuntimeState(true, reachable))
+        assertEquals(VpnState.Started, PostConnectHealthPolicy.preservedRuntimeState(true, unknown))
+        assertEquals(null, PostConnectHealthPolicy.preservedRuntimeState(true, unavailable))
         assertTrue(shouldRunPostConnectHealthWatchdog(VpnState.Starting, awaitingPreservedRuntimeHealth = true))
         assertTrue(shouldRunPostConnectHealthWatchdog(VpnState.Started, awaitingPreservedRuntimeHealth = false))
         assertFalse(shouldRunPostConnectHealthWatchdog(VpnState.Starting, awaitingPreservedRuntimeHealth = false))
@@ -169,6 +222,52 @@ class VpnServicePolicyTest {
         assertTrue(canStartVpnRefresh(VpnState.Starting, automatic = true, awaitingPreservedRuntimeHealth = true))
         assertFalse(canStartVpnRefresh(VpnState.Starting, automatic = false, awaitingPreservedRuntimeHealth = true))
         assertFalse(canStartVpnRefresh(VpnState.Starting, automatic = true, awaitingPreservedRuntimeHealth = false))
+    }
+
+    @Test
+    fun automaticStartupRepairOnlyRetriesAutomaticColdStarts() {
+        assertTrue(
+            shouldAutomaticallyRepairStartup(
+                AutomaticConnectionAttemptsExhaustedException(),
+                preservingRuntime = false,
+                connectionChainActive = false,
+                explicitProfileSelected = false,
+            ),
+        )
+        assertFalse(
+            shouldAutomaticallyRepairStartup(
+                AutomaticConnectionAttemptsExhaustedException(),
+                preservingRuntime = false,
+                connectionChainActive = false,
+                explicitProfileSelected = true,
+            ),
+        )
+        assertFalse(
+            shouldAutomaticallyRepairStartup(
+                MihomoCoreBusyException(),
+                preservingRuntime = false,
+                connectionChainActive = false,
+                explicitProfileSelected = false,
+            ),
+        )
+        assertFalse(
+            shouldAutomaticallyRepairStartup(
+                IOException("offline before candidates"),
+                preservingRuntime = false,
+                connectionChainActive = false,
+                explicitProfileSelected = false,
+            ),
+        )
+        assertFalse(
+            shouldAutomaticallyRepairStartup(
+                AutomaticConnectionAttemptsExhaustedException(
+                    TlsIntegrityException(IOException("certificate")),
+                ),
+                preservingRuntime = false,
+                connectionChainActive = false,
+                explicitProfileSelected = false,
+            ),
+        )
     }
 
     @Test

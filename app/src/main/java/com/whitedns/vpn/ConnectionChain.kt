@@ -301,7 +301,6 @@ data class ConnectionChainCandidate(
     val profile: ConnectionProfile,
     val blocks: List<MihomoProxyBlock>,
     val rank: Int = 0,
-    val automaticEligible: Boolean = true,
 ) {
     val ref: ConnectionChainProfileRef
         get() = ConnectionChainProfileRef(subscriptionId, profile.fingerprint)
@@ -385,7 +384,6 @@ object ConnectionChainPlanner {
                     profile = profile,
                     blocks = proxyChain,
                     rank = rank,
-                    automaticEligible = record?.status != ConnectionDelayStatus.Failure,
                 )
             }
         }.sortedWith(
@@ -476,7 +474,6 @@ object ConnectionChainPlanner {
     ): List<ConnectionChainCandidate> = when (hop.mode) {
         ConnectionChainHopMode.Off -> emptyList()
         ConnectionChainHopMode.Automatic -> candidates
-            .filter(ConnectionChainCandidate::automaticEligible)
         ConnectionChainHopMode.Fixed -> {
             val ref = hop.profileRef
             listOfNotNull(candidates.firstOrNull { it.ref == ref }).also { resolved ->

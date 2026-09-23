@@ -23,7 +23,7 @@ class ConnectionDelayFeaturePolicyTest {
     }
 
     @Test
-    fun automaticCandidatesUseSuccessfulResultsThenUntestedAndExcludeFailures() {
+    fun automaticCandidatesUseFailuresOnlyAsTheLastRankingHint() {
         val first = profile("first", 1)
         val lastSelected = profile("last", 2)
         val failed = profile("failed", 3)
@@ -36,19 +36,20 @@ class ConnectionDelayFeaturePolicyTest {
         )
 
         assertEquals(
-            listOf("fast", "slow", "last", "first"),
+            listOf("fast", "slow", "last", "first", "failed"),
             AutomaticConnectionCandidatePolicy.order(
                 profiles = listOf(first, lastSelected, failed, slow, fast),
                 records = records,
                 lastSelectedProfile = lastSelected,
             ).map(ConnectionProfile::tag),
         )
-        assertTrue(
+        assertEquals(
+            listOf(failed),
             AutomaticConnectionCandidatePolicy.order(
                 profiles = listOf(failed),
                 records = records,
                 lastSelectedProfile = failed,
-            ).isEmpty(),
+            ),
         )
     }
 
@@ -66,6 +67,42 @@ class ConnectionDelayFeaturePolicyTest {
 
         assertEquals(5, ordered.size)
         assertFalse(ordered.any { it.fingerprint == profiles.first().fingerprint })
+    }
+
+    @Test
+    fun recoveryCandidatesIgnoreCachedHintsAndStayBounded() {
+        val profiles = (0..11).map { index -> profile("profile-$index", index + 1) }
+        val records = profiles.take(5).mapIndexed { index, candidate ->
+            record("sub", candidate.fingerprint, index + 1, ConnectionDelayStatus.Success, 100)
+        } + record("sub", profiles[5].fingerprint, null, ConnectionDelayStatus.Failure, 100)
+        val ranked = AutomaticConnectionCandidatePolicy.order(
+            profiles = profiles,
+            records = records,
+            lastSelectedProfile = profiles[6],
+            excludedFingerprint = profiles[7].fingerprint,
+            limit = 5,
+        )
+
+        val recovery = AutomaticConnectionCandidatePolicy.recovery(
+            profiles = profiles,
+            triedFingerprints = ranked.mapTo(mutableSetOf(), ConnectionProfile::fingerprint),
+            excludedFingerprint = profiles[7].fingerprint,
+            limit = 5,
+        )
+
+        assertEquals((0..4).map { "profile-$it" }, ranked.map(ConnectionProfile::tag))
+        assertEquals(
+            listOf("profile-5", "profile-6", "profile-8", "profile-9", "profile-10"),
+            recovery.map(ConnectionProfile::tag),
+        )
+    }
+
+    @Test
+    fun delayCacheExpiresAfterOneHour() {
+        assertEquals(60 * 60 * 1_000L, ProfileDelayCacheDefaults.DELAY_CACHE_TTL_MS)
+        assertTrue(isFreshConnectionHint(1L, ProfileDelayCacheDefaults.DELAY_CACHE_TTL_MS + 1L))
+        assertFalse(isFreshConnectionHint(1L, ProfileDelayCacheDefaults.DELAY_CACHE_TTL_MS + 2L))
+        assertFalse(isFreshConnectionHint(2L, 1L))
     }
 
     @Test
@@ -106,6 +143,40 @@ class ConnectionDelayFeaturePolicyTest {
 
         assertEquals("test", ConnectionDelayTestState.snapshot("sub")?.testId)
         assertEquals("other-test", ConnectionDelayTestState.snapshot("other")?.testId)
+    }
+
+    @Test
+    fun networkChangeClearsOnlySessionFailures() {
+        ConnectionDelayTestState.clearFailuresOnNetworkChange("wifi")
+        val startedNetworkGeneration = ConnectionDelayTestState.currentNetworkGeneration()
+        val success = record("network-sub", "success", 20, ConnectionDelayStatus.Success, 100)
+        val failure = record("network-sub", "failure", null, ConnectionDelayStatus.Failure, 100)
+        ConnectionDelayTestState.replace(
+            ConnectionDelayTestSession(
+                testId = "network-test",
+                subscriptionId = "network-sub",
+                connectionTypes = emptySet(),
+                results = mapOf(success.fingerprint to success, failure.fingerprint to failure),
+            ),
+        )
+
+        assertNull(ConnectionDelayTestState.clearFailuresOnNetworkChange("wifi"))
+        assertEquals(1, ConnectionDelayTestState.clearFailuresOnNetworkChange("cellular"))
+        assertEquals(mapOf(success.fingerprint to success), ConnectionDelayTestState.snapshot("network-sub")?.results)
+        assertFalse(
+            shouldKeepConnectionDelayResult(
+                ConnectionDelayStatus.Failure,
+                startedNetworkGeneration,
+                ConnectionDelayTestState.currentNetworkGeneration(),
+            ),
+        )
+        assertTrue(
+            shouldKeepConnectionDelayResult(
+                ConnectionDelayStatus.Success,
+                startedNetworkGeneration,
+                ConnectionDelayTestState.currentNetworkGeneration(),
+            ),
+        )
     }
 
     @Test

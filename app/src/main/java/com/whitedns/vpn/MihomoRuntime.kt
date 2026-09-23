@@ -20,6 +20,7 @@ import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ServerSocket
+import java.net.Socket
 import java.net.URI
 import java.net.URL
 import java.security.cert.CertPathValidatorException
@@ -1961,6 +1962,28 @@ internal object MihomoQuickFastestPolicy {
 }
 
 object MihomoControllerProxies {
+    fun hasResolvedActiveRoute(response: JSONObject, rootName: String): Boolean {
+        val proxies = response.optJSONObject("proxies") ?: return false
+        var name = rootName.takeIf(String::isNotBlank) ?: return false
+        val seen = mutableSetOf<String>()
+        repeat(MAX_GROUP_DEPTH) { depth ->
+            if (!seen.add(name)) return false
+            val item = proxies.optJSONObject(name) ?: return false
+            val type = normalizeType(item.optString("type"))
+            val members = item.optJSONArray("all")
+            if (type == "loadbalance") {
+                return members != null &&
+                    (0 until members.length()).any { proxies.optJSONObject(members.optString(it)) != null }
+            }
+            val now = item.optString("now").takeIf(String::isNotBlank)
+            if (now == null) {
+                return depth > 0 && type.isNotBlank() && members == null
+            }
+            name = now
+        }
+        return false
+    }
+
     fun activeProxyName(response: JSONObject, selectedName: String?): String? {
         val proxies = response.optJSONObject("proxies") ?: return selectedName
         var name = selectedName?.takeIf(String::isNotBlank) ?: return null
@@ -2246,6 +2269,15 @@ internal object MihomoRuntimeHealthDeadlinePolicy {
 }
 
 object MihomoRuntimeHealth {
+    fun isMixedProxyReachable(timeoutMs: Int = 500): Boolean = runCatching {
+        Socket().use { socket ->
+            socket.connect(
+                InetSocketAddress(MihomoRuntimeDefaults.CONTROLLER_HOST, MihomoRuntimeDefaults.MIXED_PORT),
+                timeoutMs.coerceAtLeast(1),
+            )
+        }
+    }.isSuccess
+
     fun httpStatusThroughMixedProxy(
         url: String = MihomoRuntimeDefaults.HEALTH_URL,
         timeoutMs: Int = 3_000,

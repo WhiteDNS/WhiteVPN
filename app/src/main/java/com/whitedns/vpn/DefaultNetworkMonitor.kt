@@ -24,7 +24,21 @@ data class DefaultNetworkCandidate(
     val isConstrained: Boolean,
     val hasIpv6: Boolean,
     val dnsServers: List<String> = emptyList(),
+    val networkHandle: Long = 0L,
 )
+
+internal fun DefaultNetworkCandidate?.failureCacheFingerprint(): String {
+    if (this == null) return "none"
+    return listOf(
+        networkHandle.toString(),
+        name,
+        index.toString(),
+        isWifi.toString(),
+        isCellular.toString(),
+        isEthernet.toString(),
+        dnsServers.distinct().joinToString(","),
+    ).joinToString("|")
+}
 
 object DefaultNetworkSelector {
     fun choose(candidates: List<DefaultNetworkCandidate>): DefaultNetworkCandidate? {
@@ -167,6 +181,11 @@ class DefaultNetworkMonitor(private val context: Context) {
                         address is Inet6Address && !address.isLoopbackAddress && !address.isLinkLocalAddress
                     },
                     dnsServers = linkProperties.dnsServers.mapNotNull { it.dnsEndpointOrNull() },
+                    networkHandle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        network.networkHandle
+                    } else {
+                        0L
+                    },
                 )
             },
         )
