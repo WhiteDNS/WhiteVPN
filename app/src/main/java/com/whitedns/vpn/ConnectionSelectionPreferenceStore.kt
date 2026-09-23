@@ -130,16 +130,27 @@ object AutomaticConnectionCandidatePolicy {
             .associate { it.fingerprint to it.delayMs!! }
         val originalOrder = profiles.mapIndexed { index, profile -> profile.fingerprint to index }.toMap()
         return profiles.filterNot {
-            it.fingerprint in failedFingerprints || it.fingerprint == excludedFingerprint
+            it.fingerprint == excludedFingerprint
         }.sortedWith(
             compareBy<ConnectionProfile> { profile ->
                 when {
                     profile.fingerprint in delayByFingerprint -> 0
-                    profile.fingerprint == lastSelectedProfile?.fingerprint -> 1
-                    else -> 2
+                    profile.fingerprint == lastSelectedProfile?.fingerprint &&
+                        profile.fingerprint !in failedFingerprints -> 1
+                    profile.fingerprint !in failedFingerprints -> 2
+                    else -> 3
                 }
             }.thenBy { delayByFingerprint[it.fingerprint] ?: Int.MAX_VALUE }
                 .thenBy { originalOrder[it.fingerprint] ?: Int.MAX_VALUE },
         ).take(limit.coerceAtLeast(0))
     }
+
+    fun recovery(
+        profiles: List<ConnectionProfile>,
+        triedFingerprints: Set<String>,
+        excludedFingerprint: String = "",
+        limit: Int = Int.MAX_VALUE,
+    ): List<ConnectionProfile> = profiles.filterNot {
+        it.fingerprint in triedFingerprints || it.fingerprint == excludedFingerprint
+    }.take(limit.coerceAtLeast(0))
 }

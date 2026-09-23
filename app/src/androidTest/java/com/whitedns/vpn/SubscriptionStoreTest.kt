@@ -56,17 +56,36 @@ class SubscriptionStoreTest {
             ttlMs = 1_000L,
         ).associateBy(ConnectionDelayRecord::fingerprint)
 
-        assertEquals(3, records.size)
+        assertEquals(2, records.size)
         assertEquals(30, records.getValue(first.fingerprint).delayMs)
         assertEquals(300L, records.getValue(first.fingerprint).testedAt)
         assertEquals(50, records.getValue(second.fingerprint).delayMs)
         assertEquals(2_000, records.getValue(second.fingerprint).speedKbps)
-        assertEquals(ConnectionDelayStatus.Failure, records.getValue(invalid.fingerprint).status)
-        assertNull(records.getValue(invalid.fingerprint).delayMs)
-        assertNull(records.getValue(invalid.fingerprint).speedKbps)
+        assertNull(records[invalid.fingerprint])
+
+        store.saveConnectionDelayRecord(
+            record(first, delayMs = null, testedAt = 400L, status = ConnectionDelayStatus.Failure),
+        )
+        assertEquals(
+            30,
+            store.readConnectionDelayRecords(
+                subscriptionId = subscriptionId,
+                profiles = profiles,
+                nowMs = 500L,
+                ttlMs = 1_000L,
+            ).first { it.fingerprint == first.fingerprint }.delayMs,
+        )
 
         val cacheFile = File(context.filesDir, "profile-delay-cache.json")
-        JSONArray(cacheFile.readText())
+        val stored = JSONArray(cacheFile.readText())
+        val ownRows = (0 until stored.length())
+            .mapNotNull(stored::optJSONObject)
+            .filter { it.optString("subscriptionId") == subscriptionId }
+        assertEquals(
+            setOf(first.fingerprint, second.fingerprint),
+            ownRows.map { it.optString("fingerprint") }.toSet(),
+        )
+        assertFalse(ownRows.any { it.optString("status") == ConnectionDelayStatus.Failure.wireName })
         assertFalse(File(context.filesDir, "profile-delay-cache.json.tmp").exists())
     }
 

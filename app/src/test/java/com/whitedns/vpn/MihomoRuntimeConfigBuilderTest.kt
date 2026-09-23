@@ -1473,6 +1473,11 @@ class MihomoRuntimeConfigBuilderTest {
                     "Manual": { "type": "Selector", "now": "Auto Select" },
                     "Auto Select": { "type": "URLTest", "now": "Node" },
                     "Node": { "type": "Vless" },
+                    "Missing Leaf": { "type": "Selector", "now": "Gone" },
+                    "Unresolved": { "type": "Selector", "now": "Empty Group" },
+                    "Empty Group": { "type": "URLTest", "all": ["Node"] },
+                    "Balanced": { "type": "Selector", "now": "Balance" },
+                    "Balance": { "type": "LoadBalance", "all": ["Node"] },
                     "Cycle A": { "type": "Selector", "now": "Cycle B" },
                     "Cycle B": { "type": "Selector", "now": "Cycle A" }
                   }
@@ -1485,6 +1490,13 @@ class MihomoRuntimeConfigBuilderTest {
         assertFalse(MihomoControllerProxies.isActiveThrough(response, "Traffic", "Other"))
         assertFalse(MihomoControllerProxies.isActiveThrough(response, "Cycle A", "Node"))
         assertFalse(MihomoControllerProxies.isActiveThrough(response, "Missing", "Missing"))
+        assertTrue(MihomoControllerProxies.hasResolvedActiveRoute(response, "Traffic"))
+        assertFalse(MihomoControllerProxies.hasResolvedActiveRoute(response, ""))
+        assertFalse(MihomoControllerProxies.hasResolvedActiveRoute(response, "Missing"))
+        assertFalse(MihomoControllerProxies.hasResolvedActiveRoute(response, "Missing Leaf"))
+        assertFalse(MihomoControllerProxies.hasResolvedActiveRoute(response, "Unresolved"))
+        assertFalse(MihomoControllerProxies.hasResolvedActiveRoute(response, "Cycle A"))
+        assertTrue(MihomoControllerProxies.hasResolvedActiveRoute(response, "Balanced"))
     }
 
     @Test

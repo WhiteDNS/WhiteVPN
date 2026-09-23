@@ -205,6 +205,14 @@
     <string name="settings_category_system">محافظت سیستم</string>
     <string name="settings_category_system_detail">وی‌پی‌ان همیشه‌فعال و قطع اضطراری اندروید.</string>
     <string name="settings_category_back">بازگشت به تنظیمات</string>
+    <string name="connection_repair_title">تعمیر اتصال</string>
+    <string name="connection_repair_message">نتایج ذخیره‌شدهٔ تست اتصال و سابقهٔ انتخاب خودکار پاک می‌شوند و سابسکریپشن‌های داخلی وایت‌وی‌پی‌ان دوباره دریافت می‌شوند. سابسکریپشن‌های شخصی و تنظیمات شما تغییر نمی‌کنند. اگر متصل باشید، اتصال فعلی ادامه پیدا می‌کند.</string>
+    <string name="connection_repair_confirm">تعمیر</string>
+    <string name="connection_repair_running">در حال تعمیر اتصال…</string>
+    <string name="connection_repair_done">اتصال تعمیر شد. دوباره وصل شوید.</string>
+    <string name="connection_repair_partial">وضعیت اتصال پاک شد، اما بعضی از سابسکریپشن‌های داخلی به‌روز نشدند. دوباره وصل شوید.</string>
+    <string name="connection_repair_test_running">ابتدا تست در حال اجرا را متوقف کنید.</string>
+    <string name="connection_repair_failed">تعمیر اتصال انجام نشد.</string>
     <string name="settings_reset">ریست تنظیمات</string>
     <string name="settings_reset_message">همهٔ تنظیمات برنامه به حالت اولیه برمی‌گردند. سابسکریپشن‌ها و نتایج ذخیره‌شدهٔ تست حفظ می‌شوند. وی‌پی‌ان همیشه‌فعال و قطع اضطراری اندروید تغییر نمی‌کنند. اگر متصل باشید، اتصال فعلی ادامه پیدا می‌کند و تنظیمات اولیه از اتصال بعدی اعمال می‌شوند.</string>
     <string name="settings_reset_confirm">ریست</string>

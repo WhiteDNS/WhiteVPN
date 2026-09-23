@@ -204,6 +204,14 @@
     <string name="settings_category_system">System protection</string>
     <string name="settings_category_system_detail">Always-on VPN and the Android kill switch.</string>
     <string name="settings_category_back">Back to settings</string>
+    <string name="connection_repair_title">Repair connection</string>
+    <string name="connection_repair_message">Saved connection test results and automatic route history will be cleared, then WhiteVPN’s built-in subscriptions will be refreshed. Your subscriptions and settings will stay unchanged. If connected, the current connection will keep running.</string>
+    <string name="connection_repair_confirm">Repair</string>
+    <string name="connection_repair_running">Repairing connection…</string>
+    <string name="connection_repair_done">Connection repaired. Try connecting again.</string>
+    <string name="connection_repair_partial">Connection state was repaired, but some built-in subscriptions could not be refreshed. Try connecting again.</string>
+    <string name="connection_repair_test_running">Stop the running connection test before repairing.</string>
+    <string name="connection_repair_failed">Connection repair failed.</string>
     <string name="settings_reset">Reset settings</string>
     <string name="settings_reset_message">All app settings will return to their original defaults. Your subscriptions and saved test results will be kept. Android Always-on VPN and the kill switch will not change. If connected, the current connection will keep running; the defaults apply next time.</string>
     <string name="settings_reset_confirm">Reset</string>

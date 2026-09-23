@@ -223,6 +223,29 @@ class ConnectionChainTest {
     }
 
     @Test
+    fun automaticSelectionSurvivesItsLatestFailedTest() {
+        val first = source("first-auto", proxy("first-auto", "vless"))
+        val second = source("second-fixed", proxy("second-fixed", "vless"))
+        val settings = ConnectionChainSettings(
+            enabled = true,
+            before = ConnectionChainHop.automatic(),
+            base = ConnectionChainHop.fixed(
+                second.subscriptionId,
+                second.ref("second-fixed").fingerprint,
+            ),
+        )
+        val failed = ConnectionDelayRecord(
+            subscriptionId = first.subscriptionId,
+            fingerprint = first.ref("first-auto").fingerprint,
+            delayMs = null,
+            status = ConnectionDelayStatus.Failure,
+            testedAt = 1,
+        )
+
+        assertEquals(1, ConnectionChainPlanner.plans(settings, listOf(first, second), listOf(failed)).size)
+    }
+
+    @Test
     fun automaticSearchCanReachACompatibleCandidateAfterTheFirstSix() {
         val upstream = source(
             "upstream",
