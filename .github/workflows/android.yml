@@ -72,8 +72,14 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
         env:
           WHITEDNS_RELEASE_KEYSTORE_BASE64: ${{ secrets.WHITEDNS_RELEASE_KEYSTORE_BASE64 }}
+          WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: |
           : "${WHITEDNS_RELEASE_KEYSTORE_BASE64:?Missing WHITEDNS_RELEASE_KEYSTORE_BASE64}"
+          : "${WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL:?Missing WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL}"
+          [[ "$WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL" == https://* ]] || {
+            echo "WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL must use HTTPS" >&2
+            exit 1
+          }
           printf '%s' "$WHITEDNS_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/whitedns-release.jks"
 
       - name: Validate release tag
@@ -97,6 +103,27 @@ jobs:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: ./scripts/release.sh
+
+      - name: Verify private subscription injection
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        env:
+          WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
+        run: |
+          apk="$(find release -maxdepth 1 -name '*-universal.apk' -print -quit)"
+          [[ -n "$apk" ]] || {
+            echo "Universal release APK was not found" >&2
+            exit 1
+          }
+          dex_dir="$RUNNER_TEMP/whitevpn-release-dex"
+          mkdir -p "$dex_dir"
+          unzip -q "$apk" 'classes*.dex' -d "$dex_dir"
+          dex_strings="$RUNNER_TEMP/whitevpn-release-dex-strings.txt"
+          find "$dex_dir" -type f -name 'classes*.dex' -exec strings {} + > "$dex_strings"
+          if ! grep -Fq -- "$WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL" "$dex_strings"; then
+            echo "Private subscription URL was not injected into release bytecode" >&2
+            exit 1
+          fi
+          echo "Private subscription URL is present in release bytecode"
 
       - name: Upload debug APKs
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')

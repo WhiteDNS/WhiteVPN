@@ -179,7 +179,7 @@ internal object PostConnectHealthPolicy {
         health: RuntimeHealthResult,
     ): VpnState? = when {
         !hasUsableDefaultNetwork -> VpnState.Starting
-        health.state != RuntimeHealthState.Unavailable -> VpnState.Started
+        RuntimeHealthPolicy.isConfirmedReachable(health) -> VpnState.Started
         else -> null
     }
 }
@@ -197,6 +197,13 @@ internal data class RuntimeHealthResult(
 )
 
 internal object RuntimeHealthPolicy {
+    fun isConfirmedReachable(result: RuntimeHealthResult): Boolean =
+        result.state == RuntimeHealthState.Reachable
+
+    fun shouldFinishWaiting(result: RuntimeHealthResult): Boolean =
+        isConfirmedReachable(result) ||
+            result.failure?.let(TlsIntegrityPolicy::isCertificateFailure) == true
+
     fun classify(
         mixedProxyReachable: Boolean,
         statusCode: Int? = null,
@@ -4071,14 +4078,22 @@ class WhiteDnsVpnService : VpnService() {
         val health = waitForRuntimeHealth(event, deadlineMs) {
             runtimeHealthStatus(deadlineMs)
         }
-        if (health.state == RuntimeHealthState.Unavailable) {
+        if (!RuntimeHealthPolicy.isConfirmedReachable(health)) {
+            val details = "state=${health.state} code=${health.statusCode ?: "none"} " +
+                "elapsedMs=${SystemClock.elapsedRealtime() - startedAt} timeoutMs=$timeoutMs"
             DiagnosticLogger.warn(
                 this,
                 "$event.timeout",
-                "elapsedMs=${SystemClock.elapsedRealtime() - startedAt} timeoutMs=$timeoutMs",
+                details,
             )
             health.failure?.takeIf(TlsIntegrityPolicy::isCertificateFailure)?.let {
                 throw TlsIntegrityException(it)
+            }
+            if (health.state == RuntimeHealthState.Unknown) {
+                DiagnosticLogger.warn(this, "$event.unknown", details)
+                throw IOException(
+                    "Mihomo proxy could not reach a health endpoint within ${timeoutMs}ms",
+                )
             }
             throw IOException(
                 "Local Mihomo proxy was unavailable at 127.0.0.1:2080 " +
@@ -4087,11 +4102,7 @@ class WhiteDnsVpnService : VpnService() {
         }
         val details = "code=${health.statusCode ?: "none"} " +
             "elapsedMs=${SystemClock.elapsedRealtime() - startedAt} timeoutMs=$timeoutMs"
-        if (health.state == RuntimeHealthState.Reachable) {
-            DiagnosticLogger.info(this, "$event.ok", details)
-        } else {
-            DiagnosticLogger.warn(this, "$event.unknown", details)
-        }
+        DiagnosticLogger.info(this, "$event.ok", details)
     }
 
     private suspend fun verifyTlsIntegrity(enabled: Boolean) {
@@ -4162,8 +4173,7 @@ class WhiteDnsVpnService : VpnService() {
                 }
             }
             lastResult = result
-            if (result.failure?.let(TlsIntegrityPolicy::isCertificateFailure) == true) return result
-            if (result.state != RuntimeHealthState.Unavailable) return result
+            if (RuntimeHealthPolicy.shouldFinishWaiting(result)) return result
             val pollDelayMs = MihomoRuntimeHealthDeadlinePolicy.pollDelayMs(
                 deadlineMs = deadlineMs,
                 nowMs = SystemClock.elapsedRealtime(),
@@ -4771,7 +4781,7 @@ class WhiteDnsVpnService : VpnService() {
                 } else {
                     RuntimeHealthResult(RuntimeHealthState.Unavailable)
                 }
-                if (health.state != RuntimeHealthState.Unavailable) {
+                if (RuntimeHealthPolicy.isConfirmedReachable(health)) {
                     if (state == VpnState.Starting) {
                         awaitingPreservedRuntimeHealth = false
                         publishState(VpnState.Started)
@@ -4789,19 +4799,19 @@ class WhiteDnsVpnService : VpnService() {
                         )
                     }
                     consecutiveFailures = 0
-                    if (health.state == RuntimeHealthState.Unknown) {
-                        DiagnosticLogger.warn(
-                            this@WhiteDnsVpnService,
-                            "mihomo.postConnect.health.unknown",
-                            "code=${health.statusCode ?: "none"}",
-                        )
-                    }
                     nextCheckDelayMs = PostConnectHealthPolicy.CHECK_INTERVAL_MS
                     continue
                 }
 
                 consecutiveFailures += 1
                 nextCheckDelayMs = PostConnectHealthPolicy.FAILURE_RECHECK_DELAY_MS
+                if (health.state == RuntimeHealthState.Unknown) {
+                    DiagnosticLogger.warn(
+                        this@WhiteDnsVpnService,
+                        "mihomo.postConnect.health.unknown",
+                        "code=${health.statusCode ?: "none"}",
+                    )
+                }
                 DiagnosticLogger.warn(
                     this@WhiteDnsVpnService,
                     "mihomo.postConnect.health.failed",

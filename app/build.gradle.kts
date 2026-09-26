@@ -73,8 +73,8 @@ android {
         applicationId = "com.whitedns.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 84
-        versionName = "1.6.9"
+        versionCode = 85
+        versionName = "1.6.10"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "fa")
@@ -207,6 +207,12 @@ tasks.register("checkFlClashCore") {
 val validateReleaseInputs = tasks.register("validateReleaseInputs") {
     dependsOn("checkFlClashCore")
     doLast {
+        if (privateMihomoSubscriptionUrl.isBlank()) {
+            throw GradleException(
+                "Release builds require WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL " +
+                    "or privateMihomoSubscriptionUrl in secrets.properties.",
+            )
+        }
         if (!hasReleaseSigning) {
             throw GradleException(
                 "Release signing is not configured. Set WHITEDNS_RELEASE_STORE_FILE, " +
