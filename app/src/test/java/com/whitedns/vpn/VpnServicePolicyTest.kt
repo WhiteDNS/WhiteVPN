@@ -7,6 +7,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import java.security.cert.CertificateException
 
 class VpnServicePolicyTest {
     @Test
@@ -195,26 +196,31 @@ class VpnServicePolicyTest {
     }
 
     @Test
-    fun unknownExternalHealthKeepsTheActiveRuntime() {
+    fun onlyConfirmedExternalHealthKeepsTheActiveRuntime() {
         val reachable = RuntimeHealthPolicy.classify(mixedProxyReachable = true, statusCode = 204)
         val unknown = RuntimeHealthPolicy.classify(mixedProxyReachable = true)
         val filtered = RuntimeHealthPolicy.classify(mixedProxyReachable = true, statusCode = 451)
         val unavailable = RuntimeHealthPolicy.classify(mixedProxyReachable = false)
+        val certificateFailure = RuntimeHealthPolicy.classify(
+            mixedProxyReachable = true,
+            certificateFailure = CertificateException("certificate"),
+        )
 
         assertEquals(RuntimeHealthState.Reachable, reachable.state)
         assertEquals(RuntimeHealthState.Unknown, unknown.state)
         assertEquals(RuntimeHealthState.Unknown, filtered.state)
         assertEquals(
             RuntimeHealthState.Unavailable,
-            RuntimeHealthPolicy.classify(
-                mixedProxyReachable = true,
-                certificateFailure = IOException("certificate"),
-            ).state,
+            certificateFailure.state,
         )
         assertEquals(VpnState.Starting, PostConnectHealthPolicy.preservedRuntimeState(false, unavailable))
         assertEquals(VpnState.Started, PostConnectHealthPolicy.preservedRuntimeState(true, reachable))
-        assertEquals(VpnState.Started, PostConnectHealthPolicy.preservedRuntimeState(true, unknown))
+        assertEquals(null, PostConnectHealthPolicy.preservedRuntimeState(true, unknown))
         assertEquals(null, PostConnectHealthPolicy.preservedRuntimeState(true, unavailable))
+        assertTrue(RuntimeHealthPolicy.shouldFinishWaiting(reachable))
+        assertFalse(RuntimeHealthPolicy.shouldFinishWaiting(unknown))
+        assertFalse(RuntimeHealthPolicy.shouldFinishWaiting(unavailable))
+        assertTrue(RuntimeHealthPolicy.shouldFinishWaiting(certificateFailure))
         assertTrue(shouldRunPostConnectHealthWatchdog(VpnState.Starting, awaitingPreservedRuntimeHealth = true))
         assertTrue(shouldRunPostConnectHealthWatchdog(VpnState.Started, awaitingPreservedRuntimeHealth = false))
         assertFalse(shouldRunPostConnectHealthWatchdog(VpnState.Starting, awaitingPreservedRuntimeHealth = false))

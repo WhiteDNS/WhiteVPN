@@ -72,8 +72,14 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
         env:
           WHITEDNS_RELEASE_KEYSTORE_BASE64: ${{ secrets.WHITEDNS_RELEASE_KEYSTORE_BASE64 }}
+          WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: |
           : "${WHITEDNS_RELEASE_KEYSTORE_BASE64:?Missing WHITEDNS_RELEASE_KEYSTORE_BASE64}"
+          : "${WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL:?Missing WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL}"
+          [[ "$WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL" == https://* ]] || {
+            echo "WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL must use HTTPS" >&2
+            exit 1
+          }
           printf '%s' "$WHITEDNS_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/whitedns-release.jks"
 
       - name: Validate release tag
