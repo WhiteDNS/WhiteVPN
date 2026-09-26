@@ -104,6 +104,27 @@ jobs:
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: ./scripts/release.sh
 
+      - name: Verify private subscription injection
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        env:
+          WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
+        run: |
+          apk="$(find release -maxdepth 1 -name '*-universal.apk' -print -quit)"
+          [[ -n "$apk" ]] || {
+            echo "Universal release APK was not found" >&2
+            exit 1
+          }
+          dex_dir="$RUNNER_TEMP/whitevpn-release-dex"
+          mkdir -p "$dex_dir"
+          unzip -q "$apk" 'classes*.dex' -d "$dex_dir"
+          dex_strings="$RUNNER_TEMP/whitevpn-release-dex-strings.txt"
+          find "$dex_dir" -type f -name 'classes*.dex' -exec strings {} + > "$dex_strings"
+          if ! grep -Fq -- "$WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL" "$dex_strings"; then
+            echo "Private subscription URL was not injected into release bytecode" >&2
+            exit 1
+          fi
+          echo "Private subscription URL is present in release bytecode"
+
       - name: Upload debug APKs
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@v7
