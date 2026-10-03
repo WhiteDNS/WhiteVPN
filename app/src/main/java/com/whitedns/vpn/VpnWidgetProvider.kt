@@ -39,13 +39,9 @@ class VpnWidgetProvider : AppWidgetProvider() {
             VpnWidgetAction.OpenApp -> context.startActivity(appIntent(context))
             VpnWidgetAction.None -> Unit
             VpnWidgetAction.Connect, VpnWidgetAction.Disconnect -> {
-                val expected = if (currentVpnServiceState == VpnState.Started) Actions.DISCONNECT else Actions.CONNECT
+                val expected = if (liveState() == VpnState.Started) Actions.DISCONNECT else Actions.CONNECT
                 if (intent.action == expected) {
-                    val service = Intent(context, WhiteDnsVpnService::class.java)
-                        .setAction(expected).putExtra(Actions.EXTRA_APP_INITIATED, true)
-                    runCatching {
-                        if (expected == Actions.CONNECT) context.startForegroundService(service) else context.startService(service)
-                    }.onFailure {
+                    runCatching { RouteServiceDispatcher.dispatch(context, expected) }.onFailure {
                         DiagnosticLogger.warn(context, "widget.action.failed", error = it)
                         context.startActivity(appIntent(context))
                     }
@@ -63,6 +59,9 @@ class VpnWidgetProvider : AppWidgetProvider() {
     override fun onRestored(context: Context, oldWidgetIds: IntArray, newWidgetIds: IntArray) = refresh(context)
 
     companion object {
+        private fun liveState(): VpnState = PlatformIkev2Controller.observedState()
+            .takeUnless { it == VpnState.Stopped } ?: currentVpnServiceState
+
         fun refresh(context: Context) {
             // Widget hosts must never interrupt a VPN state transition if unavailable.
             runCatching {
@@ -72,16 +71,24 @@ class VpnWidgetProvider : AppWidgetProvider() {
             }.onFailure { DiagnosticLogger.warn(context, "widget.refresh.failed", error = it) }
         }
 
-        internal fun action(context: Context, state: VpnState = currentVpnServiceState): VpnWidgetAction {
+        internal fun action(context: Context, state: VpnState = liveState()): VpnWidgetAction {
             val mode = ConnectionModePreferenceStore(context).read()
             val alwaysOn = vpnAlwaysOnEnabled(context)
             val needsTun = ConnectionModePolicy.shouldStartTun(mode, alwaysOn, alwaysOn && VpnRuntimeStateStore.readLockdown(context))
             val subscriptions = SubscriptionStore(context)
             val subscriptionId = subscriptions.readSelectedSubscriptionId()
+            val engineId = EngineProfileStore(context).selectedEngineId()
+            val engineConfigured = if (engineId == null) false else runCatching {
+                val profile = EngineProfileStore(context).profile(engineId) ?: return@runCatching false
+                if (profile.kind == EngineKind.IKEV2) return@runCatching false
+                EnginePreflight.validate(profile, EngineNativeAvailability.check(context, profile),
+                    needsTun, alwaysOn && VpnRuntimeStateStore.readLockdown(context))
+                true
+            }.getOrDefault(false)
             return vpnWidgetAction(
                 state = state,
                 privacyAccepted = PrivacyPolicyAcceptanceStore(context).isAccepted(),
-                configured = ConnectionChainPreferenceStore(context).read().isActive || if (SubscriptionStore.isBuiltInSubscription(subscriptionId)) {
+                configured = if (engineId != null) engineConfigured else ConnectionChainPreferenceStore(context).read().isActive || if (SubscriptionStore.isBuiltInSubscription(subscriptionId)) {
                     subscriptions.readCatalog(subscriptionId) != null
                 } else {
                     subscriptions.readUserSubscription(subscriptionId) != null
@@ -91,7 +98,7 @@ class VpnWidgetProvider : AppWidgetProvider() {
             )
         }
 
-        internal fun views(context: Context, state: VpnState = currentVpnServiceState): RemoteViews {
+        internal fun views(context: Context, state: VpnState = liveState()): RemoteViews {
             val localized = AppLocale.wrap(AppTheme.wrap(context))
             val action = action(context, state)
             val status = localized.getString(

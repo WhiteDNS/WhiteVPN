@@ -1,0 +1,26 @@
+{
+  "tor": {
+    "url": "https://archive.torproject.org/tor-package-archive/tor-0.4.9.13.tar.gz",
+    "sha256": "5e748d3272cdf44a7d7741173f371c8def3d96eecb77e93c89c50663ce9cc792"
+  },
+  "openssl": {
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.6.5/openssl-3.6.5.tar.gz",
+    "sha256": "a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98"
+  },
+  "libevent": {
+    "url": "https://github.com/libevent/libevent/releases/download/release-2.1.12-stable/libevent-2.1.12-stable.tar.gz",
+    "sha256": "92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb"
+  },
+  "bundle-aarch64": {
+    "url": "https://archive.torproject.org/tor-package-archive/torbrowser/14.5.1/tor-expert-bundle-android-aarch64-14.5.1.tar.gz",
+    "sha256": "bd6d6ba5f6c8d353a8381656dcbbd35ecc7f5bbbb4ca387ca6574f8d346454af"
+  },
+  "bundle-armv7": {
+    "url": "https://archive.torproject.org/tor-package-archive/torbrowser/14.5.1/tor-expert-bundle-android-armv7-14.5.1.tar.gz",
+    "sha256": "f3a053690f446d064b2208026bcc36b66ba657dba79e568910bd293348b1a89b"
+  },
+  "bundle-x86_64": {
+    "url": "https://archive.torproject.org/tor-package-archive/torbrowser/14.5.1/tor-expert-bundle-android-x86_64-14.5.1.tar.gz",
+    "sha256": "8d2a1eb6453bc084700bcc66030f1c1641fb8057504ee08eb7444e29929a9caf"
+  }
+}

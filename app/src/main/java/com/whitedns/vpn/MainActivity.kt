@@ -106,7 +106,7 @@ class SubscriptionQrCaptureActivity : CaptureActivity() {
 
 /* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app · tone: utilitarian · anchor hue: green */
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 · contrast: pass (40–41) · slop: pass */
-class MainActivity : Activity() {
+open class MainActivity : Activity() {
     private val palette: WhiteDnsPalette by lazy { WhiteDnsDesignTokens.forContext(this) }
     private val buttonModel = ConnectButtonModel()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -133,6 +133,22 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+    private val engineProfilesUi by lazy {
+        EngineProfilesUi(this, activityScope,
+            { buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping },
+            onChanged = { renderSubscriptions() },
+            onSelected = {
+                closeConnectionTestingPage()
+                renderSubscriptions()
+                renderLocationSelection()
+                renderAdvancedControls()
+                appTabs.getTabAt(1)?.select()
+                if (buttonModel.state == VpnState.Started) {
+                    Toast.makeText(this, R.string.profile_selected_reconnect, Toast.LENGTH_LONG).show()
+                }
+            },
+        )
     }
     private lateinit var privacyPolicyStore: PrivacyPolicyAcceptanceStore
     private lateinit var appLanguagePreferenceStore: AppLanguagePreferenceStore
@@ -190,12 +206,7 @@ class MainActivity : Activity() {
     private lateinit var downloadArrowIcon: AnimatedArrowIcon
     private lateinit var uploadArrowIcon: AnimatedArrowIcon
     private lateinit var connectionCountryText: TextView
-    private lateinit var locationSelectorRow: DashboardDataRowView
-    private lateinit var connectionSelectorRow: DashboardDataRowView
-    private lateinit var homeChainAfterSelectorRow: DashboardDataRowView
-    private lateinit var homeChainSelectorRows: LinearLayout
-    private lateinit var homeSubscriptionSelectorRow: DashboardDataRowView
-    private lateinit var settingsSubscriptionSelectorRow: DashboardDataRowView
+    private lateinit var homeProfileRow: DashboardDataRowView
     private var updateSplitTunnelControlsEnabled: ((Boolean) -> Unit)? = null
     private lateinit var connectionModeGroup: MaterialButtonToggleGroup
     private lateinit var vpnModeButton: MaterialButton
@@ -203,6 +214,10 @@ class MainActivity : Activity() {
     private lateinit var dashboardLocalEndpointText: TextView
     private lateinit var dashboardChainText: TextView
     private lateinit var dashboardConnectionMetadataSection: View
+    private var engineSettingsNotice: TextView? = null
+    private var engineCategoryNotice: TextView? = null
+    private var engineChainSettingsView: View? = null
+    private var chainControlsSuppressed = false
     private lateinit var tlsIntegrityCheckbox: MaterialSwitch
     private lateinit var alwaysOnStatusText: TextView
     private lateinit var amneziaNoiseCheckbox: MaterialSwitch
@@ -243,9 +258,9 @@ class MainActivity : Activity() {
     private lateinit var frontingIpInputLayout: TextInputLayout
     private lateinit var frontingIpErrorText: TextView
     private lateinit var refreshActionButton: MaterialButton
-    private lateinit var subscriptionsList: LinearLayout
     private lateinit var vpnTabContent: View
     private lateinit var subscriptionsTabContent: View
+    private lateinit var savedProfilesUi: SavedProfilesUi
     private lateinit var advancedTabContent: View
     private var connectionCountryFlag: String = ""
     private var debugFrontingIp: String = ""
@@ -328,6 +343,10 @@ class MainActivity : Activity() {
         )
         configureSystemBars()
         setContentView(buildAppShell())
+        if (savedInstanceState?.containsKey(STATE_APP_TAB) == true) {
+            appTabs.getTabAt(savedInstanceState.getInt(STATE_APP_TAB).coerceIn(0, 2))?.select()
+        }
+        (lastNonConfigurationInstance as? EngineEditorState)?.let(engineProfilesUi::restoreEditor)
         renderState(VpnState.Stopped)
         refreshLocationOptions()
         fetchPrivateSubscriptionOnLoad()
@@ -354,6 +373,9 @@ class MainActivity : Activity() {
             if (!showPrivacyPolicyIfNeeded(checkUpdatesAfterStartup)) checkUpdatesAfterStartup()
         }
     }
+
+    // Unsaved engine credentials survive rotation in memory; never serialize them into a Bundle.
+    override fun onRetainNonConfigurationInstance(): Any? = engineProfilesUi.retainEditor()
 
     private fun buildAppShell(): View {
         val (tvInsetX, tvInsetY) = televisionSafeInsets(
@@ -546,353 +568,42 @@ class MainActivity : Activity() {
     }
 
     private fun buildSubscriptionsScreen(): View {
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            clipToPadding = false
-            setBackgroundColor(withAlpha(BACKGROUND, 0))
-        }
-        ViewCompat.setOnApplyWindowInsetsListener(scroll) { view, insets ->
-            val topInset = insets.getInsets(
-                WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.displayCutout(),
-            ).top
-            view.setPadding(view.paddingLeft, topInset, view.paddingRight, view.paddingBottom)
-            insets
-        }
-        val content = MaxWidthLinearLayout(this).apply {
-            maxWidthPx = dp(520)
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(34), dp(24), dp(40))
-        }
-        val subscriptionsHeaderCopy = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            addView(TextView(this@MainActivity).apply {
-                setText(R.string.subscriptions_title)
-                textSize = 28f
-                typeface = WhiteDnsDisplayTypeface
-                setTextColor(TEXT_PRIMARY)
-                includeFontPadding = false
-                gravity = Gravity.START
-            })
-            addView(
-                TextView(this@MainActivity).apply {
-                    setText(R.string.subscriptions_description)
-                    textSize = 14f
-                    typeface = WhiteDnsBodyTypeface
-                    setTextColor(TEXT_SECONDARY)
-                    includeFontPadding = false
-                    gravity = Gravity.START
-                },
-                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) },
-            )
-        }
-        val addSubscriptionButton = MaterialButton(this).apply {
-            setText(R.string.subscription_add)
-            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            textDirection = View.TEXT_DIRECTION_LOCALE
-            setAllCaps(false)
-            textSize = 12f
-            typeface = WhiteDnsBodyBoldTypeface
-            isSingleLine = true
-            setPadding(dp(8), 0, dp(8), 0)
-            minWidth = 0
-            insetTop = 0
-            insetBottom = 0
-            cornerRadius = dp(8)
-            backgroundTintList = ColorStateList.valueOf(SURFACE)
-            strokeWidth = dp(1)
-            strokeColor = ColorStateList.valueOf(TEAL)
-            rippleColor = ColorStateList.valueOf(withAlpha(TEAL, 24))
-            setTextColor(TEAL)
-            setOnClickListener { showAddSubscriptionMenu(this) }
-        }
-        val compactHeader = resources.configuration.screenWidthDp < 360
-        content.addView(LinearLayout(this).apply {
-            orientation = if (compactHeader) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            gravity = if (compactHeader) Gravity.START else Gravity.CENTER_VERTICAL
-            if (compactHeader) {
-                addView(
-                    subscriptionsHeaderCopy,
-                    LinearLayout.LayoutParams(-1, -2),
-                )
-                addView(
-                    addSubscriptionButton,
-                    LinearLayout.LayoutParams(-2, dp(44)).apply { topMargin = dp(16) },
-                )
-            } else {
-                addView(
-                    subscriptionsHeaderCopy,
-                    LinearLayout.LayoutParams(0, -2, 1f),
-                )
-                addView(
-                    addSubscriptionButton,
-                    LinearLayout.LayoutParams(dp(84), dp(44)).apply { marginStart = dp(16) },
-                )
-            }
-        })
-        subscriptionsList = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        content.addView(subscriptionsList, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) })
-        scroll.addView(content, ViewGroup.LayoutParams(-1, -2))
+        savedProfilesUi = SavedProfilesUi(this, engineProfilesUi, SavedProfilesActions(
+            addSubscription = { showAddSubscriptionDialog() },
+            selectSubscription = { id ->
+                userSubscriptionManager.select(id)
+                onSubscriptionSelected()
+                appTabs.getTabAt(1)?.select()
+            },
+            connections = ::openSubscriptionConnectionTesting,
+            subscriptionOptions = { item -> listOf(
+                R.string.subscription_action_edit to { showEditSubscriptionDialog(item) },
+                R.string.subscription_action_validate_source to { testSubscription(item) },
+                R.string.subscription_action_refresh to { refreshSubscription(item) },
+                R.string.subscription_action_delete to { confirmDeleteSubscription(item) },
+            ) },
+            refreshBuiltIn = { id -> refreshBuiltInSubscription(id, builtInSubscriptionName(id)) },
+            selectLocation = ::showLocationSelector,
+            busy = { buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping },
+        ))
         renderSubscriptions()
-        return scroll
+        return savedProfilesUi.view
     }
 
     private fun renderSubscriptions() {
-        if (!::subscriptionsList.isInitialized) return
-        subscriptionsList.removeAllViews()
-        val store = SubscriptionStore(this)
-        val selectedId = store.readSelectedSubscriptionId()
-        val selectedName = selectedSubscriptionName()
-        homeSubscriptionSelectorRow.setValue(selectedName)
-        homeSubscriptionSelectorRow.contentDescription =
-            getString(
-                R.string.settings_value_content_description,
-                getString(R.string.subscriptions_title),
-                selectedName,
-            )
-        if (::settingsSubscriptionSelectorRow.isInitialized) {
-            settingsSubscriptionSelectorRow.setValue(selectedName)
-            settingsSubscriptionSelectorRow.contentDescription =
-                getString(
-                    R.string.settings_value_content_description,
-                    getString(R.string.settings_subscription_title),
-                    selectedName,
-                )
-        }
-        SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS.forEachIndexed { index, subscriptionId ->
-            val name = builtInSubscriptionName(subscriptionId)
-            val count = store.readCatalog(subscriptionId)?.profiles?.size ?: 0
-            subscriptionsList.addView(
-                subscriptionCard(
-                    title = name,
-                    detail = getString(R.string.subscription_builtin_detail, connectionCountLabel(count)),
-                    selected = selectedId == subscriptionId,
-                    error = "",
-                    onTestConnections = { openSubscriptionConnectionTesting(subscriptionId) },
-                    actions = listOf(
-                        R.string.subscription_action_select to {
-                            userSubscriptionManager.select(subscriptionId)
-                            onSubscriptionSelected()
-                        },
-                        R.string.subscription_action_refresh to {
-                            refreshBuiltInSubscription(subscriptionId, name)
-                        },
-                    ),
-                ),
-                LinearLayout.LayoutParams(-1, -2).apply {
-                    if (index > 0) topMargin = dp(8)
-                },
-            )
-        }
-        userSubscriptionManager.list().forEach { item ->
-            val updated = item.updatedAt.takeIf { it > 0 }?.let {
-                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(it)
-            } ?: getString(R.string.subscription_never_updated)
-            subscriptionsList.addView(
-                subscriptionCard(
-                    title = item.name,
-                    detail = getString(
-                        R.string.subscription_detail,
-                        item.format.label,
-                        connectionCountLabel(item.connectionCount),
-                        updated,
-                    ),
-                    selected = selectedId == item.id,
-                    error = localizedSubscriptionError(item.lastError),
-                    onTestConnections = { openSubscriptionConnectionTesting(item.id) },
-                    actions = listOf(
-                        R.string.subscription_action_select to {
-                            userSubscriptionManager.select(item.id)
-                            onSubscriptionSelected()
-                        },
-                        R.string.subscription_action_edit to { showEditSubscriptionDialog(item) },
-                        R.string.subscription_action_refresh to { refreshSubscription(item) },
-                        R.string.subscription_action_delete to { confirmDeleteSubscription(item) },
-                    ),
-                ),
-                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
-            )
-        }
-        renderHomeConnectionRows()
+        if (::savedProfilesUi.isInitialized) savedProfilesUi.render()
+        renderConnectionSelection()
     }
 
-    /* Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V4 */
-    /* Hallmark · component: subscription card · genre: modern-minimal · design-system: design.md · designed-as-app */
-    private fun subscriptionCard(
-        title: String,
-        detail: String,
-        selected: Boolean,
-        error: String,
-        onTestConnections: () -> Unit,
-        actions: List<Pair<Int, () -> Unit>>,
-    ): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-        gravity = Gravity.START
-        minimumHeight = dp(112)
-        setPaddingRelative(dp(16), dp(12), dp(16), dp(12))
-        elevation = 0f
-        val selectAction = actions.firstOrNull { it.first == R.string.subscription_action_select }
-        val overflowActions = actions.filterNot { it.first == R.string.subscription_action_select }
-        val canSelect = selectAction != null && !selected
-        isClickable = canSelect
-        isFocusable = canSelect
-        contentDescription = "$title, ${getString(
-            if (selected) R.string.subscription_selected_badge else R.string.subscription_action_select,
-        )}"
-        background = if (selected) {
-            glassSurfaceDrawable(radiusDp = 12, highlighted = true)
-        } else {
-            RippleDrawable(
-                ColorStateList.valueOf(withAlpha(TEAL, 28)),
-                glassSurfaceDrawable(radiusDp = 12),
-                null,
-            )
-        }
-        clipToOutline = true
-        if (canSelect) {
-            setOnClickListener { selectAction?.second?.invoke() }
-        }
-
-        addView(
-            LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                gravity = Gravity.CENTER_VERTICAL
-                addView(
-                    TextView(this@MainActivity).apply {
-                        text = title
-                        textSize = 16f
-                        typeface = WhiteDnsBodyBoldTypeface
-                        setTextColor(TEXT_PRIMARY)
-                        includeFontPadding = false
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.END
-                        layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                        textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-                        gravity = Gravity.START
-                    },
-                    LinearLayout.LayoutParams(0, -2, 1f),
-                )
-                if (selected) addView(
-                    TextView(this@MainActivity).apply {
-                        setText(R.string.subscription_selected_badge)
-                        textSize = 12f
-                        typeface = WhiteDnsBodyBoldTypeface
-                        setTextColor(TEAL)
-                        includeFontPadding = false
-                        gravity = Gravity.CENTER
-                        isSingleLine = true
-                        setPaddingRelative(dp(8), dp(4), dp(8), dp(4))
-                        background = GradientDrawable().apply {
-                            shape = GradientDrawable.RECTANGLE
-                            cornerRadius = dp(12).toFloat()
-                            setColor(withAlpha(TEAL, if (palette.isDark) 34 else 22))
-                            setStroke(dp(1), withAlpha(TEAL, 92))
-                        }
-                    },
-                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) },
-                )
-            },
-            LinearLayout.LayoutParams(-1, -2),
-        )
-        addView(TextView(this@MainActivity).apply {
-            text = detail
-            textSize = 12f
-            typeface = WhiteDnsBodyTypeface
-            setTextColor(TEXT_SECONDARY)
-            includeFontPadding = false
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-            gravity = Gravity.START
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
-        if (error.isNotBlank()) addView(TextView(this@MainActivity).apply {
-            text = getString(R.string.subscription_error, error)
-            textSize = 12f
-            typeface = WhiteDnsBodyBoldTypeface
-            setTextColor(ERROR)
-            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-            gravity = Gravity.START
-        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-
-        fun actionButton(
-            @StringRes labelRes: Int,
-            @DrawableRes iconRes: Int,
-            accent: Boolean,
-            action: (View) -> Unit,
-        ): MaterialButton = MaterialButton(this@MainActivity).apply {
-            setText(labelRes)
-            setIconResource(iconRes)
-            iconTint = ColorStateList.valueOf(if (accent) TEAL else TEXT_SECONDARY)
-            iconSize = dp(18)
-            iconPadding = dp(8)
-            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
-            setAllCaps(false)
-            isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.END
-            textSize = 14f
-            typeface = WhiteDnsBodyBoldTypeface
-            minWidth = 0
-            minimumWidth = 0
-            minHeight = dp(48)
-            minimumHeight = dp(48)
-            insetTop = 0
-            insetBottom = 0
-            cornerRadius = dp(8)
-            setPaddingRelative(dp(12), 0, dp(12), 0)
-            backgroundTintList = ColorStateList.valueOf(palette.surfaceElevated2)
-            strokeWidth = dp(1)
-            strokeColor = ColorStateList.valueOf(if (accent) withAlpha(TEAL, 150) else OUTLINE)
-            rippleColor = ColorStateList.valueOf(withAlpha(TEAL, 26))
-            setTextColor(if (accent) TEAL else TEXT_PRIMARY)
-            setOnClickListener(action)
-        }
-
-        addView(
-            LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-                addView(
-                    actionButton(
-                        labelRes = R.string.subscription_action_test,
-                        iconRes = R.drawable.ic_connection_test,
-                        accent = true,
-                    ) { onTestConnections() },
-                    LinearLayout.LayoutParams(0, dp(48), 1f),
-                )
-                addView(
-                    actionButton(
-                        labelRes = R.string.subscription_action_options,
-                        iconRes = R.drawable.ic_more_vert,
-                        accent = false,
-                    ) { view ->
-                        whiteDnsPopupMenu(view).apply {
-                            overflowActions.forEachIndexed { index, (labelRes, _) ->
-                                menu.add(0, index, index, labelRes)
-                            }
-                            setOnMenuItemClickListener { item ->
-                                overflowActions[item.itemId].second()
-                                true
-                            }
-                        }.show()
-                    },
-                    LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) },
-                )
-            },
-            LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(12) },
-        )
+    private fun showProfilesPage() {
+        closeConnectionTestingPage()
+        appTabs.getTabAt(2)?.select()
     }
 
     private fun openSubscriptionConnectionTesting(subscriptionId: String) {
         if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
         val store = SubscriptionStore(this)
-        if (store.readSelectedSubscriptionId() != subscriptionId) {
+        if (store.readSelectedSubscriptionId() != subscriptionId || EngineProfileStore(this).selectedEngineId() != null) {
             userSubscriptionManager.select(subscriptionId)
             onSubscriptionSelected()
         }
@@ -1145,6 +856,7 @@ class MainActivity : Activity() {
     }
 
     private fun onSubscriptionSelected() {
+        EngineProfileStore(this).selectMihomo()
         locationPreferenceStore.clearSelectedCountry()
         renderSubscriptions()
         renderConnectionDetails(buttonModel.state)
@@ -1164,6 +876,9 @@ class MainActivity : Activity() {
     }
 
     private fun selectedSubscriptionName(): String {
+        EngineProfileStore(this).selectedEngineId()?.let { id ->
+            return runCatching { EngineProfileStore(this).profile(id)?.name }.getOrNull() ?: getString(R.string.engine_missing_profile)
+        }
         val store = SubscriptionStore(this)
         val selectedId = store.readSelectedSubscriptionId()
         return store.readUserSubscription(selectedId)?.name ?: builtInSubscriptionName(selectedId)
@@ -1186,6 +901,9 @@ class MainActivity : Activity() {
             dashboardChainText.text = when {
                 state == VpnState.Started && activeChainHopCount > 1 ->
                     getString(R.string.connection_chain_active, activeChainHopCount)
+                connectionChainPreferenceStore.read().enabled &&
+                    (activeRuntimeSubscriptionId == EngineProfile.SOURCE_ID || EngineProfileStore(this).selectedEngineId() != null) ->
+                    getString(R.string.engine_chains_paused)
                 connectionChainPreferenceStore.read().enabled ->
                     getString(R.string.connection_chain_enabled)
                 else -> ""
@@ -1198,7 +916,8 @@ class MainActivity : Activity() {
 
     private fun renderDashboardLocalEndpoint(mode: ConnectionMode) {
         if (!::dashboardLocalEndpointText.isInitialized) return
-        dashboardLocalEndpointText.text = if (mode == ConnectionMode.Proxy) {
+        dashboardLocalEndpointText.text = if (mode == ConnectionMode.Proxy &&
+            !ConnectionModePolicy.shouldStartTun(mode, alwaysOnMode, lockdownMode)) {
             getString(
                 R.string.connection_mode_local_endpoint,
                 "127.0.0.1",
@@ -1231,6 +950,7 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         VpnWidgetProvider.refresh(this)
+        engineProfilesUi.observe()
         DiagnosticLogger.info(this, "activity.onStart")
         // Resume orb animation when app comes to foreground
         if (::connectionOrb.isInitialized) connectionOrb.resumeAnimation()
@@ -1274,6 +994,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         VpnWidgetProvider.refresh(this)
+        engineProfilesUi.stopObserving()
         DiagnosticLogger.info(this, "activity.onStop")
         // Pause orb animation when app goes to background to save battery
         if (::connectionOrb.isInitialized) connectionOrb.pauseAnimation()
@@ -1298,6 +1019,7 @@ class MainActivity : Activity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt(STATE_APP_TAB, appTabs.selectedTabPosition)
         outState.putBoolean(STATE_CONNECTION_TESTING_PAGE, connectionTestingPageVisible)
         outState.putString(STATE_CHAIN_PICKER_SLOT, activeChainPickerSlot?.wireName)
         outState.putString(STATE_CHAIN_PICKER_SUBSCRIPTION, activeChainPickerSubscriptionId)
@@ -1318,6 +1040,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         delayFailureNetworkMonitor.stop()
+        engineProfilesUi.dispose()
         activityScope.cancel()
         super.onDestroy()
     }
@@ -1350,6 +1073,7 @@ class MainActivity : Activity() {
             return
         }
         super.onActivityResult(requestCode, resultCode, data)
+        if (engineProfilesUi.handleActivityResult(requestCode, resultCode, data)) return
         if (requestCode != REQUEST_VPN_PERMISSION) return
         if (!connectFlowPending) {
             DiagnosticLogger.info(this, "permission.vpn.ignored", "resultCode=$resultCode reason=connect-canceled")
@@ -1365,7 +1089,6 @@ class MainActivity : Activity() {
             DiagnosticLogger.warn(this, "permission.vpn", "denied resultCode=$resultCode")
             AnalyticsEvents.connectionTryFailed(this)
             if (pendingAction == Actions.RECONNECT) {
-                connectionModePreferenceStore.save(ConnectionMode.Proxy)
                 buttonModel.onStateChanged(VpnState.Started)
                 renderState(VpnState.Started)
             } else {
@@ -1801,48 +1524,16 @@ class MainActivity : Activity() {
             )
         }
 
-        locationSelectorRow = DashboardDataRowView(this).apply {
-            setRow(getString(R.string.location_label), getString(R.string.option_automatic))
-            setOnRowClickListener { showLocationSelector() }
-        }
-        connectionSelectorRow = DashboardDataRowView(this).apply {
-            setRow(getString(R.string.connection_label), getString(R.string.option_automatic))
-            setOnRowClickListener {
-                if (connectionChainPreferenceStore.read().enabled) {
-                    openConnectionChainSettingsFromHome()
-                } else {
-                    showConnectionTestingPage()
-                }
-            }
-        }
-        homeChainAfterSelectorRow = DashboardDataRowView(this).apply {
-            setRow(
-                getString(R.string.connection_chain_after),
-                getString(R.string.connection_chain_optional_detail),
-            )
-            setOnRowClickListener { openConnectionChainSettingsFromHome() }
-        }
-        homeChainSelectorRows = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-            addView(
-                View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
-                LinearLayout.LayoutParams(-1, dp(1)).apply {
-                    marginStart = dp(18)
-                    marginEnd = dp(18)
-                },
-            )
-            addView(homeChainAfterSelectorRow, LinearLayout.LayoutParams(-1, -2))
-        }
-        homeSubscriptionSelectorRow = DashboardDataRowView(this).apply {
+        homeProfileRow = DashboardDataRowView(this).apply {
+            tag = "home-selected-profile"
             val subscriptionName = selectedSubscriptionName()
-            setRow(getString(R.string.subscriptions_title), subscriptionName)
+            setRow(getString(R.string.profile_selected_label), subscriptionName)
             contentDescription = getString(
                 R.string.settings_value_content_description,
-                getString(R.string.subscriptions_title),
+                getString(R.string.profile_selected_label),
                 subscriptionName,
             )
-            setOnRowClickListener { showSubscriptionSelectorMenu(this) }
+            setOnRowClickListener { showProfilesPage() }
         }
         dashboardConnectionMetadataSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1883,20 +1574,7 @@ class MainActivity : Activity() {
                 setStroke(dp(1), withAlpha(OUTLINE, 180))
             }
             clipToOutline = true
-            addView(locationSelectorRow, LinearLayout.LayoutParams(-1, -2))
-            addView(View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
-                LinearLayout.LayoutParams(-1, dp(1)).apply {
-                    marginStart = dp(18)
-                    marginEnd = dp(18)
-                })
-            addView(connectionSelectorRow, LinearLayout.LayoutParams(-1, -2))
-            addView(homeChainSelectorRows, LinearLayout.LayoutParams(-1, -2))
-            addView(View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
-                LinearLayout.LayoutParams(-1, dp(1)).apply {
-                    marginStart = dp(18)
-                    marginEnd = dp(18)
-                })
-            addView(homeSubscriptionSelectorRow, LinearLayout.LayoutParams(-1, -2))
+            addView(homeProfileRow, LinearLayout.LayoutParams(-1, -2))
             addView(dashboardConnectionMetadataSection, LinearLayout.LayoutParams(-1, -2))
         }
         val dataRows = dataRowsList
@@ -1910,14 +1588,9 @@ class MainActivity : Activity() {
                 signalSection,
                 contentParams(dp(24)),
             )
-            // VPN/Proxy tab switcher
-            addView(
-                connectionModeGroup,
-                contentParams(dp(16)),
-            )
             addView(
                 dataRows,
-                contentParams(dp(16)),
+                contentParams(dp(12)),
             )
         }
         viewport.addView(
@@ -1967,7 +1640,13 @@ class MainActivity : Activity() {
         val appPreferencesSettings = settingsContent()
         val testingSettings = settingsContent()
         val connectionSettings = settingsContent()
-        val chainSettings = buildConnectionChainSettings()
+        connectionSettings.addView(TextView(this).apply {
+            setText(R.string.connection_mode_label)
+            textSize = 14f; typeface = WhiteDnsBodyBoldTypeface; setTextColor(TEXT_PRIMARY)
+        }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        connectionModeGroup.tag = "settings-connection-mode"
+        connectionSettings.addView(connectionModeGroup, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
+        val chainSettings = buildConnectionChainSettings().also { engineChainSettingsView = it }
         val splitTunnelSettings = settingsContent()
         val sharingSettings = settingsContent()
         val systemSettings = settingsContent()
@@ -1981,11 +1660,6 @@ class MainActivity : Activity() {
             contentDescription = getString(R.string.settings_value_content_description, title, value)
             setOnRowClickListener { onClick(this) }
         }
-        settingsSubscriptionSelectorRow = appPreferenceRow(
-            R.string.settings_subscription_title,
-            selectedSubscriptionName(),
-            ::showSubscriptionSelectorMenu,
-        )
         val themeSelectorRow = appPreferenceRow(
             R.string.theme_dialog_title,
             getString(appThemePreferenceStore.read().labelRes),
@@ -1995,7 +1669,7 @@ class MainActivity : Activity() {
             getString(appLanguagePreferenceStore.read().labelRes),
         ) { showLanguageSelector() }
         val appPreferencesPanel = advancedSettingsPanel()
-        listOf(settingsSubscriptionSelectorRow, themeSelectorRow, languageSelectorRow)
+        listOf(themeSelectorRow, languageSelectorRow)
             .forEachIndexed { index, row ->
                 if (index > 0) {
                     appPreferencesPanel.addView(
@@ -2017,6 +1691,7 @@ class MainActivity : Activity() {
             advancedSectionLabel(getString(R.string.config_test_section)),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(32) },
         )
+        testingSettings.addView(advancedSectionDetail(getString(R.string.engine_test_settings_note)))
         val connectionTestPanel = advancedSettingsPanel()
         fun testIntegerInput(
             title: String,
@@ -2947,6 +2622,7 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) },
             )
         }
+        engineSettingsNotice = engineSettingsNoticeView().also { indexBody.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) }) }
         val indexScrollView = ScrollView(this).apply {
             isFillViewport = true
             clipToPadding = false
@@ -3008,6 +2684,7 @@ class MainActivity : Activity() {
                 View(this).apply { setBackgroundColor(OUTLINE) },
                 LinearLayout.LayoutParams(-1, dp(1)).apply { topMargin = dp(16) },
             )
+            engineCategoryNotice = engineSettingsNoticeView().also { advancedBody.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) }) }
             advancedBody.addView(content, LinearLayout.LayoutParams(-1, -2))
             indexScrollView.visibility = View.GONE
             ViewCompat.setAccessibilityPaneTitle(scrollView, getString(titleRes))
@@ -4212,6 +3889,7 @@ class MainActivity : Activity() {
         chainSlot: ConnectionChainSlot? = null,
         pickerSubscriptionId: String? = null,
     ) {
+        if (chainSlot == null && EngineProfileStore(this).selectedEngineId() != null) { showProfilesPage(); return }
         if (connectionTestingPageVisible && !rebuild) return
         if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
         val subscriptionStore = SubscriptionStore(this)
@@ -4961,6 +4639,7 @@ class MainActivity : Activity() {
                         handleConnectionSelected(profile, selectedTypes)
                     }
                     closeConnectionTestingPage()
+                    if (!pickerMode) appTabs.getTabAt(1)?.select()
                 }
                 return row
             }
@@ -5493,6 +5172,7 @@ class MainActivity : Activity() {
         profile: ConnectionProfile?,
         selectedTypes: Set<String>,
     ) {
+        EngineProfileStore(this).selectMihomo()
         val selectedSubscriptionId = SubscriptionStore(this).readSelectedSubscriptionId()
         val previous = connectionSelectionPreferenceStore.readSelectedProfile(
             selectedSubscriptionId,
@@ -5553,7 +5233,14 @@ class MainActivity : Activity() {
     }
 
     private fun renderConnectionSelection() {
-        if (!::connectionSelectorRow.isInitialized) return
+        if (!::homeProfileRow.isInitialized) return
+        EngineProfileStore(this).selectedEngineId()?.let { id ->
+            val engine = runCatching { EngineProfileStore(this).profile(id) }.getOrNull()
+            val value = engine?.let { it.name + " · " + it.kind.title } ?: getString(R.string.engine_missing_profile)
+            homeProfileRow.setValue(value)
+            homeProfileRow.contentDescription = getString(R.string.connection_content_description, value)
+            return
+        }
         val selectedSubscriptionId = SubscriptionStore(this).readSelectedSubscriptionId()
         val profile = connectionSelectionPreferenceStore.readSelectedProfile(
             selectedSubscriptionId,
@@ -5585,43 +5272,9 @@ class MainActivity : Activity() {
                 else -> activeTag
             }
         } ?: configuredValue
-        connectionSelectorRow.setValue(value)
-        connectionSelectorRow.contentDescription = getString(R.string.connection_content_description, value)
-        renderHomeConnectionRows()
-    }
-
-    private fun renderHomeConnectionRows() {
-        if (!::homeChainSelectorRows.isInitialized) return
-        val settings = connectionChainPreferenceStore.read()
-        homeChainSelectorRows.visibility = if (settings.enabled) View.VISIBLE else View.GONE
-        if (!settings.enabled) return
-
-        val fixedSubscriptionIds = listOf(settings.base, settings.after)
-            .filter { it.mode == ConnectionChainHopMode.Fixed }
-            .mapNotNull { it.profileRef?.subscriptionId }
-            .toSet()
-        val options = if (fixedSubscriptionIds.isNotEmpty()) {
-            connectionChainFixedOptions(settings, cachedConnectionChainSources(fixedSubscriptionIds))
-        } else {
-            emptyList()
-        }
-        fun value(hop: ConnectionChainHop): String = when (hop.mode) {
-            ConnectionChainHopMode.Off -> getString(R.string.connection_chain_not_set)
-            ConnectionChainHopMode.Automatic -> getString(R.string.option_automatic)
-            ConnectionChainHopMode.Fixed -> connectionChainFixedLabel(hop.profileRef, options)
-        }
-        fun render(row: DashboardDataRowView, @StringRes labelRes: Int, hop: ConnectionChainHop) {
-            val label = getString(labelRes)
-            val hopValue = value(hop)
-            row.setValue(hopValue)
-            row.contentDescription = getString(
-                R.string.connection_chain_home_content_description,
-                label,
-                hopValue,
-            )
-        }
-        render(connectionSelectorRow, R.string.connection_label, settings.base)
-        render(homeChainAfterSelectorRow, R.string.connection_chain_after, settings.after)
+        val summary = selectedSubscriptionName() + " · " + value
+        homeProfileRow.setValue(summary)
+        homeProfileRow.contentDescription = getString(R.string.settings_value_content_description, getString(R.string.profile_selected_label), summary)
     }
 
     private fun showLocationSelector() {
@@ -5689,50 +5342,10 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun renderLocationSelection() {
-        if (!::locationSelectorRow.isInitialized) return
-        val selectedSubscriptionId = SubscriptionStore(this).readSelectedSubscriptionId()
-        val selectedCountryCode = connectionSelectionPreferenceStore.readSelectedProfile(
-            selectedSubscriptionId,
-            connectionProfiles,
-        )?.let(ConnectionLocationPolicy::countryForProfile)?.code
-            ?: locationPreferenceStore.readSelectedCountryCode()
-        val option = locationOptions.firstOrNull { it.countryCode == selectedCountryCode }
-            ?: ConnectionLocationPolicy.optionForCode(
-                selectedCountryCode,
-                resources.configuration.locales[0],
-            )
-            ?: automaticLocationOption()
-        locationSelectorRow.setValue(option.label)
-        locationSelectorRow.contentDescription = getString(R.string.location_content_description, option.label)
-    }
+    private fun renderLocationSelection() { renderConnectionSelection() }
 
     private fun automaticLocationOption(): LocationSelectorOption =
         LocationSelectorOption(countryCode = null, label = getString(R.string.option_automatic))
-
-    private fun showSubscriptionSelectorMenu(anchor: View) {
-        val subscriptions = SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS.map {
-            it to builtInSubscriptionName(it)
-        } + userSubscriptionManager.list().map { it.id to it.name }
-        val selectedId = userSubscriptionManager.selectedId()
-        whiteDnsPopupMenu(anchor).apply {
-            subscriptions.forEachIndexed { index, (id, name) ->
-                menu.add(0, SUBSCRIPTION_ITEM_ID_BASE + index, index, name).apply {
-                    isCheckable = true
-                    isChecked = id == selectedId
-                }
-            }
-            menu.setGroupCheckable(0, true, true)
-            setOnMenuItemClickListener { item ->
-                val subscriptionId = subscriptions[item.itemId - SUBSCRIPTION_ITEM_ID_BASE].first
-                if (subscriptionId != selectedId) {
-                    userSubscriptionManager.select(subscriptionId)
-                    onSubscriptionSelected()
-                }
-                true
-            }
-        }.show()
-    }
 
     private fun showThemeSelector() {
         val modes = AppThemeMode.entries
@@ -6810,6 +6423,99 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun engineSettingsNoticeView() = TextView(this).apply {
+        textSize = 13f; typeface = WhiteDnsBodyTypeface; setTextColor(TEXT_SECONDARY)
+        setPadding(dp(12), dp(12), dp(12), dp(12))
+        setLineSpacing(dp(2).toFloat(), 1f)
+        background = GradientDrawable().apply { setColor(withAlpha(TEAL, 14)); cornerRadius = dp(8).toFloat() }
+    }
+
+    private fun selectedEngineForSettings(): EngineProfile? = EngineProfileStore(this).selectedEngineId()?.let {
+        runCatching { EngineProfileStore(this).profile(it) }.getOrNull()
+    }
+
+    private fun applyEngineSettingsPolicy(idle: Boolean) {
+        val profile = selectedEngineForSettings()
+        // A missing engine selection cannot silently expose Mihomo-only preferences.
+        val kind = profile?.kind ?: EngineKind.OPENCONNECT.takeIf { EngineProfileStore(this).selectedEngineId() != null }
+        val subscriptionId = SubscriptionStore(this).readSelectedSubscriptionId()
+        val fixed = connectionSelectionPreferenceStore.readSelectedProfile(subscriptionId, connectionProfiles)
+        val candidates = fixed?.let(::listOf) ?: ConnectionTypeSelectionPolicy.filterProfiles(
+            connectionProfiles, connectionSelectionPreferenceStore.readAutomaticTypes(subscriptionId, connectionProfiles))
+        val chain = connectionChainPreferenceStore.read()
+        val chainWireGuard = kind == null && chain.isActive && run {
+            val hops = listOf(chain.base, chain.after).filter { it.mode != ConnectionChainHopMode.Off }
+            val refs = hops.mapNotNull { it.profileRef }
+            val automatic = hops.any { it.mode == ConnectionChainHopMode.Automatic }
+            cachedConnectionChainPickerOptions(if (automatic) null else refs.map { it.subscriptionId }.toSet()).any { option ->
+                option.profile.type.equals("wireguard", true) && (automatic || refs.any {
+                    it.subscriptionId == option.subscriptionId && it.fingerprint == option.profile.fingerprint
+                })
+            }
+        }
+        val policy = EngineSettingsPolicy.forRoute(kind, chainWireGuard || candidates.any { it.type.equals("wireguard", true) })
+        fun gate(view: View, supported: Boolean) {
+            view.isEnabled = idle && supported
+            view.alpha = if (idle && supported) 1f else 0.45f
+            if (!supported) view.tooltipText = getString(R.string.engine_setting_inactive)
+            else view.tooltipText = null
+        }
+        if (::tlsIntegrityCheckbox.isInitialized) gate(tlsIntegrityCheckbox, policy.tlsIntegrity)
+        renderConnectionOptionsControls(idle && policy.mihomoNoise)
+        if (::routingModeRow.isInitialized) gate(routingModeRow, policy.routing)
+        if (::dnsPrivacyRow.isInitialized) gate(dnsPrivacyRow, policy.dns)
+        if (::dnsPrivacyEndpointLayout.isInitialized) gate(dnsPrivacyEndpointLayout, policy.dns)
+        if (::dnsPrivacyEndpointInput.isInitialized) gate(dnsPrivacyEndpointInput, policy.dns)
+        if (::frontingIpInputLayout.isInitialized) gate(frontingIpInputLayout, policy.fronting)
+        if (::frontingIpInput.isInitialized) gate(frontingIpInput, policy.fronting)
+        if (::frontingIpChipGroup.isInitialized) {
+            gate(frontingIpChipGroup, policy.fronting)
+            for (index in 0 until frontingIpChipGroup.childCount) gate(frontingIpChipGroup.getChildAt(index), policy.fronting)
+        }
+        updateSplitTunnelControlsEnabled?.invoke(idle && policy.apps)
+        if (::connectionModeGroup.isInitialized) {
+            gate(proxyModeButton, policy.proxy && !alwaysOnMode && !lockdownMode)
+            gate(vpnModeButton, !alwaysOnMode && !lockdownMode)
+        }
+        if (::lanSharingCheckbox.isInitialized) {
+            gate(lanSharingCheckbox, policy.sharing)
+            gate(lanSharingPasswordCheckbox, policy.sharing)
+            gate(lanSharingRegenerateButton, policy.sharing)
+            gate(lanSharingDetailsText, policy.sharing)
+            if (!policy.sharing) lanSharingDetailsText.setText(R.string.engine_setting_inactive)
+        }
+        fun tree(view: View, enabled: Boolean) {
+            view.isEnabled = enabled
+            if (view is ViewGroup) for (i in 0 until view.childCount) tree(view.getChildAt(i), enabled)
+        }
+        engineChainSettingsView?.let { view ->
+            if (!policy.chains) { tree(view, false); view.alpha = 0.45f; chainControlsSuppressed = true }
+            else if (chainControlsSuppressed) {
+                tree(view, idle); view.alpha = if (idle) 1f else 0.45f
+                chainControlsSuppressed = false; renderChainSettingsPage?.invoke()
+            }
+        }
+        val details = when {
+            profile == null && kind != null -> getString(R.string.engine_missing_profile)
+            kind == null -> getString(R.string.engine_mihomo_settings)
+            kind.socks -> getString(R.string.engine_tcp_features)
+            kind == EngineKind.AMNEZIAWG -> getString(R.string.engine_amnezia_features) +
+                profile?.let { runCatching { "\n\n" + AmneziaProfile.publicSummary(AmneziaProfile.parse(it.value("config"))) }.getOrDefault("") }.orEmpty()
+            kind == EngineKind.IKEV2 -> getString(R.string.engine_ikev2_features)
+            else -> getString(R.string.engine_retired)
+        }
+        val title = if (profile == null && kind != null) getString(R.string.engine_profiles) else kind?.title ?: "Mihomo"
+        val notice = getString(R.string.engine_effective_settings, title, details)
+        engineSettingsNotice?.text = notice; engineCategoryNotice?.text = notice
+        if (profile != null && !profile.kind.socks) {
+            if (::routingModeValueText.isInitialized) routingModeValueText.setText(R.string.engine_profile_settings)
+            if (::dnsPrivacyValueText.isInitialized) dnsPrivacyValueText.setText(R.string.engine_profile_settings)
+            if (::routingModeDetailText.isInitialized) routingModeDetailText.setText(R.string.engine_setting_inactive)
+            if (::dnsPrivacyDetailText.isInitialized) dnsPrivacyDetailText.setText(R.string.engine_setting_inactive)
+            if (::dashboardLocalEndpointText.isInitialized) dashboardLocalEndpointText.visibility = View.GONE
+        }
+    }
+
     private fun renderAdvancedControls() {
         val settingsEnabled = buttonModel.state != VpnState.Starting && buttonModel.state != VpnState.Stopping
         if (::tlsIntegrityCheckbox.isInitialized) {
@@ -6826,6 +6532,7 @@ class MainActivity : Activity() {
         }
         renderDnsPrivacySelection()
         updateSplitTunnelControlsEnabled?.invoke(settingsEnabled)
+        applyEngineSettingsPolicy(settingsEnabled)
     }
 
     private fun beginConnectFlow(action: String = Actions.CONNECT) {
@@ -6857,6 +6564,33 @@ class MainActivity : Activity() {
     }
 
     private fun requestVpnPermissionThenConnect() {
+        val selectedEngine = EngineProfileStore(this).selectedEngineId()?.let { runCatching { EngineProfileStore(this).profile(it) }.getOrNull() }
+        if (selectedEngine != null) {
+            try {
+                EnginePreflight.validate(selectedEngine, EngineNativeAvailability.check(this, selectedEngine),
+                    ConnectionModePolicy.shouldStartTun(connectionModePreferenceStore.read(), alwaysOnMode, lockdownMode), lockdownMode)
+            } catch (_: Throwable) {
+                connectFlowPending = false
+                Toast.makeText(this, R.string.engine_access_conflict, Toast.LENGTH_LONG).show()
+                buttonModel.onStateChanged(VpnRuntimeStateStore.read(this)); renderState(buttonModel.state)
+                return
+            }
+            if (selectedEngine.kind == EngineKind.IKEV2 && Build.VERSION.SDK_INT >= 30) {
+                activityScope.launch {
+                    try {
+                        val consent = PlatformIkev2Controller.prepare(this@MainActivity, selectedEngine)
+                        if (!connectFlowPending) return@launch
+                        if (consent == null) startPendingConnectAction()
+                        else startActivityForResult(consent, REQUEST_VPN_PERMISSION)
+                    } catch (_: Throwable) {
+                        connectFlowPending = false
+                        Toast.makeText(this@MainActivity, R.string.engine_invalid, Toast.LENGTH_LONG).show()
+                        buttonModel.onStateChanged(VpnRuntimeStateStore.read(this@MainActivity)); renderState(buttonModel.state)
+                    }
+                }
+                return
+            }
+        }
         if (!connectFlowPending) {
             DiagnosticLogger.info(this, "permission.vpn.skip", "reason=connect-canceled")
             return
@@ -6890,15 +6624,7 @@ class MainActivity : Activity() {
     }
 
     private fun startVpnService(action: String) {
-        DiagnosticLogger.info(this, "service.intent", "action=$action")
-        val intent = Intent(this, WhiteDnsVpnService::class.java)
-            .setAction(action)
-            .putExtra(Actions.EXTRA_APP_INITIATED, true)
-        if (action == Actions.CONNECT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
+        RouteServiceDispatcher.dispatch(this, action)
     }
 
     private fun requestActiveConnectionSwitch(subscriptionId: String, fingerprint: String) {
@@ -6971,9 +6697,7 @@ class MainActivity : Activity() {
         refreshActionButton.setTextColor(ColorStateList.valueOf(TEAL))
         refreshActionButton.iconTint = ColorStateList.valueOf(TEAL)
         val settingsEnabled = state != VpnState.Starting && state != VpnState.Stopping
-        locationSelectorRow.isEnabled = settingsEnabled
-        connectionSelectorRow.isEnabled = settingsEnabled
-        homeChainAfterSelectorRow.isEnabled = settingsEnabled
+        homeProfileRow.isEnabled = settingsEnabled
         updateSplitTunnelControlsEnabled?.invoke(settingsEnabled)
         if (::tlsIntegrityCheckbox.isInitialized) tlsIntegrityCheckbox.isEnabled = settingsEnabled
         renderConnectionOptionsControls(settingsEnabled)
@@ -7006,6 +6730,7 @@ class MainActivity : Activity() {
             }
         }
         renderLocationSelection()
+        applyEngineSettingsPolicy(settingsEnabled)
         if (
             state == VpnState.Stopped ||
             state == VpnState.DailyLimitReached ||
@@ -7040,6 +6765,20 @@ class MainActivity : Activity() {
             resetTransferSpeeds()
             return
         }
+        if (VpnRuntimeStateStore.readActiveSubscriptionId(this) == EngineProfile.SOURCE_ID) {
+            val rate = EngineTrafficState.registry.read(
+                VpnRuntimeStateStore.readActiveConnectionFingerprint(this), SystemClock.elapsedRealtime(),
+            )
+            downloadSpeedText.text = rate?.let { formatTransferSpeed(it.downloadBytesPerSecond) } ?: "—"
+            uploadSpeedText.text = rate?.let { formatTransferSpeed(it.uploadBytesPerSecond) } ?: "—"
+            val description = if (rate == null) getString(R.string.engine_metrics_unavailable) else null
+            downloadSpeedText.contentDescription = description
+            uploadSpeedText.contentDescription = description
+            lastTransferSampleElapsedMs = 0L
+            return
+        }
+        downloadSpeedText.contentDescription = null
+        uploadSpeedText.contentDescription = null
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val rxBytes = TrafficStats.getUidRxBytes(Process.myUid())
         val txBytes = TrafficStats.getUidTxBytes(Process.myUid())
@@ -7103,7 +6842,7 @@ class MainActivity : Activity() {
         DiagnosticLogger.info(this, "diagnostics.copy", "chars=${diagnostics.length}")
     }
 
-    private fun checkForUpdates() {
+    protected open fun checkForUpdates() {
         appUpdateUi.check(manual = false)
     }
 
@@ -7222,6 +6961,7 @@ class MainActivity : Activity() {
         const val TIMER_TICK_MS = 1_000L
         const val KEYBOARD_SCROLL_DELAY_MS = 250L
         const val CONNECTION_TESTING_PAGE_ANIMATION_MS = 300L
+        const val STATE_APP_TAB = "app_tab"
         const val STATE_CONNECTION_TESTING_PAGE = "connection_testing_page"
         const val STATE_CHAIN_PICKER_SLOT = "chain_picker_slot"
         const val STATE_CHAIN_PICKER_SUBSCRIPTION = "chain_picker_subscription"

@@ -5,6 +5,8 @@ import android.content.Context
 class ConnectionSelectionPreferenceStore(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    fun readSelectedFingerprint(subscriptionId: String): String? = prefs.getString(key(subscriptionId), null)
+
     fun readSelectedProfile(
         subscriptionId: String,
         profiles: List<ConnectionProfile>,

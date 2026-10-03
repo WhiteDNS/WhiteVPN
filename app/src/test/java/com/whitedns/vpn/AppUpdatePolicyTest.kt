@@ -196,6 +196,35 @@ class AppUpdatePolicyTest {
         assertThrows(IOException::class.java) { AppUpdatePolicy.validateApk(candidate, installed.copy(versionName = "1.5.0"), release) }
     }
 
+    @Test
+    fun installedBetaCanUpgradeToStableWithoutAcceptingBetaReleaseOffers() {
+        assertTrue(AppUpdatePolicy.isNewer("v1.7.0", "1.7.0-beta.1"))
+        assertTrue(AppUpdatePolicy.isNewer("v1.7.1", "1.7.0-beta.1"))
+        assertFalse(AppUpdatePolicy.isNewer("v1.6.10", "1.7.0-beta.1"))
+        assertFalse(AppUpdatePolicy.isNewer("v1.7.0-beta.2", "1.7.0-beta.1"))
+        assertFalse(AppUpdatePolicy.isNewer("v1.7.0-beta.1", "1.6.10"))
+        assertFalse(AppUpdatePolicy.shouldPrompt("1.7.0", "1.7.0-beta.1", "v1.7.0"))
+        assertEquals("1.7.0-beta.1", AppUpdatePolicy.installedVersion("v1.7.0-beta.1"))
+        assertEquals("", AppUpdatePolicy.installedVersion("1.7.0-beta.01"))
+        assertEquals("", AppUpdatePolicy.installedVersion("1.7.0-beta.9999999999999999999999"))
+        assertInvalidRelease(releaseJson().put("tag_name", "v1.7.0-beta.1"))
+    }
+
+    @Test
+    fun betaUpgradeRetainsVersionCodeAndCertificateChecks() {
+        val installed = AppApkMetadata("com.whitedns.vpn", "1.7.0-beta.1", 86,
+            setOf("ab".repeat(32)), ApkVariant.Universal)
+        val candidate = installed.copy(versionName = "1.7.0", versionCode = 87)
+        val release = AppRelease("v1.7.0", "https://github.com/WhiteDNS/WhiteVPN/releases/tag/v1.7.0")
+        AppUpdatePolicy.validateApk(candidate, installed, release)
+        assertThrows(IOException::class.java) {
+            AppUpdatePolicy.validateApk(candidate.copy(versionCode = 86), installed, release)
+        }
+        assertThrows(IOException::class.java) {
+            AppUpdatePolicy.validateApk(candidate.copy(signerSha256 = setOf("cd".repeat(32))), installed, release)
+        }
+    }
+
     private fun apkName(variant: ApkVariant = ApkVariant.Universal) = "WhiteVPN-V1.4.0-${variant.suffix}.apk"
 
     private fun asset(name: String) = JSONObject()
