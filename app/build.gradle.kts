@@ -68,6 +68,8 @@ val hasReleaseSigning = listOf(
 android {
     namespace = "com.whitedns.vpn"
     compileSdk = 36
+    // Match the release toolchain; NDK 27 can package a 4 KB libc++_shared.so.
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.whitedns.vpn"

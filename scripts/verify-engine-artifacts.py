@@ -65,8 +65,6 @@ def inspect(base, requested):
     for abi in MACHINES:
         files = list((base / abi).glob('*.so'))
         for path in files:
-            if not any(path.name in libs for libs in ENGINE_LIBS.values()):
-                continue
             hashes[f'{abi}/{path.name}'] = elf_check(path, abi)
             dynamic = subprocess.check_output([tool, '-d', str(path)], text=True)
             for dependency in re.findall(r'Shared library: \[(.+?)\]', dynamic):
