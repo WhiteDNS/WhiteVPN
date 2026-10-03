@@ -50,14 +50,26 @@ object AppUpdatePolicy {
         }.orEmpty()
     }
 
+    /** Installed beta builds can upgrade to stable; fetched release versions remain strict. */
+    internal fun installedVersion(version: String): String {
+        normalizedVersion(version).takeIf { it.isNotEmpty() }?.let { return it }
+        val value = version.trim().let { if (it.startsWith("v", ignoreCase = true)) it.drop(1) else it }
+        val match = Regex("([0-9]+(?:\\.[0-9]+)*)-beta\\.([1-9][0-9]*)").matchEntire(value) ?: return ""
+        return value.takeIf {
+            it.length <= 100 && normalizedVersion(match.groupValues[1]).isNotEmpty() &&
+                match.groupValues[2].toLongOrNull() != null
+        }.orEmpty()
+    }
+
     fun isNewer(latestVersion: String, currentVersion: String): Boolean {
         val latest = parts(latestVersion) ?: return false
-        val current = parts(currentVersion) ?: return false
+        val installed = installedVersion(currentVersion)
+        val current = parts(installed.substringBefore('-')) ?: return false
         for (index in 0 until maxOf(latest.size, current.size)) {
             val comparison = latest.getOrElse(index) { 0L }.compareTo(current.getOrElse(index) { 0L })
             if (comparison != 0) return comparison > 0
         }
-        return false
+        return installed.contains("-beta.")
     }
 
     fun shouldPrompt(latest: String, current: String, skipped: String?): Boolean =

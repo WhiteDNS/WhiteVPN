@@ -354,7 +354,7 @@ internal class AppUpdateUi(
     }
 
     private fun version(value: String): String = BidiFormatter.getInstance().unicodeWrap(
-        AppUpdatePolicy.normalizedVersion(value), TextDirectionHeuristicsCompat.LTR,
+        AppUpdatePolicy.installedVersion(value), TextDirectionHeuristicsCompat.LTR,
     )
 
     private fun dp(value: Int) = (value * activity.resources.displayMetrics.density).toInt()
