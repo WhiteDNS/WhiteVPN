@@ -65,9 +65,9 @@ def main():
     suffix = '.exe' if os.name == 'nt' else ''
     if not (java / 'bin' / ('javac' + suffix)).exists():
         raise RuntimeError('Set JAVA_HOME to JDK 17 or 21')
-    android_jars = sorted((sdk / 'platforms').glob('android-*/android.jar'), key=lambda p: int(p.parent.name.split('-')[1]))
-    if not android_jars:
-        raise RuntimeError('Install an Android SDK platform')
+    android_jar = sdk / 'platforms/android-36/android.jar'
+    if not android_jar.is_file():
+        raise RuntimeError('Install the pinned Android SDK platform: platforms;android-36')
     module = WORK / 'module'
     module.mkdir(parents=True, exist_ok=True)
     tools = WORK / 'tools'
@@ -141,7 +141,7 @@ def main():
         with zipfile.ZipFile(raw) as archive:
             archive.extractall(unpacked)
         classes = unpacked / 'classes.jar'
-        run([java / 'bin' / ('javac' + suffix), '-d', unpacked, '-bootclasspath', android_jars[-1],
+        run([java / 'bin' / ('javac' + suffix), '-d', unpacked, '-bootclasspath', android_jar,
              '-source', '8', '-target', '8', '-classpath', classes,
              sources['psiphon'] / 'MobileLibrary/Android/PsiphonTunnel/PsiphonTunnel.java'], env=env)
         psi_classes = list((unpacked / 'ca/psiphon').glob('*.class'))
