@@ -16,7 +16,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  native-engines:
+    uses: ./.github/workflows/connection-engines.yml
   build:
+    needs: native-engines
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -43,11 +46,20 @@ jobs:
           sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
 
+      - uses: actions/download-artifact@v5
+        with: {name: public-engines, path: '.'}
+
+      - name: Verify native engine artifacts
+        run: |
+          find app/src/main/jniLibs -type f -name '*.so' -exec chmod +x {} +
+          python3 scripts/verify-engine-artifacts.py --require core tor amneziawg --checksums build/engines/public-native-checksums.json
+
       - name: Cache FlClash core
         uses: actions/cache@v5
         with:
           path: |
-            app/src/main/jniLibs
+            app/src/main/jniLibs/*/libclash.so
+            app/src/main/jniLibs/.mihomo-version
             app/src/main/cpp/includes
           # Exact inputs only: source/compiler pins and patches live in the script;
           # the workflow pins the NDK. Never restore a different native build.
@@ -66,7 +78,11 @@ jobs:
         env:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
-        run: ./gradlew testDebugUnitTest assembleDebug
+        run: ./gradlew testDebugUnitTest assembleDebug :app:compileReleaseKotlin :app:minifyReleaseWithR8 :app:assembleDebugAndroidTest
+
+      - name: Verify packaged debug engines
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        run: python3 scripts/verify-engine-artifacts.py --apk app/build/outputs/apk/debug/app-universal-debug.apk --require core tor amneziawg
 
       - name: Configure release signing
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
@@ -86,8 +102,13 @@ jobs:
         if: github.event_name == 'release'
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
           version_name="$(sed -n 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
+          if [[ "$version_name" == *-* && "$IS_PRERELEASE" != "true" ]]; then
+            echo "A beta app version must be published as a GitHub Pre-release" >&2
+            exit 1
+          fi
           [[ "$RELEASE_TAG" == "v$version_name" ]] || {
             echo "Release tag $RELEASE_TAG must match app version v$version_name" >&2
             exit 1
@@ -103,6 +124,13 @@ jobs:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: ./scripts/release.sh
+
+      - name: Verify packaged release engines
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        run: |
+          apk="$(find release -maxdepth 1 -name '*-universal.apk' -print -quit)"
+          test -n "$apk"
+          python3 scripts/verify-engine-artifacts.py --apk "$apk" --require core tor amneziawg
 
       - name: Verify private subscription injection
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'

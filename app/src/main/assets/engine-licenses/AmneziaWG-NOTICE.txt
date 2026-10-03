@@ -1,0 +1,4 @@
+AmneziaWG Android configuration parser: v3.1.4, fb7575a54e35d9a19cb1f64cdd90bf7075163b55.
+AmneziaWG Go core: github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260814.
+The JNI socket-protection adapter and WhiteVPN integration are local adaptations.
+Full license texts are included alongside this notice.

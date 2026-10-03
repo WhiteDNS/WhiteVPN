@@ -1,0 +1,5 @@
+--- a/cmd/gomobile/bind.go
++++ b/cmd/gomobile/bind.go
+@@ -284,1 +284,1 @@
+-				if err := f.AddReplace(mod.Path, mod.Version, p, v); err != nil {
++				if err := f.AddReplace(mod.Path, "", p, v); err != nil {

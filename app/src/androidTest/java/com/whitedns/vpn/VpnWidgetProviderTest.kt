@@ -22,13 +22,15 @@ class VpnWidgetProviderTest {
     private val id = "widget-test-${System.nanoTime()}"
     private val root = File(target.cacheDir, id)
     private fun isolated(base: Context): Context = object : ContextWrapper(base) {
+        override fun getApplicationContext(): Context = this
         override fun getFilesDir(): File = root.apply { mkdirs() }
+        override fun getNoBackupFilesDir(): File = File(root, "no-backup").apply { mkdirs() }
         override fun getSharedPreferences(name: String, mode: Int) = target.getSharedPreferences("$id-$name", mode)
         override fun createConfigurationContext(configuration: Configuration): Context = isolated(base.createConfigurationContext(configuration))
     }
     private val context = isolated(target)
     private val preferenceNames = listOf("white_dns_theme", "white_dns_language", "white_dns_connection_mode",
-        "white_dns_runtime_state", "white_dns_privacy_policy", "white_dns_user_subscriptions", "white_dns_connection_chain")
+        "white_dns_runtime_state", "white_dns_privacy_policy", "white_dns_user_subscriptions", "white_dns_connection_chain", "whitevpn_route")
 
     @After
     fun cleanUp() {
@@ -112,4 +114,32 @@ class VpnWidgetProviderTest {
         VpnWidgetProvider().onReceive(recording, Intent(Actions.CONNECT))
         assertEquals(MainActivity::class.java.name, opened?.component?.className)
     }
+    @Test
+    fun selectedEngineDoesNotDependOnMihomoCatalogAndMissingEngineCannotFallBack() {
+        ConnectionModePreferenceStore(context).save(ConnectionMode.Proxy)
+        PrivacyPolicyAcceptanceStore(context).acceptCurrentVersion()
+        val engines = EngineProfileStore(context)
+        val profile = EngineProfile(name = "Widget SSH", kind = EngineKind.SSH,
+            config = EngineConfig.Ssh(mapOf("host" to "example.com", "username" to "test", "password" to "widget-test-only")))
+        engines.save(profile)
+        engines.selectEngine(profile.id)
+        assertNull(SubscriptionStore(context).readCatalog())
+        assertEquals(VpnWidgetAction.Connect, VpnWidgetProvider.action(context, VpnState.Stopped))
+        engines.delete(profile.id)
+        SubscriptionStore(context).saveCatalog(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID, SubscriptionCatalog(
+            listOf(ConnectionProfile("test", "http", "example.com", 443, "", "example.com", "test", "{}")), 1L))
+        assertEquals(VpnWidgetAction.OpenApp, VpnWidgetProvider.action(context, VpnState.Stopped))
+    }
+
+    @Test
+    fun importTestProviderPreservesProductionUpdateProvider() {
+        val providers = target.packageManager.getPackageInfo(target.packageName,
+            android.content.pm.PackageManager.GET_PROVIDERS).providers.toList()
+        val updates = providers.single { it.authority == target.packageName + ".updates" }
+        val imports = providers.single { it.authority == target.packageName + ".engine-test-files" }
+        assertNotEquals(updates.name, imports.name)
+        assertFalse(updates.exported)
+        assertFalse(imports.exported)
+    }
+
 }

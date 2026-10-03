@@ -80,6 +80,11 @@
                 android:resource="@xml/vpn_widget_info" />
         </receiver>
 
+        <service android:name=".EngineWorkerService" android:exported="false" android:process=":enginecore" />
+
+        <service android:name=".EnginePlatformService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Platform IKEv2 connection monitoring" />
+        </service>
         <service
             android:name=".WhiteDnsVpnService"
             android:exported="false"

@@ -17,6 +17,8 @@ import com.follow.clash.core.TunInterface
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -329,6 +331,11 @@ class WhiteDnsVpnService : VpnService() {
     private lateinit var connectionTestSettingsPreferenceStore: ConnectionTestSettingsPreferenceStore
     private lateinit var connectionChainPreferenceStore: ConnectionChainPreferenceStore
 
+    private var engineBackend: EngineBackend? = null
+    private var activeEngineProfile: EngineProfile? = null
+    private var engineWatchJob: Job? = null
+    private var platformHandoff = false
+
     private var startupJob: Job? = null
     private var stopJob: Job? = null
     private var subscriptionRefreshJob: Job? = null
@@ -501,6 +508,9 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Every startForegroundService request, including a late/no-op disconnect, must be acknowledged.
+        startForeground(NOTIFICATION_ID, serviceNotification(getString(
+            if (state == VpnState.Started) R.string.notification_connected else R.string.notification_starting)))
         val appInitiated = intent?.getBooleanExtra(Actions.EXTRA_APP_INITIATED, false) == true
         updateAlwaysOnMode(appInitiated)
         DiagnosticLogger.info(
@@ -557,6 +567,10 @@ class WhiteDnsVpnService : VpnService() {
         }
         // Invalid or busy test requests still have to satisfy the foreground-start contract.
         if (startsConnectionTest) finishConnectionTests()
+        if (state == VpnState.Stopped && startupJob?.isActive != true && stopJob?.isActive != true &&
+            connectionDelayTestJob?.isActive != true && connectionSpeedTestJobs.isEmpty() && engineBackend == null) {
+            stopForegroundCompat(); stopSelf(startId)
+        }
         return START_NOT_STICKY
     }
 
@@ -581,8 +595,10 @@ class WhiteDnsVpnService : VpnService() {
         stopJob?.cancel()
         subscriptionRefreshJob?.cancel()
         cancelPostConnectHealthWatchdog()
+        networkMonitor.setDefaultNetworkChangeListener(null)
         runCatching { networkMonitor.stop() }
-        stopCoreImmediately()
+        if (!platformHandoff) stopCoreImmediately()
+        engineWatchJob?.cancel()
         scope.cancel()
         currentVpnService = null
         if (currentVpnServiceState !is VpnState.Error) currentVpnServiceState = VpnState.Stopped
@@ -603,10 +619,115 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     override fun onRevoke() {
+        if (platformHandoff) return
         alwaysOnActive = false
         lockdownActive = false
         // Android has already deactivated the VPN interface; service destruction continues native cleanup.
         finishStoppedState("disconnect.revoked")
+    }
+
+    private suspend fun startEngineConnection(profile: EngineProfile) {
+        val plan = BackendSessionPlan.forEngine(profile)
+        val tunnel = ConnectionModePolicy.shouldStartTun(connectionModePreferenceStore.read(), alwaysOnActive, lockdownActive)
+        EnginePreflight.validate(profile, EngineNativeAvailability.check(this, profile), tunnel, lockdownActive)
+        ensureUnderlyingNetworkAvailable()
+        check(stopCoreService()) { "Previous connection has not released its resources" }
+        activeRuntimePaths = null
+        clearActiveSelectorState()
+        if (plan is BackendSessionPlan.PlatformIkev2) {
+            // The platform session is adopted by a regular foreground service before this VpnService exits.
+            check(PlatformIkev2Controller.prepare(this, profile) == null) { "Open WhiteVPN to grant IKEv2 permission" }
+            platformHandoff = true
+            PlatformIkev2Controller.startPrepared(this, profile)
+            stopForegroundCompat()
+            stopSelf()
+            return
+        }
+        val split = resolveSplitTunnelRuntimePlan()
+        DiagnosticLogger.info(this, "engine.start", "stage=backend kind=" + profile.kind.wireName)
+        val backend = EngineBackendFactory(this, this).create(profile) { builder -> applySplitTunnel(builder, split) }
+        DiagnosticLogger.info(this, "engine.start", "stage=claim vacant=" + EngineSessionOwnership.leases.vacant())
+        check(EngineSessionOwnership.leases.claim(backend.lease)) { "Previous engine resources have not released" }
+        engineBackend = backend
+        activeEngineProfile = profile
+        val lease = backend.lease
+        EngineTrafficState.registry.begin(lease.id, profile.id)
+        val progress = scope.launch {
+            backend.events.collect { event ->
+                if (event is BackendEvent.Progress && EngineSessionOwnership.leases.accepts(lease) && state == VpnState.Starting) {
+                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
+                        serviceNotification(getString(R.string.engine_bootstrap, profile.kind.title, event.percent)))
+                }
+            }
+        }
+        try {
+            DiagnosticLogger.info(this, "engine.start", "stage=start")
+            backend.start()
+            currentCoroutineContext().ensureActive()
+            val endpoint = backend.socksEndpoint
+            if (endpoint != null) {
+                val prefs = captureSessionPlanPreferences(SubscriptionStore.DEFAULT_SUBSCRIPTION_ID, null, emptySet())
+                val raw = EngineRuntimeYaml.build(endpoint)
+                val paths = MihomoRuntimeConfigBuilder(this).write(MihomoRuntimeDocument(raw, split, prefs.lanSharing,
+                    prefs.routingMode, prefs.dns, emptyMap(), rejectProxiedUdp = true), MihomoControllerSecret.generate())
+                setupCore(paths)
+                activeRuntimePaths = paths
+                waitForController(MihomoControllerClient(paths.secret, port = paths.controlPort), paths)
+                if (tunnel) startCoreTun(paths, split)
+                withContext(Dispatchers.IO) { verifyRuntimeHealth(timeoutMs = 30_000) }
+            } else {
+                withContext(Dispatchers.IO) { EngineNetworkProbe.verifyDefaultVpn(this@WhiteDnsVpnService, 30_000) }
+            }
+            currentCoroutineContext().ensureActive()
+            check(engineBackend?.lease == lease && EngineSessionOwnership.leases.accepts(lease)) { "Obsolete engine session" }
+            check(backend.running) { "Engine ended before readiness" }
+            activeSubscriptionId = EngineProfile.SOURCE_ID
+            activeConnectionTag = profile.name
+            activeConnectionFingerprint = profile.id
+            activeChainHopCount = 1
+            activeSelectorReady = false
+            sessionStartedAtElapsedMs = SystemClock.elapsedRealtime()
+            publishState(VpnState.Started)
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_connected)))
+            engineWatchJob = scope.launch {
+                var ticks = 0
+                var failures = 0
+                while (engineBackend?.lease == lease) {
+                    delay(1000)
+                    activeRuntimePaths?.takeIf { backend.socksEndpoint != null }?.let { paths ->
+                        val rate = withContext(Dispatchers.IO) {
+                            runCatching { MihomoControllerClient(paths.secret, port = paths.controlPort).proxyTraffic() }.getOrNull()
+                        }
+                        if (rate != null && engineBackend?.lease == lease && EngineSessionOwnership.leases.accepts(lease)) {
+                            EngineTrafficState.registry.publish(lease.id, rate, SystemClock.elapsedRealtime())
+                        }
+                    }
+                    backend.traffic?.let { rate ->
+                        if (engineBackend?.lease == lease && EngineSessionOwnership.leases.accepts(lease))
+                            EngineTrafficState.registry.publish(lease.id, rate, SystemClock.elapsedRealtime())
+                    }
+                    if (++ticks % 10 == 0) {
+                        val healthy = withContext(Dispatchers.IO) {
+                            runCatching {
+                                if (backend.socksEndpoint != null) {
+                                    RuntimeHealthPolicy.isConfirmedReachable(
+                                        runtimeHealthStatus(SystemClock.elapsedRealtime() + 6000),
+                                    )
+                                } else EngineNetworkProbe.ownedVpn(this@WhiteDnsVpnService)?.let { EngineNetworkProbe.probe(it) } == true
+                            }.getOrDefault(false)
+                        }
+                        failures = if (healthy) 0 else failures + 1
+                    }
+                    if (!backend.running || failures >= 3) {
+                        scope.launch { if (engineBackend?.lease == lease) stopAfterFailure(IOException("Engine connection ended")) }
+                        break
+                    }
+                }
+            }
+        } catch (error: Throwable) {
+            // The outer startup handler owns cleanup. Keep the backend registered even when startup fails.
+            throw error
+        } finally { progress.cancel() }
     }
 
     private fun startVpn() {
@@ -639,6 +760,7 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     private fun switchActiveConnection(subscriptionId: String, fingerprint: String) {
+        if (activeEngineProfile != null) return
         if (subscriptionId.isBlank() || fingerprint.isBlank()) return
         if (state != VpnState.Started) {
             DiagnosticLogger.info(this, "connection.switch.ignored", "reason=state state=${state.wireName}")
@@ -781,6 +903,7 @@ class WhiteDnsVpnService : VpnService() {
             DiagnosticLogger.info(this, "$eventPrefix.ignored", "state=${state.wireName}")
             return
         }
+        if (activeEngineProfile != null) { if (!automatic) reconnectVpn(); return }
         awaitingPreservedRuntimeHealth = false
         if (!automatic) {
             lastPostConnectRecoveryElapsedMs = 0L
@@ -827,6 +950,7 @@ class WhiteDnsVpnService : VpnService() {
         )
         val finishingSpeedJobs = connectionSpeedTestJobs.values.toList()
         if (
+            activeEngineProfile != null ||
             state == VpnState.Starting ||
             state == VpnState.Stopping ||
             ConnectionSpeedTestState.isAnyRunning() ||
@@ -1034,6 +1158,7 @@ class WhiteDnsVpnService : VpnService() {
         if (testId.isBlank() || subscriptionId.isBlank() || fingerprint.isBlank()) return
         val finishingDelayJob = connectionDelayTestJob
         if (
+            activeEngineProfile != null ||
             state == VpnState.Starting ||
             state == VpnState.Stopping ||
             ConnectionDelayTestState.isAnyRunning() ||
@@ -1443,19 +1568,28 @@ class WhiteDnsVpnService : VpnService() {
         quickSpeedRequested: Boolean = false,
         beforeStartup: suspend () -> Unit = {},
     ) {
-        startupJob?.cancel(CancellationException("Startup superseded"))
+        val previousStartup = startupJob
+        previousStartup?.cancel(CancellationException("Startup superseded"))
         subscriptionRefreshJob?.cancel()
         cancelPostConnectHealthWatchdog()
         val job = scope.launch {
             try {
+                previousStartup?.join()
                 connectionSwitchJob?.cancelAndJoin()
                 cancelConnectionTestsAndWait()
+                EngineProfileTester.cancelAndJoin()
+                EngineProfileStore(this@WhiteDnsVpnService).selectedEngineId()?.let { id ->
+                    val profile = EngineProfileStore(this@WhiteDnsVpnService).profile(id) ?: error("Selected engine profile was deleted")
+                    EnginePreflight.validate(profile, EngineNativeAvailability.check(this@WhiteDnsVpnService, profile),
+                        ConnectionModePolicy.shouldStartTun(connectionModePreferenceStore.read(), alwaysOnActive, lockdownActive), lockdownActive)
+                }
                 beforeStartup()
                 connectWithStartupFallback(
                     primary = {
                         runConnectionStartup(eventPrefix, exclusion, quickSpeedRequested)
                     },
                     fallback = { error ->
+                        if (EngineProfileStore(this@WhiteDnsVpnService).selectedEngineId() != null) throw error
                         val selectedSubscriptionId = subscriptionStore.readSelectedSubscriptionId()
                         if (
                             !shouldAutomaticallyRepairStartup(
@@ -1498,7 +1632,15 @@ class WhiteDnsVpnService : VpnService() {
                     },
                 )
             } catch (error: CancellationException) {
-                DiagnosticLogger.info(this@WhiteDnsVpnService, "$eventPrefix.canceled", error.message.orEmpty())
+                if (error is kotlinx.coroutines.TimeoutCancellationException && isActive) {
+                    val failure = IOException("Connection startup timed out")
+                    if (preserveRuntimeOnFailure != null && activeRuntimePaths == preserveRuntimeOnFailure) {
+                        keepActiveRuntimeAfterStartupFailure(eventPrefix, failure)
+                    } else {
+                        DiagnosticLogger.error(this@WhiteDnsVpnService, "$eventPrefix.failed", error = failure)
+                        stopAfterFailure(failure)
+                    }
+                } else DiagnosticLogger.info(this@WhiteDnsVpnService, "$eventPrefix.canceled", error.message.orEmpty())
             } catch (error: Throwable) {
                 if (!shouldPublishStartupError(isActive, state)) {
                     DiagnosticLogger.info(
@@ -1508,11 +1650,13 @@ class WhiteDnsVpnService : VpnService() {
                     )
                     return@launch
                 }
+                val safeError = if (engineBackend != null || EngineProfileStore(this@WhiteDnsVpnService).selectedEngineId() != null)
+                    EngineDiagnosticFailure.sanitize(error) else error
                 if (preserveRuntimeOnFailure != null && activeRuntimePaths == preserveRuntimeOnFailure) {
-                    keepActiveRuntimeAfterStartupFailure(eventPrefix, error)
+                    keepActiveRuntimeAfterStartupFailure(eventPrefix, safeError)
                 } else {
-                    DiagnosticLogger.error(this@WhiteDnsVpnService, "$eventPrefix.failed", error = error)
-                    stopAfterFailure(error)
+                    DiagnosticLogger.error(this@WhiteDnsVpnService, "$eventPrefix.failed", error = safeError)
+                    stopAfterFailure(safeError)
                 }
             }
         }
@@ -1530,10 +1674,20 @@ class WhiteDnsVpnService : VpnService() {
         quickSpeedRequested: Boolean = false,
     ) {
         ensureStartupActive(eventPrefix)
+        if (engineBackend != null) check(stopCoreService()) { "Previous engine resources have not released" }
+        check(EngineSessionOwnership.leases.vacant()) { "Previous engine resources have not released" }
+        val selectedSource = subscriptionStore.readSelectedSubscriptionId()
+        val reference = EngineProfileStore(this).selectedReference(selectedSource, connectionSelectionPreferenceStore.readSelectedFingerprint(selectedSource).orEmpty())
+        if (reference is RouteProfileRef.Engine) {
+            val route = RouteProfile.Engine(EngineProfileStore(this).profile(reference.profileId)
+                ?: throw IOException("Selected engine profile was deleted"))
+            startEngineConnection(route.profile)
+            return
+        }
         ensureUnderlyingNetworkAvailable()
         networkMonitor.start()
 
-        val selectedSubscriptionId = subscriptionStore.readSelectedSubscriptionId()
+        val selectedSubscriptionId = (reference as RouteProfileRef.Mihomo).subscriptionId
         val chainSettings = connectionChainPreferenceStore.read()
         if (chainSettings.isActive) {
             if (quickSpeedRequested) {
@@ -2176,7 +2330,11 @@ class WhiteDnsVpnService : VpnService() {
         }
     }
 
-    private suspend fun startMihomoRuntimeAttemptOnce(plan: SessionPlan): StartedMihomoRuntime {
+    private suspend fun startMihomoRuntimeAttemptOnce(plan: SessionPlan): StartedMihomoRuntime =
+        startMihomoBackendPlan(BackendSessionPlan.Mihomo(plan))
+
+    private suspend fun startMihomoBackendPlan(session: BackendSessionPlan.Mihomo): StartedMihomoRuntime {
+        val plan = session.plan
         val snapshot = plan.snapshot
         val splitTunnelPlan = plan.splitTunnelPlan
         val availableProfiles = plan.availableProfiles
@@ -3880,15 +4038,15 @@ class WhiteDnsVpnService : VpnService() {
         splitTunnelPlan: SplitTunnelRuntimePlan,
     ) {
         when (splitTunnelPlan.mode) {
-            SplitTunnelMode.Off -> Unit
+            SplitTunnelMode.Off -> if (activeEngineProfile?.kind?.socks == true) addDisallowedApplication(builder, packageName)
             SplitTunnelMode.VpnOnlySelected -> {
-                (splitTunnelPlan.allowedPackages + packageName).distinct().forEach { packageName ->
+                (splitTunnelPlan.allowedPackages + if (activeEngineProfile?.kind?.socks == true) emptyList() else listOf(packageName)).distinct().forEach { packageName ->
                     addAllowedApplication(builder, packageName)
                 }
             }
             SplitTunnelMode.BypassSelected -> {
-                splitTunnelPlan.disallowedPackages
-                    .filterNot { it == packageName }
+                (splitTunnelPlan.disallowedPackages + if (activeEngineProfile?.kind?.socks == true) listOf(packageName) else emptyList())
+                    .filter { it != packageName || activeEngineProfile?.kind?.socks == true }
                     .forEach { packageName -> addDisallowedApplication(builder, packageName) }
             }
         }
@@ -4229,11 +4387,12 @@ class WhiteDnsVpnService : VpnService() {
                 connectionSpeedTestJobs.values.toList().forEach { it.cancel() }
                 return
             }
+            stopForegroundCompat()
             publishState(VpnState.Stopped)
             stopSelf()
             return
         }
-        if (state == VpnState.Stopping) return
+        if (state == VpnState.Stopping && stopJob?.isActive == true) return
         DiagnosticLogger.info(this, "disconnect.start", "state=${state.wireName}")
         awaitingPreservedRuntimeHealth = false
         startupJob?.cancel(CancellationException("Disconnect requested"))
@@ -4245,6 +4404,7 @@ class WhiteDnsVpnService : VpnService() {
         connectionSpeedTestJobs.values.toList().forEach { it.cancel() }
         stopJob?.cancel()
         stopJob = scope.launch {
+            startupJob?.join()
             cancelConnectionTestsAndWait()
             val terminalState = disconnectTerminalState(
                 stopCoreService(),
@@ -4258,9 +4418,13 @@ class WhiteDnsVpnService : VpnService() {
                     "disconnect.failed",
                     "reason=coreShutdownTimeout state=${coreLifecycle.currentState()}",
                 )
+                if (engineBackend != null) {
+                    publishState(VpnState.Stopping, "Connection resources have not finished releasing")
+                } else {
                 publishState(terminalState)
                 stopForegroundCompat()
                 stopSelf()
+                }
             }
         }
     }
@@ -4269,7 +4433,10 @@ class WhiteDnsVpnService : VpnService() {
         awaitingPreservedRuntimeHealth = false
         subscriptionRefreshJob?.cancel()
         cancelPostConnectHealthWatchdog()
-        stopCoreService()
+        if (!stopCoreService()) {
+            publishState(VpnState.Stopping, "Waiting for connection resources to release")
+            return
+        }
         sessionStartedAtElapsedMs = 0L
         activeProfile = null
         activeProfileShowsServer = false
@@ -4371,6 +4538,8 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     private suspend fun stopCoreService(): Boolean {
+        engineWatchJob?.cancelAndJoin()
+        engineWatchJob = null
         val coreStopped = when (coreLifecycle.requestCleanup()) {
             MihomoCoreCleanupRequest.Claimed -> {
                 coreCleanupScope.launch {
@@ -4386,7 +4555,21 @@ class WhiteDnsVpnService : VpnService() {
             MihomoCoreCleanupRequest.AlreadyIdle -> true
         }
         stopDpiBypassProxy()
-        return coreStopped
+        val backend = engineBackend
+        val backendStopped = if (!coreStopped) false else try {
+            withContext(NonCancellable) { backend?.stop() ?: true }
+        } catch (_: Throwable) { false }
+        val networkReleased = if (backendStopped && backend != null) withContext(NonCancellable) {
+            EngineNetworkProbe.awaitRelease(this@WhiteDnsVpnService)
+        } else backendStopped
+        if (backendStopped && networkReleased) {
+            backend?.let {
+                EngineTrafficState.registry.clear(it.lease.id)
+                EngineSessionOwnership.leases.confirmRelease(it.lease)
+            }
+            engineBackend = null; activeEngineProfile = null
+        }
+        return coreStopped && backendStopped && networkReleased
     }
 
     private suspend fun awaitCoreIdle(timeoutMs: Long): Boolean {
@@ -4457,21 +4640,12 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     private fun stopCoreImmediately() {
-        when (coreLifecycle.requestCleanup()) {
-            MihomoCoreCleanupRequest.Claimed -> {
-                coreCleanupScope.launch {
-                    cleanupClaimedCore("serviceDestroyed")
-                }
+        val finishingStartup = startupJob
+        coreCleanupScope.launch {
+            withContext(NonCancellable) {
+                finishingStartup?.join()
+                stopCoreService()
             }
-
-            MihomoCoreCleanupRequest.PendingSetup -> DiagnosticLogger.warn(
-                this,
-                "mihomo.cleanup.skipped",
-                "reason=setupInFlight serviceDestroyed=true deferred=true",
-            )
-
-            MihomoCoreCleanupRequest.AlreadyStopping,
-            MihomoCoreCleanupRequest.AlreadyIdle -> Unit
         }
         runCatching { ByeDpiProxy.stop() }
         dpiBypassJob?.cancel(CancellationException("Service destroyed"))
@@ -4481,6 +4655,7 @@ class WhiteDnsVpnService : VpnService() {
 
     private fun finishStoppedState(event: String) {
         awaitingPreservedRuntimeHealth = false
+        activeEngineProfile = null
         sessionStartedAtElapsedMs = 0L
         activeProfile = null
         activeProfileShowsServer = false
@@ -4524,6 +4699,7 @@ class WhiteDnsVpnService : VpnService() {
         val clearedSessionFailures = ConnectionDelayTestState
             .clearFailuresOnNetworkChange(candidate.failureCacheFingerprint())
         val observedNetworkChange = clearedSessionFailures != null
+        if (activeEngineProfile != null) return
         val networkChanged = defaultNetworkStateChanged(
             force = force,
             networkKey = networkKey,
@@ -4739,6 +4915,7 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     private fun startPostConnectHealthWatchdog() {
+        if (activeEngineProfile != null) return
         cancelPostConnectHealthWatchdog()
         val job = scope.launch(Dispatchers.IO) {
             var consecutiveFailures = 0
@@ -4860,6 +5037,7 @@ class WhiteDnsVpnService : VpnService() {
     }
 
     private fun startBackgroundSubscriptionRefresh() {
+        if (activeEngineProfile != null) return
         subscriptionRefreshJob?.cancel()
         subscriptionRefreshJob = scope.launch(Dispatchers.IO) {
             while (isActive && state == VpnState.Started) {
@@ -4884,7 +5062,7 @@ class WhiteDnsVpnService : VpnService() {
             ""
         }
         val connectionDetails = if (newState == VpnState.Started) {
-            activeProfile?.let {
+            activeEngineProfile?.let { it.name + " · " + it.kind.title + if (it.kind.socks) " · TCP" else "" } ?: activeProfile?.let {
                 ConnectionDetailsPresenter.forProfile(
                     it,
                     showServer = activeProfileShowsServer,

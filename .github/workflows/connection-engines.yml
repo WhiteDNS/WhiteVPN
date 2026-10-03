@@ -1,0 +1,48 @@
+name: Connection engine native build
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  public-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with: {distribution: temurin, java-version: '21'}
+      - uses: actions/setup-go@v7
+        with: {go-version: '1.26.8', cache: false}
+      - uses: android-actions/setup-android@v4
+        with: {packages: 'platform-tools'}
+      - name: Install pinned toolchain
+        run: |
+          sdkmanager 'platforms;android-36' 'ndk;29.0.14206865'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+      - name: Build minimal gomobile library
+        run: python3 scripts/build-enginecore.py
+      - name: Build Tor and transports
+        run: |
+          NDK="$ANDROID_NDK_HOME" bash scripts/build-tor-engine.sh
+          python3 scripts/build-tor-transports.py
+      - name: Build pinned AmneziaWG
+        run: python3 scripts/build-amneziawg.py
+      - name: Verify required artifacts
+        run: python3 scripts/verify-engine-artifacts.py --require core tor amneziawg --write-manifest build/engines/public-native-checksums.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: public-engines
+          if-no-files-found: error
+          path: |
+            app/libs/enginecore.aar
+            app/src/main/jniLibs/*/libamneziawg.so
+            app/src/main/jniLibs/*/libtor.so
+            app/src/main/jniLibs/*/libobfs4proxy.so
+            app/src/main/jniLibs/*/libsnowflake.so
+            app/src/main/jniLibs/*/libconjure.so
+            build/engines/public-native-checksums.json
+            build/engines/enginecore-build.json
+            build/engines/enginecore-go.sum
+            build/engines/amneziawg-build.json
+            build/engines/tor-transports-build.json

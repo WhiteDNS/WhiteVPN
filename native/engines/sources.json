@@ -1,0 +1,47 @@
+{
+  "zedsecure": "2c01da26bed98b883503850df1b7f793d28f7f54",
+  "go": "go1.26.8",
+  "gomobile": "v0.0.0-20260709172247-6129f5bee9d5",
+  "sources": {
+    "androidlib": {
+      "url": "https://github.com/CluvexStudio/AndroidLibXrayLite.git",
+      "commit": "69966de475f26ca85ec76bdd73ff2b319b0f1557"
+    },
+    "psiphon": {
+      "url": "https://github.com/CluvexStudio/psiphon-tunnel-core.git",
+      "commit": "83aa73b9b982e7421e00117f5b0c5aceb5dda452"
+    },
+    "masterdns": {
+      "url": "https://github.com/CluvexStudio/MasterDnsVPN.git",
+      "commit": "50b447bc41e6c930a0027507a1a9f492b6fc63b9"
+    },
+    "vaydns": {
+      "url": "https://github.com/anonvector/vaydns.git",
+      "commit": "a0ff70110d5e96686ab8f4c8e1c44cd09be07a75"
+    },
+    "qpack": {
+      "url": "https://github.com/CluvexStudio/qpack.git",
+      "commit": "9442fc625d9485b450bc7f4c0e314b3648a0c4d4"
+    },
+    "lyrebird": {
+      "url": "https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird.git",
+      "commit": "ad08585d979f72a1019470e4e2b18e9ed2550274"
+    },
+    "conjure": {
+      "url": "https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/conjure.git",
+      "commit": "505cb48152e89e12a608ec6a0101af8a2d266fb1"
+    },
+    "amneziawgAndroid": {
+      "url": "https://github.com/amnezia-vpn/amneziawg-android.git",
+      "commit": "fb7575a54e35d9a19cb1f64cdd90bf7075163b55"
+    },
+    "amneziawgCore": {
+      "url": "https://github.com/amnezia-vpn/amneziawg-go.git",
+      "module": "github.com/amnezia-vpn/amneziawg-go/v3",
+      "version": "v3.1.20260814",
+      "sum": "h1:l2AhBD+sFycU8Im81n/bZORMxW7fWtlZJEuJ4Hh0+z0=\r"
+    }
+  },
+  "snowflake": "v2.14.1",
+  "torTransportProvenance": "ecf0f79dba351777fb00f42304cf06d178aa75ee"
+}

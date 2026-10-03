@@ -62,6 +62,8 @@ class WhiteDnsTileService : TileService() {
             openMainActivity()
             return
         }
+        val selected = EngineProfileStore(this).selectedEngineId()?.let { EngineProfileStore(this).profile(it) }
+        if (selected?.kind == EngineKind.IKEV2) { openMainActivity(); return }
         if (VpnService.prepare(this) == null) {
             startVpnService(Actions.CONNECT)
             updateTile(VpnState.Starting)
@@ -71,14 +73,7 @@ class WhiteDnsTileService : TileService() {
     }
 
     private fun startVpnService(action: String) {
-        val intent = Intent(this, WhiteDnsVpnService::class.java)
-            .setAction(action)
-            .putExtra(Actions.EXTRA_APP_INITIATED, true)
-        if (action == Actions.CONNECT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
+        RouteServiceDispatcher.dispatch(this, action)
     }
 
     private fun openMainActivity() {

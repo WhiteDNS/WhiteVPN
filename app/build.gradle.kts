@@ -73,8 +73,8 @@ android {
         applicationId = "com.whitedns.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 85
-        versionName = "1.6.10"
+        versionCode = 86
+        versionName = "1.7.0-beta.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "fa")
@@ -139,6 +139,7 @@ android {
     }
 
     packaging {
+        resources.excludes += "META-INF/versions/**/OSGI-INF/MANIFEST.MF"
         jniLibs {
             useLegacyPackaging = true
         }
@@ -163,6 +164,7 @@ android {
 }
 
 dependencies {
+    compileOnly("com.google.code.findbugs:jsr305:3.0.2")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
     implementation("com.google.firebase:firebase-analytics")
@@ -170,15 +172,24 @@ dependencies {
     implementation("org.json:json:20240303")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation(libs.material)
+    implementation("com.github.mwiede:jsch:2.27.7")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.85.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation(fileTree("libs") { include("enginecore.aar") })
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
+    testImplementation("org.apache.sshd:sshd-core:2.15.0")
     testImplementation("junit:junit:4.13.2")
 }
 
 val buildFlClashCore = tasks.register<Exec>("buildFlClashCore") {
     workingDir = rootProject.projectDir
-    commandLine(rootProject.file("scripts/build-flclash-core.sh").absolutePath)
+    val script = rootProject.file("scripts/build-flclash-core.sh").absolutePath
+    if (System.getProperty("os.name").startsWith("Windows")) {
+        val bash = System.getenv("WHITEDNS_BASH") ?: "C:/Program Files/Git/bin/bash.exe"
+        commandLine(bash, script)
+    } else commandLine(script)
 }
 
 tasks.matching { task ->

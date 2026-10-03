@@ -16,7 +16,11 @@ VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
 # Pin the compiler as well as source: dependency-only and security-patch changes
 # must never reuse an old libclash.so.
 export GOTOOLCHAIN=go1.26.8
-PATCH_DIGEST="$(cat "${FLCLASH_PATCH}" "${MIHOMO_PATCH}" | shasum -a 256 | cut -d ' ' -f 1)"
+if command -v shasum >/dev/null 2>&1; then
+  PATCH_DIGEST="$(cat "${FLCLASH_PATCH}" "${MIHOMO_PATCH}" | shasum -a 256 | cut -d ' ' -f 1)"
+else
+  PATCH_DIGEST="$(cat "${FLCLASH_PATCH}" "${MIHOMO_PATCH}" | sha256sum | cut -d ' ' -f 1)"
+fi
 API_LEVEL="${ANDROID_API_LEVEL:-26}"
 CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}-${GOTOOLCHAIN}-${PATCH_DIGEST}"
 ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
@@ -213,9 +217,16 @@ build_abi() {
       ;;
   esac
 
-  local cc="${TOOLCHAIN_BIN}/${cc_name}"
-  if [[ ! -x "${cc}" ]]; then
-    echo "Missing NDK compiler: ${cc}" >&2
+  local compiler="${TOOLCHAIN_BIN}/${cc_name}"
+  local cc="${compiler}"
+  case "$(uname -s)" in
+    MINGW*|MSYS*)
+      compiler="${TOOLCHAIN_BIN}/clang.exe"
+      cc="${compiler} --target=${cc_name%-clang}"
+      ;;
+  esac
+  if [[ ! -x "${compiler}" ]]; then
+    echo "Missing NDK compiler: ${compiler}" >&2
     return 1
   fi
 
