@@ -16,6 +16,7 @@ import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.hamcrest.Matchers.allOf
+import org.hamcrest.Matchers.startsWith
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -59,19 +60,15 @@ class MainActivityAppPreferencesTest {
     }
 
     @Test
-    fun appPreferencesReplaceTheVpnHomeMenu() {
-        ActivityScenario.launch(MainActivity::class.java).use {
+    fun appPreferencesOfferThemeAndLanguageWithoutDuplicateSubscriptionPicker() {
+        ActivityScenario.launch(ProfilesNavigationTestActivity::class.java).use {
             onView(withContentDescription("Home options menu")).check(doesNotExist())
 
             openAppPreferences()
 
-            onView(withContentDescription("Subscription: WhiteVPN Private")).check(matches(isDisplayed()))
+            onView(withContentDescription(startsWith("Subscription:"))).check(doesNotExist())
             onView(withContentDescription("Theme: System default")).check(matches(isDisplayed()))
             onView(withContentDescription("App language: English")).check(matches(isDisplayed()))
-
-            onView(withContentDescription("Subscription: WhiteVPN Private")).perform(click())
-            onView(allOf(withText("WhiteVPN Private"), isDisplayed())).check(matches(isDisplayed()))
-            pressBack()
             onView(withContentDescription("Theme: System default")).perform(click())
             onView(allOf(withText("Dark"), isDisplayed())).check(matches(isDisplayed()))
             pressBack()
@@ -89,7 +86,7 @@ class MainActivityAppPreferencesTest {
             saveDotEndpoint("tls://dot.example:853")
         }
 
-        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+        ActivityScenario.launch(ProfilesNavigationTestActivity::class.java).use { scenario ->
             openConnections()
             onView(withHint("DoH address")).perform(
                 scrollTo(),
@@ -146,7 +143,7 @@ class MainActivityAppPreferencesTest {
             saveDotEndpoint("tls://dot.example:853")
         }
 
-        ActivityScenario.launch(MainActivity::class.java).use {
+        ActivityScenario.launch(ProfilesNavigationTestActivity::class.java).use {
             openConnections()
             onView(withHint("DoH address")).perform(
                 scrollTo(),
