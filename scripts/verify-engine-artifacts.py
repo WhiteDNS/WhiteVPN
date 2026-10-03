@@ -27,14 +27,17 @@ def elf_check(path, abi):
     wide = data[4] == 2
     offset = struct.unpack_from('<Q' if wide else '<I', data, 32 if wide else 28)[0]
     size, count = struct.unpack_from('<HH', data, 54 if wide else 42)
+    # Android 16 KB validation applies to arm64-v8a/x86_64; 32-bit NDK runtimes remain 4 KB.
+    # https://developer.android.com/guide/practices/page-sizes
+    required_alignment = 16384 if abi in ('arm64-v8a', 'x86_64') else 4096
     loads = []
     for i in range(count):
         p = offset + i * size
         if struct.unpack_from('<I', data, p)[0] != 1:
             continue
         alignment = struct.unpack_from('<Q' if wide else '<I', data, p + (48 if wide else 28))[0]
-        if alignment < 16384:
-            raise RuntimeError(f'{path}: PT_LOAD alignment is {alignment}, requires 16384')
+        if alignment < required_alignment:
+            raise RuntimeError(f'{path}: PT_LOAD alignment is {alignment}, requires {required_alignment}')
         loads.append(alignment)
     if not loads:
         raise RuntimeError(f'{path}: no load segments')
