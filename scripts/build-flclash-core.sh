@@ -247,7 +247,7 @@ build_abi() {
       CC="${cc}" \
       CFLAGS="-O3 -Werror" \
       go build \
-        -ldflags="-X github.com/metacubex/mihomo/constant.Version=${MIHOMO_VERSION} -w -s" \
+        -ldflags="-X github.com/metacubex/mihomo/constant.Version=${MIHOMO_VERSION} -w -s -extldflags=-Wl,-z,max-page-size=16384,-z,common-page-size=16384" \
         -tags=with_gvisor \
         -buildmode=c-shared \
         -o "${tmp_out}/libclash.so" \
