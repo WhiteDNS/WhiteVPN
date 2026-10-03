@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+# Bound APK split/R8/compiler concurrency; print actionable failures instead of opaque worker errors.
+env:
+  GRADLE_OPTS: '-Dorg.gradle.workers.max=2 -Dorg.gradle.logging.stacktrace=all -Dorg.gradle.project.kotlin.compiler.execution.strategy=in-process'
+
 concurrency:
   group: android-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -78,7 +82,7 @@ jobs:
         env:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
-        run: ./gradlew testDebugUnitTest assembleDebug :app:compileReleaseKotlin :app:minifyReleaseWithR8 :app:assembleDebugAndroidTest
+        run: ./gradlew testDebugUnitTest assembleDebug :app:compileReleaseKotlin :app:minifyReleaseWithR8 :app:assembleDebugAndroidTest --max-workers=2 --stacktrace
 
       - name: Verify packaged debug engines
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
