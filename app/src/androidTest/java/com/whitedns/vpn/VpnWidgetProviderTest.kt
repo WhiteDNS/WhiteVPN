@@ -134,7 +134,7 @@ class VpnWidgetProviderTest {
     @Test
     fun importTestProviderPreservesProductionUpdateProvider() {
         val providers = target.packageManager.getPackageInfo(target.packageName,
-            android.content.pm.PackageManager.GET_PROVIDERS).providers.toList()
+            android.content.pm.PackageManager.GET_PROVIDERS).providers.orEmpty().toList()
         val updates = providers.single { it.authority == target.packageName + ".updates" }
         val imports = providers.single { it.authority == target.packageName + ".engine-test-files" }
         assertNotEquals(updates.name, imports.name)
