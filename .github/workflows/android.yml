@@ -82,7 +82,8 @@ jobs:
         env:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
-        run: ./gradlew testDebugUnitTest assembleDebug :app:compileReleaseKotlin :app:minifyReleaseWithR8 :app:assembleDebugAndroidTest --max-workers=2 --stacktrace
+        # Zipflinger buffers native split inputs; serialize packaging and give CI sufficient heap.
+        run: ./gradlew testDebugUnitTest assembleDebug :app:compileReleaseKotlin :app:minifyReleaseWithR8 :app:assembleDebugAndroidTest --max-workers=1 --stacktrace '-Dorg.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8'
 
       - name: Verify packaged debug engines
         if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
