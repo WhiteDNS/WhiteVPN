@@ -84,6 +84,30 @@ class TlsIntegrityPreferenceStore(context: Context) {
 data class MihomoConnectionOptions(
     val amneziaNoiseEnabled: Boolean = false,
     val amneziaNoise: AmneziaNoiseSettings = MihomoConnectionOptionsPolicy.DEFAULT_NOISE,
+    val fragments: FragmentSettings = MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENTS,
+)
+
+data class FragmentSettings(
+    val enabled: Boolean = false,
+    val safe: Boolean = true,
+    val rawJson: String = MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENT_JSON,
+    val alpn: String = MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENT_ALPN,
+    val cipherSuites: String = MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENT_CIPHER_SUITES,
+)
+
+data class FragmentStage(
+    val packets: String,
+    val lengthKey: String,
+    val lengths: List<String>,
+    val delayKey: String?,
+    val delays: List<String>,
+    val maxSplitKey: String?,
+    val maxSplit: String?,
+)
+
+data class ValidatedFragmentJson(
+    val formattedJson: String,
+    val stages: List<FragmentStage>,
 )
 
 object MihomoConnectionOptionsPolicy {
@@ -93,7 +117,184 @@ object MihomoConnectionOptionsPolicy {
     const val MAX_NOISE_SIZE = 1280
     const val MIN_FAKE_TTL = 0
     const val MAX_FAKE_TTL = 255
+    const val MAX_FRAGMENT_STAGES = 8
+    const val MAX_FRAGMENT_DELAY_MS = 1_000
     val DEFAULT_NOISE = AmneziaNoiseSettings(count = 5, minSize = 50, maxSize = 100)
+    const val DEFAULT_FRAGMENT_ALPN = "http/1.1"
+    const val DEFAULT_FRAGMENT_CIPHER_SUITES =
+        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:" +
+            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:" +
+            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:" +
+            "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:" +
+            "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:" +
+            "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+    val DEFAULT_FRAGMENT_JSON = """
+        {
+          "tcp": [
+            {
+              "type": "fragment",
+              "settings": {
+                "packets": "tlshello",
+                "lengths": ["0", "104", "1"],
+                "delays": ["0"],
+                "maxSplit": "0"
+              }
+            },
+            {
+              "type": "fragment",
+              "settings": {
+                "packets": "1-1",
+                "lengths": ["114", "1"],
+                "delays": ["1"],
+                "maxSplit": "11"
+              }
+            }
+          ]
+        }
+    """.trimIndent()
+    val DEFAULT_FRAGMENTS = FragmentSettings()
+    private val RANGE = Regex("""\d+(?:-\d+)?""")
+    private val PACKETS = Regex("""\d+(?:-\d+)?""")
+    private val SUPPORTED_FRAGMENT_CIPHER_SUITES = setOf(
+        "TLS_AES_128_GCM_SHA256",
+        "TLS_AES_256_GCM_SHA384",
+        "TLS_CHACHA20_POLY1305_SHA256",
+        "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+        "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+        "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+        "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+        "TLS_RSA_WITH_RC4_128_SHA",
+        "TLS_RSA_WITH_3DES_EDE_CBC_SHA",
+        "TLS_RSA_WITH_AES_128_CBC_SHA",
+        "TLS_RSA_WITH_AES_256_CBC_SHA",
+        "TLS_RSA_WITH_AES_128_CBC_SHA256",
+        "TLS_RSA_WITH_AES_128_GCM_SHA256",
+        "TLS_RSA_WITH_AES_256_GCM_SHA384",
+        "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA",
+        "TLS_ECDHE_RSA_WITH_RC4_128_SHA",
+        "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA",
+        "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+        "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+    )
+
+    fun validateFragments(settings: FragmentSettings): FragmentSettings {
+        val validated = parseFragmentJson(settings.rawJson)
+        val alpn = settings.alpn.split(',').map(String::trim).filter(String::isNotEmpty)
+        require(alpn.none { '\n' in it || '\r' in it || ' ' in it }) {
+            "ALPN values must be comma-separated names"
+        }
+        val suites = settings.cipherSuites.trim().takeIf(String::isNotEmpty)
+            ?.split(':')
+            ?.map(String::trim)
+            .orEmpty()
+        val unsupportedSuite = suites.firstOrNull { it !in SUPPORTED_FRAGMENT_CIPHER_SUITES }
+        require(unsupportedSuite == null) { "Unsupported TLS cipher suite: $unsupportedSuite" }
+        val cipherSuites = suites.joinToString(":")
+        return settings.copy(
+            rawJson = validated.formattedJson,
+            alpn = alpn.joinToString(","),
+            cipherSuites = cipherSuites,
+        )
+    }
+
+    fun parseFragmentJson(rawJson: String): ValidatedFragmentJson {
+        val root = runCatching { JSONObject(rawJson) }
+            .getOrElse { throw IllegalArgumentException("Fragment JSON is invalid") }
+        val tcp = root.optJSONArray("tcp")
+            ?: throw IllegalArgumentException("Fragment JSON must contain a tcp list")
+        require(tcp.length() > 0) { "The tcp list must contain at least one fragment" }
+        require(tcp.length() <= MAX_FRAGMENT_STAGES) {
+            "The tcp list must contain at most $MAX_FRAGMENT_STAGES fragments"
+        }
+        val stages = (0 until tcp.length()).map { index ->
+            val item = tcp.optJSONObject(index)
+                ?: throw IllegalArgumentException("tcp[$index] must be an object")
+            require(item.optString("type") == "fragment") { "tcp[$index].type must be fragment" }
+            val values = item.optJSONObject("settings")
+                ?: throw IllegalArgumentException("tcp[$index].settings is required")
+            val allowed = setOf(
+                "packets", "length", "lengths", "delay", "delays", "interval", "maxSplit", "max-split",
+            )
+            require(values.keys().asSequence().all { it in allowed }) {
+                "tcp[$index].settings contains an unsupported field"
+            }
+            val packets = values.optString("packets").trim()
+            require(
+                packets.isEmpty() || packets.equals("tlshello", true) ||
+                    (PACKETS.matches(packets) && packets.substringBefore('-').toLong() > 0),
+            ) { "packets must be tlshello or a positive number/range" }
+
+            val lengthKeys = listOf("length", "lengths").filter(values::has)
+            require(lengthKeys.size == 1) { "Use exactly one of length or lengths" }
+            val lengthKey = lengthKeys.single()
+            val lengths = fragmentRanges(values.get(lengthKey), lengthKey)
+            require(rangeMinimum(lengths.last()) > 0) { "The final length must start above zero" }
+
+            val delayKeys = listOf("delay", "delays", "interval").filter(values::has)
+            require(delayKeys.size <= 1) { "Use only one of delay, delays, or interval" }
+            val delayKey = delayKeys.singleOrNull()
+            val delays = delayKey?.let { fragmentRanges(values.get(it), it) }.orEmpty()
+            require(delays.all { rangeMaximum(it) <= MAX_FRAGMENT_DELAY_MS }) {
+                "Fragment delay must not exceed $MAX_FRAGMENT_DELAY_MS ms"
+            }
+
+            val maxKeys = listOf("maxSplit", "max-split").filter(values::has)
+            require(maxKeys.size <= 1) { "Use only one of maxSplit or max-split" }
+            val maxKey = maxKeys.singleOrNull()
+            val maxSplit = maxKey?.let { fragmentRange(values.get(it), it) }
+            FragmentStage(packets, lengthKey, lengths, delayKey, delays, maxKey, maxSplit)
+        }
+        return ValidatedFragmentJson(root.toString(2), stages)
+    }
+
+    fun startupVariants(options: MihomoConnectionOptions): List<Pair<String, MihomoConnectionOptions>> {
+        if (!options.fragments.enabled) return listOf("normal" to options)
+        val fragmentOnly = options.copy(
+            fragments = options.fragments.copy(safe = true, alpn = "", cipherSuites = ""),
+        )
+        val normal = options.copy(fragments = options.fragments.copy(enabled = false))
+        return listOf("full" to options, "fragments-only" to fragmentOnly, "normal" to normal)
+            .distinctBy { it.second }
+    }
+
+    private fun fragmentRanges(value: Any, field: String): List<String> {
+        val ranges = if (value is JSONArray) {
+            (0 until value.length()).map { fragmentRange(value.get(it), "$field[$it]") }
+        } else {
+            listOf(fragmentRange(value, field))
+        }
+        require(ranges.isNotEmpty()) { "$field cannot be empty" }
+        return ranges
+    }
+
+    private fun fragmentRange(value: Any, field: String): String {
+        val text = when (value) {
+            is Number -> value.toString()
+            is String -> value.trim()
+            else -> ""
+        }
+        require(RANGE.matches(text)) { "$field must be a non-negative number or range" }
+        val min = text.substringBefore('-').toLong()
+        val max = text.substringAfter('-', text).toLong()
+        require(min <= Int.MAX_VALUE && max <= Int.MAX_VALUE) { "$field is too large" }
+        return text
+    }
+
+    private fun rangeMinimum(value: String): Long = minOf(
+        value.substringBefore('-').toLong(),
+        value.substringAfter('-', value).toLong(),
+    )
+
+    private fun rangeMaximum(value: String): Long = maxOf(
+        value.substringBefore('-').toLong(),
+        value.substringAfter('-', value).toLong(),
+    )
 
     fun validateNoise(settings: AmneziaNoiseSettings): AmneziaNoiseSettings {
         val normalized = settings.copy(
@@ -205,7 +406,38 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
         return MihomoConnectionOptions(
             amneziaNoiseEnabled = prefs.getBoolean(KEY_AMNEZIA_NOISE_ENABLED, false),
             amneziaNoise = noise,
+            fragments = runCatching {
+                MihomoConnectionOptionsPolicy.validateFragments(
+                    FragmentSettings(
+                        enabled = prefs.getBoolean(KEY_FRAGMENTS_ENABLED, false),
+                        safe = prefs.getBoolean(KEY_FRAGMENTS_SAFE, true),
+                        rawJson = prefs.getString(
+                            KEY_FRAGMENT_JSON,
+                            MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENT_JSON,
+                        ).orEmpty(),
+                        alpn = prefs.getString(
+                            KEY_FRAGMENT_ALPN,
+                            MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENT_ALPN,
+                        ).orEmpty(),
+                        cipherSuites = prefs.getString(
+                            KEY_FRAGMENT_CIPHER_SUITES,
+                            MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENT_CIPHER_SUITES,
+                        ).orEmpty(),
+                    ),
+                )
+            }.getOrDefault(MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENTS),
         )
+    }
+
+    fun saveFragments(settings: FragmentSettings) {
+        val valid = MihomoConnectionOptionsPolicy.validateFragments(settings)
+        prefs.edit()
+            .putBoolean(KEY_FRAGMENTS_ENABLED, valid.enabled)
+            .putBoolean(KEY_FRAGMENTS_SAFE, valid.safe)
+            .putString(KEY_FRAGMENT_JSON, valid.rawJson)
+            .putString(KEY_FRAGMENT_ALPN, valid.alpn)
+            .putString(KEY_FRAGMENT_CIPHER_SUITES, valid.cipherSuites)
+            .apply()
     }
 
     fun saveAmneziaNoise(enabled: Boolean, settings: AmneziaNoiseSettings) {
@@ -261,6 +493,11 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
         const val KEY_MAX_HANDSHAKE_ATTEMPTS = "amnezia_max_handshake_attempts"
         const val KEY_RANDOM_TRAILERS = "amnezia_random_trailers"
         const val KEY_DISABLE_COOKIES = "amnezia_disable_cookies"
+        const val KEY_FRAGMENTS_ENABLED = "fragments_enabled"
+        const val KEY_FRAGMENTS_SAFE = "fragments_safe"
+        const val KEY_FRAGMENT_JSON = "fragment_json"
+        const val KEY_FRAGMENT_ALPN = "fragment_alpn"
+        const val KEY_FRAGMENT_CIPHER_SUITES = "fragment_cipher_suites"
     }
 }
 
@@ -1423,7 +1660,7 @@ object MihomoFrontingPatcher {
 
 object MihomoConnectionOptionsPatcher {
     fun patch(rawYaml: String, options: MihomoConnectionOptions): String {
-        if (!options.amneziaNoiseEnabled) return rawYaml
+        if (!options.amneziaNoiseEnabled && !options.fragments.enabled) return rawYaml
         val output = mutableListOf<String>()
         var inProxies = false
         var currentProxy = mutableListOf<String>()
@@ -1510,7 +1747,93 @@ object MihomoConnectionOptionsPatcher {
                 patched = upsertNestedOptions(patched, "ip-stack", ipStackFields)
             }
         }
+        if (options.fragments.enabled) {
+            val stages = MihomoConnectionOptionsPolicy.parseFragmentJson(options.fragments.rawJson).stages
+            patched = upsertProxyField(patched, "fragments", fragmentYaml(stages))
+            if (type.equals("vless", true)) {
+                val realityEnabled = hasProxyField(patched, "reality-opts")
+                val fingerprint = proxyFieldValue(patched, "client-fingerprint")
+                val invalidRealityFingerprint = fingerprint == null ||
+                    fingerprint.equals("none", true) ||
+                    fingerprint.equals("unsafe", true)
+                if (realityEnabled && invalidRealityFingerprint) {
+                    patched = upsertProxyField(patched, "client-fingerprint", yamlSingleQuoted("chrome"))
+                } else if (!options.fragments.safe && !realityEnabled) {
+                    patched = upsertProxyField(patched, "client-fingerprint", yamlSingleQuoted("unsafe"))
+                }
+                if (options.fragments.alpn.isNotBlank()) {
+                    val alpn = options.fragments.alpn.split(',').joinToString(", ") {
+                        yamlSingleQuoted(it.trim())
+                    }
+                    patched = upsertProxyField(patched, "alpn", "[$alpn]")
+                }
+                if (options.fragments.cipherSuites.isNotBlank()) {
+                    patched = upsertProxyField(
+                        patched,
+                        "cipher-suites",
+                        yamlSingleQuoted(options.fragments.cipherSuites),
+                    )
+                }
+            }
+        }
         return patched
+    }
+
+    private fun fragmentYaml(stages: List<FragmentStage>): String = stages.joinToString(", ", "[", "]") { stage ->
+        buildList {
+            if (stage.packets.isNotEmpty()) add("packets: ${yamlSingleQuoted(stage.packets)}")
+            val lengths = stage.lengths.joinToString(", ") { yamlSingleQuoted(it) }
+            add("${stage.lengthKey}: ${if (stage.lengthKey.endsWith('s')) "[$lengths]" else lengths}")
+            stage.delayKey?.let { key ->
+                val delays = stage.delays.joinToString(", ") { yamlSingleQuoted(it) }
+                add("$key: ${if (key.endsWith('s')) "[$delays]" else delays}")
+            }
+            stage.maxSplitKey?.let { add("$it: ${yamlSingleQuoted(stage.maxSplit.orEmpty())}") }
+        }.joinToString(", ", "{", "}")
+    }
+
+    private fun upsertProxyField(lines: List<String>, key: String, value: String): List<String> {
+        if (lines.size == 1 && lines.single().trimStart().startsWith("- {")) {
+            return listOf(upsertInlineProxyField(lines.single(), key, value))
+        }
+        val start = lines.indexOfFirst { proxyFieldIndent(it) == 4 && fieldName(it) == key }
+        if (start < 0) return lines + "    $key: $value"
+        val end = (start + 1 until lines.size)
+            .firstOrNull { proxyFieldIndent(lines[it]) <= 4 && lines[it].isNotBlank() }
+            ?: lines.size
+        val prefix = if (lines[start].trimStart().startsWith("- ")) "  - " else "    "
+        return lines.toMutableList().apply {
+            subList(start, end).clear()
+            add(start, "$prefix$key: $value")
+        }
+    }
+
+    private fun upsertInlineProxyField(line: String, key: String, value: String): String {
+        val match = Regex("""(?:^|[,{]\s*)['\"]?${Regex.escape(key)}['\"]?\s*:\s*""").find(line)
+        if (match == null) {
+            val close = line.lastIndexOf('}')
+            if (close < 0) return line
+            return line.substring(0, close) + ", $key: $value" + line.substring(close)
+        }
+        val valueStart = match.range.last + 1
+        var quote: Char? = null
+        var depth = 0
+        var index = valueStart
+        while (index < line.length) {
+            val char = line[index]
+            if (quote != null) {
+                if (char == quote && (index == 0 || line[index - 1] != '\\')) quote = null
+            } else {
+                when (char) {
+                    '\'', '"' -> quote = char
+                    '[', '{' -> depth += 1
+                    ']', '}' -> if (depth > 0) depth -= 1 else break
+                    ',' -> if (depth == 0) break
+                }
+            }
+            index += 1
+        }
+        return line.replaceRange(valueStart, index, value)
     }
 
     private fun upsertNestedOptions(
@@ -1578,7 +1901,7 @@ object MihomoConnectionOptionsPatcher {
     }
 
     private fun proxyFieldValue(lines: List<String>, key: String): String? {
-        lines.firstOrNull { indentation(it) == 4 && fieldName(it) == key }?.let { line ->
+        lines.firstOrNull { proxyFieldIndent(it) == 4 && fieldName(it) == key }?.let { line ->
             return yamlScalar(line.substringAfter(':'))
         }
         val inline = lines.singleOrNull()?.trimStart()?.takeIf { it.startsWith("- {") } ?: return null
@@ -1589,8 +1912,18 @@ object MihomoConnectionOptionsPatcher {
             ?.let(::yamlScalar)
     }
 
+    private fun hasProxyField(lines: List<String>, key: String): Boolean {
+        if (lines.any { proxyFieldIndent(it) == 4 && fieldName(it) == key }) return true
+        val inline = lines.singleOrNull()?.trimStart()?.takeIf { it.startsWith("- {") } ?: return false
+        return Regex("""(?:^|[,{]\s*)['\"]?${Regex.escape(key)}['\"]?\s*:""").containsMatchIn(inline)
+    }
+
     private fun fieldName(line: String): String =
-        line.trimStart().substringBefore(':').trim().removeSurrounding("\"").removeSurrounding("'")
+        line.trimStart().removePrefix("- ").substringBefore(':').trim()
+            .removeSurrounding("\"").removeSurrounding("'")
+
+    private fun proxyFieldIndent(line: String): Int =
+        indentation(line) + if (line.trimStart().startsWith("- ")) 2 else 0
 
     private fun yamlScalar(value: String): String =
         value.substringBefore(" #").trim().removeSurrounding("\"").removeSurrounding("'")

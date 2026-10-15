@@ -65,7 +65,8 @@ internal enum class AutomaticBridgeFailurePhase {
 }
 
 internal fun isNonRetryableStartupFailure(error: Throwable): Boolean =
-    error is CancellationException ||
+    error is Error ||
+        error is CancellationException ||
         error is MihomoCoreBusyException ||
         error is MihomoCoreSetupTimeoutException
 
@@ -2121,59 +2122,87 @@ class WhiteDnsVpnService : VpnService() {
             quickSpeedRequested = quickSpeedRequested,
         )
 
-        fun plan(
-            dpiEnabled: Boolean,
-            dpiPort: Int?,
-            allowAutomaticBridge: Boolean,
-        ): SessionPlan =
-            SessionPlanner.resolve(
-                request = request.copy(
-                    dpiBypassEnabled = dpiEnabled,
-                    dpiBypassPort = dpiPort,
-                    allowAutomaticBridge = allowAutomaticBridge,
-                ),
-                preferences = preferences,
-            )
+        suspend fun startWithOptions(variantPreferences: SessionPlanPreferences): StartedMihomoRuntime {
+            fun plan(
+                dpiEnabled: Boolean,
+                dpiPort: Int?,
+                allowAutomaticBridge: Boolean,
+            ): SessionPlan =
+                SessionPlanner.resolve(
+                    request = request.copy(
+                        dpiBypassEnabled = dpiEnabled,
+                        dpiBypassPort = dpiPort,
+                        allowAutomaticBridge = allowAutomaticBridge,
+                    ),
+                    preferences = variantPreferences,
+                )
 
-        var automaticBridgeAvailable = true
-        suspend fun startWithAutomaticBridgeFallback(dpiEnabled: Boolean): StartedMihomoRuntime {
-            val dpiPort = if (dpiEnabled) DpiBypassPort.allocate() else null
-            if (!automaticBridgeAvailable) {
-                return startMihomoRuntimeAttemptOnce(
-                    plan(dpiEnabled, dpiPort, allowAutomaticBridge = false),
-                )
+            var automaticBridgeAvailable = true
+            suspend fun startWithAutomaticBridgeFallback(dpiEnabled: Boolean): StartedMihomoRuntime {
+                val dpiPort = if (dpiEnabled) DpiBypassPort.allocate() else null
+                if (!automaticBridgeAvailable) {
+                    return startMihomoRuntimeAttemptOnce(
+                        plan(dpiEnabled, dpiPort, allowAutomaticBridge = false),
+                    )
+                }
+                return try {
+                    startMihomoRuntimeAttemptOnce(
+                        plan(dpiEnabled, dpiPort, allowAutomaticBridge = true),
+                    )
+                } catch (error: AutomaticRoutingBridgeStartupException) {
+                    DiagnosticLogger.warn(
+                        this,
+                        "mihomo.automatic.bridge.startupFallback",
+                        "retry=originalRuntime",
+                        error,
+                    )
+                    automaticBridgeAvailable = false
+                    stopActiveCoreForReplacement()
+                    startMihomoRuntimeAttemptOnce(
+                        plan(dpiEnabled, dpiPort, allowAutomaticBridge = false),
+                    )
+                }
             }
+
             return try {
-                startMihomoRuntimeAttemptOnce(
-                    plan(dpiEnabled, dpiPort, allowAutomaticBridge = true),
-                )
-            } catch (error: AutomaticRoutingBridgeStartupException) {
+                startWithAutomaticBridgeFallback(dpiBypassEnabled)
+            } catch (error: DpiBypassStartupException) {
                 DiagnosticLogger.warn(
                     this,
-                    "mihomo.automatic.bridge.startupFallback",
-                    "retry=originalRuntime",
+                    "dpiBypass.fallback.direct",
+                    "fronting=${topEndpoint != null}",
                     error,
                 )
-                automaticBridgeAvailable = false
                 stopActiveCoreForReplacement()
-                startMihomoRuntimeAttemptOnce(
-                    plan(dpiEnabled, dpiPort, allowAutomaticBridge = false),
-                )
+                startWithAutomaticBridgeFallback(false)
             }
         }
 
-        return try {
-            startWithAutomaticBridgeFallback(dpiBypassEnabled)
-        } catch (error: DpiBypassStartupException) {
-            DiagnosticLogger.warn(
-                this,
-                "dpiBypass.fallback.direct",
-                "fronting=${topEndpoint != null}",
-                error,
-            )
-            stopActiveCoreForReplacement()
-            startWithAutomaticBridgeFallback(false)
+        val variants = MihomoConnectionOptionsPolicy.startupVariants(preferences.connectionOptions)
+        var failure: Throwable? = null
+        variants.forEachIndexed { index, (name, options) ->
+            try {
+                return startWithOptions(preferences.copy(connectionOptions = options)).also {
+                    DiagnosticLogger.info(
+                        this,
+                        "fragments.startup.connected",
+                        "mode=$name attempt=${index + 1}/${variants.size}",
+                    )
+                }
+            } catch (error: Throwable) {
+                if (isNonRetryableStartupFailure(error)) throw error
+                failure = preferredStartupFailure(failure, error)
+                if (index == variants.lastIndex) throw failure ?: error
+                DiagnosticLogger.warn(
+                    this,
+                    "fragments.startup.fallback",
+                    "mode=$name next=${variants[index + 1].first}",
+                    error,
+                )
+                stopActiveCoreForReplacement()
+            }
         }
+        throw failure ?: IOException("No fragment startup variant succeeded")
     }
 
     private suspend fun startMihomoRuntimeAttemptOnce(plan: SessionPlan): StartedMihomoRuntime {

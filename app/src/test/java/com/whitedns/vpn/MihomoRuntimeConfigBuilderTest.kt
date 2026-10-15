@@ -1215,6 +1215,84 @@ class MihomoRuntimeConfigBuilderTest {
     }
 
     @Test
+    fun connectionOptionsValidateAndApplyFinalmaskFragments() {
+        val yaml = """
+            proxies:
+              - client-fingerprint: unsafe
+                name: Reality
+                type: vless
+                server: reality.example.com
+                port: 443
+                alpn: [h2]
+                reality-opts:
+                  public-key: test-key
+              - { name: TLS, type: vless, server: tls.example.com, port: 443 }
+        """.trimIndent()
+        val defaults = MihomoConnectionOptionsPolicy.validateFragments(
+            MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENTS.copy(enabled = true, safe = false),
+        )
+
+        val patched = MihomoConnectionOptionsPatcher.patch(
+            yaml,
+            MihomoConnectionOptions(fragments = defaults),
+        )
+
+        assertEquals(2, Regex("fragments:").findAll(patched).count())
+        assertTrue(patched.contains("packets: 'tlshello'"))
+        assertTrue(patched.contains("lengths: ['0', '104', '1']"))
+        assertTrue(patched.contains("maxSplit: '11'"))
+        assertEquals(1, Regex("client-fingerprint: 'unsafe'").findAll(patched).count())
+        assertEquals(1, Regex("client-fingerprint: 'chrome'").findAll(patched).count())
+        assertEquals(2, Regex("client-fingerprint:").findAll(patched).count())
+        assertEquals(2, Regex.escape("alpn: ['http/1.1']").toRegex().findAll(patched).count())
+        assertEquals(2, Regex("alpn:").findAll(patched).count())
+        assertEquals(2, Regex("cipher-suites:").findAll(patched).count())
+
+        val safe = MihomoConnectionOptionsPatcher.patch(
+            yaml,
+            MihomoConnectionOptions(fragments = defaults.copy(safe = true)),
+        )
+        assertTrue(safe.contains("client-fingerprint: 'chrome'"))
+        assertFalse(safe.contains("client-fingerprint: 'unsafe'"))
+        assertThrows(IllegalArgumentException::class.java) {
+            MihomoConnectionOptionsPolicy.parseFragmentJson(
+                """{"tcp":[{"type":"fragment","settings":{"packets":"0-1","lengths":["1"]}}]}""",
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            MihomoConnectionOptionsPolicy.validateFragments(
+                defaults.copy(cipherSuites = "TLS_FAKE_CIPHER"),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            MihomoConnectionOptionsPolicy.parseFragmentJson(
+                """{"tcp":[{"type":"fragment","settings":{"lengths":["1"],"delays":["1001-1"]}}]}""",
+            )
+        }
+    }
+
+    @Test
+    fun fragmentStartupVariantsFallBackToNormalWithoutChangingOtherOptions() {
+        val options = MihomoConnectionOptions(
+            amneziaNoiseEnabled = true,
+            fragments = MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENTS.copy(enabled = true, safe = false),
+        )
+
+        val variants = MihomoConnectionOptionsPolicy.startupVariants(options)
+
+        assertEquals(listOf("full", "fragments-only", "normal"), variants.map { it.first })
+        assertTrue(variants[1].second.fragments.enabled)
+        assertTrue(variants[1].second.fragments.safe)
+        assertEquals("", variants[1].second.fragments.alpn)
+        assertFalse(variants[2].second.fragments.enabled)
+        assertTrue(variants.all { it.second.amneziaNoiseEnabled })
+        assertEquals(
+            listOf("normal"),
+            MihomoConnectionOptionsPolicy.startupVariants(MihomoConnectionOptions()).map { it.first },
+        )
+    }
+
+    @Test
     fun dpiBypassPatcherAddsLocalProxyAndDialerProxyOnlyWhenEnabled() {
         val yaml = """
             proxies:

@@ -2,13 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_FLCLASH_DIR="${FLCLASH_DIR:-${ROOT_DIR}/FlClash}"
-FLCLASH_REPOSITORY="https://github.com/chen08209/FlClash.git"
-MIHOMO_REPOSITORY="https://github.com/MetaCubeX/mihomo.git"
-FLCLASH_COMMIT="ac2f6b919ec1ad395b61b4bb1e714a39c750babe"
-FLCLASH_PATCH="${ROOT_DIR}/scripts/patches/flclash-v1.19.30.patch"
-MIHOMO_PATCH="${ROOT_DIR}/scripts/patches/mihomo-v1.19.30-flclash.patch"
-MIHOMO_COMMIT="ac017cdd246ce8bd547653d927e7bf77d7ee73d5"
+FLCLASH_REPOSITORY="https://github.com/WhiteDNS/FlClash.git"
+MIHOMO_REPOSITORY="https://github.com/WhiteDNS/mihomo.git"
+FLCLASH_BRANCH="whitedns"
+MIHOMO_BRANCH="whitedns"
+FLCLASH_COMMIT="096a5b1392517ae0cfe4a9db6d7b5e40d5362323"
+MIHOMO_COMMIT="455dcd2a6a66e9c41156c607c2a86b5733541361"
 MIHOMO_VERSION="v1.19.30"
 OUT_JNI_DIR="${ROOT_DIR}/app/src/main/jniLibs"
 OUT_INCLUDE_DIR="${ROOT_DIR}/app/src/main/cpp/includes"
@@ -16,9 +15,8 @@ VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
 # Pin the compiler as well as source: dependency-only and security-patch changes
 # must never reuse an old libclash.so.
 export GOTOOLCHAIN=go1.26.8
-PATCH_DIGEST="$(cat "${FLCLASH_PATCH}" "${MIHOMO_PATCH}" | shasum -a 256 | cut -d ' ' -f 1)"
 API_LEVEL="${ANDROID_API_LEVEL:-26}"
-CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}-${GOTOOLCHAIN}-${PATCH_DIGEST}"
+CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}-${GOTOOLCHAIN}"
 ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
 
 outputs_exist() {
@@ -37,68 +35,38 @@ if [[ "${FORCE_FLCLASH_CORE_BUILD:-0}" != "1" ]] && outputs_exist; then
   exit 0
 fi
 
-if [[ ! -d "${SOURCE_FLCLASH_DIR}/.git" ]]; then
-  if [[ -e "${SOURCE_FLCLASH_DIR}" && -n "$(find "${SOURCE_FLCLASH_DIR}" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
-    echo "FlClash path exists but is not a git checkout: ${SOURCE_FLCLASH_DIR}" >&2
-    exit 1
-  fi
-  mkdir -p "${SOURCE_FLCLASH_DIR}"
-  git -C "${SOURCE_FLCLASH_DIR}" init
-  git -C "${SOURCE_FLCLASH_DIR}" remote add origin "${FLCLASH_REPOSITORY}"
-  git -C "${SOURCE_FLCLASH_DIR}" fetch --depth 1 origin "${FLCLASH_COMMIT}"
-  git -C "${SOURCE_FLCLASH_DIR}" checkout --detach "${FLCLASH_COMMIT}"
-fi
-
-if [[ "$(git -C "${SOURCE_FLCLASH_DIR}" rev-parse HEAD)" != "${FLCLASH_COMMIT}" ]]; then
-  echo "FlClash checkout must be pinned to ${FLCLASH_COMMIT}: ${SOURCE_FLCLASH_DIR}" >&2
-  exit 1
-fi
-
-if [[ -n "$(git -C "${SOURCE_FLCLASH_DIR}" status --porcelain --ignore-submodules=none)" ]]; then
-  echo "FlClash checkout must be clean; the build uses its exact pinned source: ${SOURCE_FLCLASH_DIR}" >&2
-  exit 1
-fi
-
 BUILD_TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${BUILD_TMP_DIR}"' EXIT
 FLCLASH_DIR="${BUILD_TMP_DIR}/FlClash"
 CORE_DIR="${FLCLASH_DIR}/core"
 SUBMODULE_DIR="${CORE_DIR}/Clash.Meta"
-SOURCE_SUBMODULE_DIR="${SOURCE_FLCLASH_DIR}/core/Clash.Meta"
 
-git clone --no-hardlinks --no-checkout "${SOURCE_FLCLASH_DIR}" "${FLCLASH_DIR}"
-git -C "${FLCLASH_DIR}" checkout --detach "${FLCLASH_COMMIT}"
+git clone --depth 1 --single-branch --branch "${FLCLASH_BRANCH}" "${FLCLASH_REPOSITORY}" "${FLCLASH_DIR}"
 
-if ! git -C "${FLCLASH_DIR}" apply --check "${FLCLASH_PATCH}"; then
-  echo "Unable to apply the pinned FlClash v1.19.30 compatibility patch." >&2
+if [[ "$(git -C "${FLCLASH_DIR}" rev-parse HEAD)" != "${FLCLASH_COMMIT}" ]]; then
+  echo "FlClash ${FLCLASH_BRANCH} must be pinned to ${FLCLASH_COMMIT}" >&2
   exit 1
 fi
-git -C "${FLCLASH_DIR}" apply "${FLCLASH_PATCH}"
 
-rm -rf "${SUBMODULE_DIR}"
-if git -C "${SOURCE_SUBMODULE_DIR}" rev-parse --git-dir >/dev/null 2>&1 &&
-  git -C "${SOURCE_SUBMODULE_DIR}" cat-file -e "${MIHOMO_COMMIT}^{commit}" 2>/dev/null; then
-  git clone --no-hardlinks --no-checkout "${SOURCE_SUBMODULE_DIR}" "${SUBMODULE_DIR}"
-  git -C "${SUBMODULE_DIR}" checkout --detach "${MIHOMO_COMMIT}"
-else
-  echo "Fetching pinned Mihomo ${MIHOMO_VERSION} source..."
-  mkdir -p "${SUBMODULE_DIR}"
-  git -C "${SUBMODULE_DIR}" init
-  git -C "${SUBMODULE_DIR}" remote add origin "${MIHOMO_REPOSITORY}"
-  git -C "${SUBMODULE_DIR}" fetch --depth 1 origin "${MIHOMO_COMMIT}"
-  git -C "${SUBMODULE_DIR}" checkout --detach "${MIHOMO_COMMIT}"
+git -C "${FLCLASH_DIR}" submodule sync -- core/Clash.Meta
+git -C "${FLCLASH_DIR}" submodule update --init --depth 1 core/Clash.Meta
+
+if [[ "$(git -C "${SUBMODULE_DIR}" remote get-url origin)" != "${MIHOMO_REPOSITORY}" ]]; then
+  echo "FlClash must source Mihomo from ${MIHOMO_REPOSITORY}" >&2
+  exit 1
 fi
+
+git -C "${SUBMODULE_DIR}" fetch --depth 1 origin "refs/heads/${MIHOMO_BRANCH}"
+if [[ "$(git -C "${SUBMODULE_DIR}" rev-parse FETCH_HEAD)" != "${MIHOMO_COMMIT}" ]]; then
+  echo "Mihomo ${MIHOMO_BRANCH} must be pinned to ${MIHOMO_COMMIT}" >&2
+  exit 1
+fi
+git -C "${SUBMODULE_DIR}" checkout --detach "${MIHOMO_COMMIT}"
 
 if [[ "$(git -C "${SUBMODULE_DIR}" rev-parse HEAD)" != "${MIHOMO_COMMIT}" ]]; then
   echo "FlClash Mihomo checkout must be pinned to ${MIHOMO_COMMIT}: ${SUBMODULE_DIR}" >&2
   exit 1
 fi
-
-if ! git -C "${SUBMODULE_DIR}" apply --check "${MIHOMO_PATCH}"; then
-  echo "Unable to apply the pinned Mihomo AWG3 and FlClash compatibility patch." >&2
-  exit 1
-fi
-git -C "${SUBMODULE_DIR}" apply "${MIHOMO_PATCH}"
 
 validate_amnezia_v3_support() {
   local wireguard_source="${SUBMODULE_DIR}/adapter/outbound/wireguard.go"
@@ -134,6 +102,29 @@ validate_amnezia_v3_support() {
 }
 
 validate_amnezia_v3_support
+
+validate_fragment_support() {
+  local source
+  local marker
+  local checks=(
+    'adapter/outbound/base.go|Fragments   []FragmentOption'
+    'adapter/outbound/base.go|newFragmentDialerChain'
+    'adapter/outbound/fragment.go|func (c *fragmentConn) writeTLSHello'
+    'adapter/outbound/vless.go|CipherSuites      TLSCipherSuites'
+    'adapter/parser.go|invalid fragment config'
+    'component/tls/utls.go|clientFingerprint == "unsafe"'
+  )
+  for source in "${checks[@]}"; do
+    marker="${source#*|}"
+    source="${source%%|*}"
+    if ! grep -Fq "${marker}" "${SUBMODULE_DIR}/${source}"; then
+      echo "Pinned Mihomo core lacks fragment support marker: ${marker}" >&2
+      exit 1
+    fi
+  done
+}
+
+validate_fragment_support
 
 if ! command -v go >/dev/null 2>&1; then
   echo "Go is required to build the FlClash Mihomo core." >&2
@@ -246,12 +237,17 @@ build_abi() {
   install -m 0644 "${tmp_out}/libclash.so" "${jni_out}/libclash.so"
   install -m 0644 "${tmp_out}/libclash.h" "${include_out}/libclash.h"
   install -m 0644 "${CORE_DIR}/bride.h" "${include_out}/bride.h"
+  echo "Finished FlClash Mihomo core for ${abi}."
 }
 
 # Exercise the policy and socket-cleanup regressions on the build host.
 (
   cd "${CORE_DIR}"
-  go test github.com/metacubex/mihomo/config github.com/metacubex/mihomo/listener -run WhiteVPN
+  go test \
+    github.com/metacubex/mihomo/config \
+    github.com/metacubex/mihomo/listener \
+    github.com/metacubex/mihomo/adapter/outbound \
+    -run 'WhiteVPN|Fragment'
 )
 
 for abi in "${ABIS[@]}"; do

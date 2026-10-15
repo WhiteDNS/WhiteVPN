@@ -57,12 +57,12 @@ Requirements: JDK 17, Go, Android SDK and Android NDK.
 ./gradlew testDebugUnitTest assembleDebug
 ```
 
-The build script checks out the pinned [FlClash](https://github.com/chen08209/FlClash) integration, builds Mihomo v1.19.30 for all supported Android ABIs, and generates the JNI files consumed by the app.
+The build script checks out the pinned [`WhiteDNS/FlClash`](https://github.com/WhiteDNS/FlClash/tree/whitedns) integration and its pinned [`WhiteDNS/mihomo`](https://github.com/WhiteDNS/mihomo/tree/whitedns) core, builds Mihomo v1.19.30 for all supported Android ABIs, and generates the JNI files consumed by the app.
 
 ## Third-party software
 
-- [Mihomo](https://github.com/MetaCubeX/mihomo) — proxy core
-- [FlClash](https://github.com/chen08209/FlClash) — Android core/JNI integration
+- [WhiteDNS/mihomo](https://github.com/WhiteDNS/mihomo/tree/whitedns) — maintained proxy-core fork
+- [WhiteDNS/FlClash](https://github.com/WhiteDNS/FlClash/tree/whitedns) — maintained Android core/JNI integration fork
 - [SubConv](https://github.com/SubConv/SubConv) — adapted share-link conversion logic
 - [ByeDPI](https://github.com/hufrea/byedpi) — optional DPI-bypass compatibility
 - AndroidX, Material Components, Kotlin Coroutines and Firebase Analytics

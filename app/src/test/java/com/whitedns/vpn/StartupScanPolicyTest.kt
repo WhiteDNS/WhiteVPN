@@ -195,6 +195,7 @@ class StartupScanPolicyTest {
     @Test
     fun startupFallbackRethrowsExcludedFailures() = runBlocking {
         val failures = listOf(
+            AssertionError("fatal"),
             CancellationException("canceled"),
             MihomoCoreBusyException(),
             MihomoCoreSetupTimeoutException(),

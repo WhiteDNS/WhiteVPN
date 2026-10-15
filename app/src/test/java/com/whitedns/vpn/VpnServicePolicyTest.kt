@@ -391,6 +391,7 @@ class VpnServicePolicyTest {
             ),
         )
         listOf(
+            AssertionError("fatal"),
             CancellationException("canceled"),
             MihomoCoreBusyException(),
             MihomoCoreSetupTimeoutException(),

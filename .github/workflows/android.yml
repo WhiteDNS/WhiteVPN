@@ -49,9 +49,9 @@ jobs:
           path: |
             app/src/main/jniLibs
             app/src/main/cpp/includes
-          # Exact inputs only: source/compiler pins and patches live in the script;
-          # the workflow pins the NDK. Never restore a different native build.
-          key: ${{ runner.os }}-${{ runner.arch }}-flclash-${{ hashFiles('scripts/build-flclash-core.sh', 'scripts/patches/*.patch', '.github/workflows/android.yml') }}
+          # Exact fork branches, source/compiler pins, and validation live in the
+          # build script; the workflow pins the NDK.
+          key: ${{ runner.os }}-${{ runner.arch }}-flclash-${{ hashFiles('scripts/build-flclash-core.sh', '.github/workflows/android.yml') }}
 
       - name: Configure Firebase
         env:
