@@ -166,6 +166,7 @@ class MainActivity : Activity() {
     private var connectionChainCompatibilityMessage: String? = null
     private var pendingConnectionChainAccessibilityAnnouncement: String? = null
     private var openConnectionChainSettingsPage: (() -> Unit)? = null
+    private var openFragmentSettingsPage: (() -> Unit)? = null
     private var advancedSettingsBackAction: (() -> Unit)? = null
     private var sessionStartedAtElapsedMs: Long = 0L
     private var connectFlowPending: Boolean = false
@@ -197,6 +198,7 @@ class MainActivity : Activity() {
     private lateinit var homeChainAfterSelectorRow: DashboardDataRowView
     private lateinit var homeChainSelectorRows: LinearLayout
     private lateinit var homeSubscriptionSelectorRow: DashboardDataRowView
+    private lateinit var homeFragmentSelectorRow: DashboardDataRowView
     private lateinit var settingsSubscriptionSelectorRow: DashboardDataRowView
     private var updateSplitTunnelControlsEnabled: ((Boolean) -> Unit)? = null
     private lateinit var connectionModeGroup: MaterialButtonToggleGroup
@@ -1856,6 +1858,11 @@ class MainActivity : Activity() {
             )
             setOnRowClickListener { showSubscriptionSelectorMenu(this) }
         }
+        homeFragmentSelectorRow = DashboardDataRowView(this).apply {
+            setRow(getString(R.string.fragments_section), "")
+            setOnRowClickListener { openFragmentSettingsFromHome() }
+        }
+        renderHomeFragmentRow()
         dashboardConnectionMetadataSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -1909,6 +1916,14 @@ class MainActivity : Activity() {
                     marginEnd = dp(18)
                 })
             addView(homeSubscriptionSelectorRow, LinearLayout.LayoutParams(-1, -2))
+            addView(
+                View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+                LinearLayout.LayoutParams(-1, dp(1)).apply {
+                    marginStart = dp(18)
+                    marginEnd = dp(18)
+                },
+            )
+            addView(homeFragmentSelectorRow, LinearLayout.LayoutParams(-1, -2))
             addView(dashboardConnectionMetadataSection, LinearLayout.LayoutParams(-1, -2))
         }
         val dataRows = dataRowsList
@@ -2171,8 +2186,9 @@ class MainActivity : Activity() {
             tlsIntegrityPanel,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
+        val fragmentSectionLabel = advancedSectionLabel(getString(R.string.fragments_section))
         connectionSettings.addView(
-            advancedSectionLabel(getString(R.string.fragments_section)),
+            fragmentSectionLabel,
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) },
         )
         val fragmentPanel = advancedSettingsPanel()
@@ -3271,6 +3287,15 @@ class MainActivity : Activity() {
             R.string.settings_category_connections_detail,
             connectionSettings,
         )
+        openFragmentSettingsPage = {
+            showCategory(R.string.settings_category_connections, connectionSettings)
+            scrollView.post {
+                scrollView.scrollTo(
+                    0,
+                    (connectionSettings.top + fragmentSectionLabel.top - dp(12)).coerceAtLeast(0),
+                )
+            }
+        }
         openConnectionChainSettingsPage = {
             showCategory(R.string.connection_chain_title, chainSettings)
         }
@@ -3842,6 +3867,11 @@ class MainActivity : Activity() {
     private fun openConnectionChainSettingsFromHome() {
         appTabs.getTabAt(0)?.select()
         openConnectionChainSettingsPage?.invoke()
+    }
+
+    private fun openFragmentSettingsFromHome() {
+        appTabs.getTabAt(0)?.select()
+        openFragmentSettingsPage?.invoke()
     }
 
     private fun cachedConnectionChainPickerOptions(
@@ -5744,6 +5774,24 @@ class MainActivity : Activity() {
         connectionSelectorRow.setValue(value)
         connectionSelectorRow.contentDescription = getString(R.string.connection_content_description, value)
         renderHomeConnectionRows()
+        renderHomeFragmentRow()
+    }
+
+    private fun renderHomeFragmentRow() {
+        if (!::homeFragmentSelectorRow.isInitialized) return
+        val value = getString(
+            if (connectionOptionsPreferenceStore.read().fragments.enabled) {
+                R.string.fragments_home_on
+            } else {
+                R.string.fragments_home_off
+            },
+        )
+        homeFragmentSelectorRow.setValue(value)
+        homeFragmentSelectorRow.contentDescription = getString(
+            R.string.settings_value_content_description,
+            getString(R.string.fragments_section),
+            value,
+        )
     }
 
     private fun renderHomeConnectionRows() {

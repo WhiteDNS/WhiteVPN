@@ -237,6 +237,8 @@
     <string name="fragments_section">Fragment</string>
     <string name="fragments_title">تکه‌تکه کردن اتصال</string>
     <string name="fragments_enable">فعال‌سازی Fragment</string>
+    <string name="fragments_home_on">روشن</string>
+    <string name="fragments_home_off">خاموش</string>
     <string name="fragments_description">داده‌های ابتدایی اتصال امن را به تکه‌های کوچک‌تر تقسیم می‌کند. WhiteVPN اول همهٔ تنظیمات، بعد فقط Fragment و در پایان اتصال عادی را امتحان می‌کند.</string>
     <string name="fragments_suggestions">پیشنهادهای Fragment</string>
     <string name="fragments_suggestion_item">پیشنهاد %1$d</string>

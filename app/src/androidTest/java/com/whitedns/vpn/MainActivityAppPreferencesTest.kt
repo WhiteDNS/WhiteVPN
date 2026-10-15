@@ -16,6 +16,7 @@ import androidx.test.espresso.matcher.ViewMatchers.withText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.hamcrest.Matchers.allOf
+import org.hamcrest.Matchers.startsWith
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -161,6 +162,27 @@ class MainActivityAppPreferencesTest {
             assertEquals("tls://dot.example:853", store.readDotEndpoint())
             pressBack()
             onView(withText("Invalid encrypted DNS address.")).check(matches(isDisplayed()))
+        }
+    }
+
+    @Test
+    fun fragmentHomeOptionOpensExistingSettingsAndCanEnableFragments() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val store = MihomoConnectionOptionsPreferenceStore(context)
+        val original = store.read().fragments
+        store.saveFragments(original.copy(enabled = false))
+
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use {
+                onView(withContentDescription("Fragments: Off")).perform(scrollTo(), click())
+                onView(withContentDescription(startsWith("Connection fragments.")))
+                    .check(matches(isDisplayed()))
+                    .perform(click())
+                assertEquals(true, store.read().fragments.enabled)
+                onView(withHint("Fragment suggestions")).check(matches(isDisplayed()))
+            }
+        } finally {
+            store.saveFragments(original)
         }
     }
 

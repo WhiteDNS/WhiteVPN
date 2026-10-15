@@ -236,6 +236,8 @@
     <string name="fragments_section">Fragments</string>
     <string name="fragments_title">Connection fragments</string>
     <string name="fragments_enable">Enable connection fragments</string>
+    <string name="fragments_home_on">On</string>
+    <string name="fragments_home_off">Off</string>
     <string name="fragments_description">Splits the first secure connection data into smaller pieces. WhiteVPN tries the complete setup, fragments only, then the normal connection.</string>
     <string name="fragments_suggestions">Fragment suggestions</string>
     <string name="fragments_suggestion_item">Suggestion %1$d</string>
