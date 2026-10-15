@@ -128,30 +128,15 @@ object MihomoConnectionOptionsPolicy {
             "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:" +
             "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:" +
             "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
-    val DEFAULT_FRAGMENT_JSON = """
-        {
-          "tcp": [
-            {
-              "type": "fragment",
-              "settings": {
-                "packets": "tlshello",
-                "lengths": ["0", "104", "1"],
-                "delays": ["0"],
-                "maxSplit": "0"
-              }
-            },
-            {
-              "type": "fragment",
-              "settings": {
-                "packets": "1-1",
-                "lengths": ["114", "1"],
-                "delays": ["1"],
-                "maxSplit": "11"
-              }
-            }
-          ]
-        }
-    """.trimIndent()
+    val FRAGMENT_SUGGESTIONS = listOf(
+        fragmentSuggestion("13-23", "1-5", "7-17", "1-4"),
+        fragmentSuggestion("10-15", "1-2", "6-12", "1"),
+        fragmentSuggestion("10-20", "1-6", "6-14", "2-4"),
+        fragmentSuggestion("15-30", "1-2", "10-20", "1-2"),
+        fragmentSuggestion("8-14", "1-3", "5-10", "0-1"),
+        fragmentSuggestion("12-20", "1-3", "2-6", "2-4"),
+    )
+    val DEFAULT_FRAGMENT_JSON = FRAGMENT_SUGGESTIONS.first()
     val DEFAULT_FRAGMENTS = FragmentSettings()
     private val RANGE = Regex("""\d+(?:-\d+)?""")
     private val PACKETS = Regex("""\d+(?:-\d+)?""")
@@ -201,6 +186,11 @@ object MihomoConnectionOptionsPolicy {
             alpn = alpn.joinToString(","),
             cipherSuites = cipherSuites,
         )
+    }
+
+    fun fragmentSuggestionIndex(rawJson: String): Int? {
+        val stages = runCatching { parseFragmentJson(rawJson).stages }.getOrNull() ?: return null
+        return fragmentSuggestionStages.indexOf(stages).takeIf { it >= 0 }
     }
 
     fun parseFragmentJson(rawJson: String): ValidatedFragmentJson {
@@ -295,6 +285,40 @@ object MihomoConnectionOptionsPolicy {
         value.substringBefore('-').toLong(),
         value.substringAfter('-', value).toLong(),
     )
+
+    private val fragmentSuggestionStages by lazy {
+        FRAGMENT_SUGGESTIONS.map { parseFragmentJson(it).stages }
+    }
+
+    private fun fragmentSuggestion(
+        helloLengths: String,
+        packets: String,
+        lengths: String,
+        delays: String,
+    ): String = """
+        {
+          "tcp": [
+            {
+              "type": "fragment",
+              "settings": {
+                "packets": "tlshello",
+                "lengths": ["$helloLengths"],
+                "delays": ["0"],
+                "maxSplit": "0"
+              }
+            },
+            {
+              "type": "fragment",
+              "settings": {
+                "packets": "$packets",
+                "lengths": ["$lengths"],
+                "delays": ["$delays"],
+                "maxSplit": "0"
+              }
+            }
+          ]
+        }
+    """.trimIndent()
 
     fun validateNoise(settings: AmneziaNoiseSettings): AmneziaNoiseSettings {
         val normalized = settings.copy(
@@ -410,7 +434,8 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
                 MihomoConnectionOptionsPolicy.validateFragments(
                     FragmentSettings(
                         enabled = prefs.getBoolean(KEY_FRAGMENTS_ENABLED, false),
-                        safe = prefs.getBoolean(KEY_FRAGMENTS_SAFE, true),
+                        // The unsafe fingerprint mode is no longer user-selectable. Normalise old installs.
+                        safe = true,
                         rawJson = prefs.getString(
                             KEY_FRAGMENT_JSON,
                             MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENT_JSON,
@@ -433,7 +458,7 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
         val valid = MihomoConnectionOptionsPolicy.validateFragments(settings)
         prefs.edit()
             .putBoolean(KEY_FRAGMENTS_ENABLED, valid.enabled)
-            .putBoolean(KEY_FRAGMENTS_SAFE, valid.safe)
+            .putBoolean(KEY_FRAGMENTS_SAFE, true)
             .putString(KEY_FRAGMENT_JSON, valid.rawJson)
             .putString(KEY_FRAGMENT_ALPN, valid.alpn)
             .putString(KEY_FRAGMENT_CIPHER_SUITES, valid.cipherSuites)

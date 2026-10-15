@@ -238,9 +238,9 @@
     <string name="fragments_title">تکه‌تکه کردن اتصال</string>
     <string name="fragments_enable">فعال‌سازی Fragment</string>
     <string name="fragments_description">داده‌های ابتدایی اتصال امن را به تکه‌های کوچک‌تر تقسیم می‌کند. WhiteVPN اول همهٔ تنظیمات، بعد فقط Fragment و در پایان اتصال عادی را امتحان می‌کند.</string>
-    <string name="fragments_safe">Safe (پیشنهادی)</string>
-    <string name="fragments_unsafe">Unsafe</string>
-    <string name="fragments_safety_guide">حالت Safe اثرانگشت فعلی سرور را نگه می‌دارد و با REALITY سازگار است. حالت Unsafe از اثرانگشت سادهٔ TLS اندروید استفاده می‌کند و برای سرورهای معمولی TLS/Cloudflare است. این گزینه هرگز بررسی گواهی را خاموش نمی‌کند.</string>
+    <string name="fragments_suggestions">پیشنهادهای Fragment</string>
+    <string name="fragments_suggestion_item">پیشنهاد %1$d</string>
+    <string name="fragments_customised">شخصی‌سازی‌شده</string>
     <string name="fragments_json_title">Finalmask raw JSON</string>
     <string name="fragments_json_guide">در tcp، مرحله‌های Fragment به‌ترتیب اجرا می‌شوند. packets مشخص می‌کند tlshello یا کدام ارسال‌ها مثل 1-1 تکه‌تکه شوند. lengths اندازهٔ تکه‌ها، delays مکث برحسب میلی‌ثانیه و maxSplit سقف تقسیم‌های اضافه را تعیین می‌کند. پیش از اتصال، «بررسی و مرتب‌سازی» را بزنید.</string>
     <string name="fragments_alpn_title">ALPN</string>

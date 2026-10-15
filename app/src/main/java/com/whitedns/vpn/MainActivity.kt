@@ -41,6 +41,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.PathInterpolator
 import android.view.inputmethod.EditorInfo
+import android.widget.ArrayAdapter
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
 import android.widget.CheckBox
@@ -70,6 +71,7 @@ import com.google.android.material.chip.ChipGroup
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.tabs.TabLayout
+import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import com.google.zxing.integration.android.IntentIntegrator
@@ -207,16 +209,14 @@ class MainActivity : Activity() {
     private lateinit var alwaysOnStatusText: TextView
     private lateinit var fragmentEnabledCheckbox: MaterialSwitch
     private lateinit var fragmentSettingsFields: LinearLayout
-    private lateinit var fragmentSafetyGroup: MaterialButtonToggleGroup
-    private lateinit var fragmentSafeButton: MaterialButton
-    private lateinit var fragmentUnsafeButton: MaterialButton
+    private lateinit var fragmentSuggestionInput: MaterialAutoCompleteTextView
+    private lateinit var fragmentCustomisedText: TextView
     private lateinit var fragmentJsonInput: EditText
     private lateinit var fragmentAlpnInput: EditText
     private lateinit var fragmentCipherSuitesInput: EditText
     private lateinit var fragmentApplyButton: MaterialButton
     private lateinit var fragmentResetButton: MaterialButton
     private lateinit var fragmentErrorText: TextView
-    private var renderingFragmentControls = false
     private lateinit var amneziaNoiseCheckbox: MaterialSwitch
     private lateinit var amneziaNoiseFields: LinearLayout
     private lateinit var amneziaNoiseCountInput: EditText
@@ -2224,36 +2224,35 @@ class MainActivity : Activity() {
             }
         }
 
-        fragmentSafeButton = MaterialButton(
-            ContextThemeWrapper(this, com.google.android.material.R.style.Widget_Material3_Button_OutlinedButton),
-        ).apply {
-            id = View.generateViewId()
-            text = getString(R.string.fragments_safe)
-            isCheckable = true
+        val suggestionLabels = MihomoConnectionOptionsPolicy.FRAGMENT_SUGGESTIONS.indices.map { index ->
+            getString(R.string.fragments_suggestion_item, index + 1)
         }
-        fragmentUnsafeButton = MaterialButton(
-            ContextThemeWrapper(this, com.google.android.material.R.style.Widget_Material3_Button_OutlinedButton),
-        ).apply {
-            id = View.generateViewId()
-            text = getString(R.string.fragments_unsafe)
-            isCheckable = true
-        }
-        fragmentSafetyGroup = MaterialButtonToggleGroup(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            isSingleSelection = true
-            isSelectionRequired = true
-            addView(fragmentSafeButton, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(fragmentUnsafeButton, LinearLayout.LayoutParams(0, -2, 1f))
-            addOnButtonCheckedListener { _, checkedId, isChecked ->
-                if (isChecked && !renderingFragmentControls) {
-                    saveFragmentSafety(checkedId == fragmentSafeButton.id)
-                }
-            }
-        }
-        val safetyGuide = TextView(this).apply {
-            text = getString(R.string.fragments_safety_guide)
+        fragmentCustomisedText = TextView(this).apply {
+            text = getString(R.string.fragments_customised)
             textSize = 12f
             setTextColor(TEXT_SECONDARY)
+            visibility = View.GONE
+        }
+        fragmentSuggestionInput = MaterialAutoCompleteTextView(this).apply {
+            inputType = InputType.TYPE_NULL
+            setSingleLine(true)
+            setTextColor(TEXT_PRIMARY)
+            setAdapter(
+                ArrayAdapter(
+                    this@MainActivity,
+                    android.R.layout.simple_dropdown_item_1line,
+                    suggestionLabels,
+                ),
+            )
+            setOnItemClickListener { _, _, position, _ -> selectFragmentSuggestion(position) }
+        }
+        val suggestionLayout = TextInputLayout(this).apply {
+            hint = getString(R.string.fragments_suggestions)
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            boxBackgroundColor = withAlpha(SURFACE, if (palette.isDark) 232 else 246)
+            boxStrokeColor = TEAL
+            endIconMode = TextInputLayout.END_ICON_DROPDOWN_MENU
+            addView(fragmentSuggestionInput)
         }
         val (jsonInput, jsonLayout) = fragmentInput(
             getString(R.string.fragments_json_title),
@@ -2261,6 +2260,13 @@ class MainActivity : Activity() {
             minLines = 10,
         )
         fragmentJsonInput = jsonInput
+        fragmentJsonInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) {
+                updateFragmentSuggestionState(value?.toString().orEmpty())
+            }
+            override fun afterTextChanged(value: Editable?) = Unit
+        })
         val (alpnInput, alpnLayout) = fragmentInput(
             getString(R.string.fragments_alpn_title),
             getString(R.string.fragments_alpn_guide),
@@ -2296,9 +2302,9 @@ class MainActivity : Activity() {
         fragmentSettingsFields = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(4), dp(12), dp(12))
-            addView(fragmentSafetyGroup, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-            addView(safetyGuide, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
-            addView(jsonLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+            addView(fragmentCustomisedText, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+            addView(suggestionLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+            addView(jsonLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
             addView(alpnLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
             addView(cipherLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
             addView(fragmentButtons, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
@@ -6730,18 +6736,6 @@ class MainActivity : Activity() {
         if (previous != settings && (previous.enabled || settings.enabled)) reconnectForConnectionOptionChange()
     }
 
-    private fun saveFragmentSafety(safe: Boolean) {
-        val previous = connectionOptionsPreferenceStore.read().fragments
-        val settings = runCatching { readFragmentInputs(safe = safe) }.getOrElse { error ->
-            showFragmentError(error)
-            renderConnectionOptionsControls(settingsEnabled = true)
-            return
-        }
-        connectionOptionsPreferenceStore.saveFragments(settings)
-        renderConnectionOptionsControls(settingsEnabled = true)
-        if (previous != settings && (previous.enabled || settings.enabled)) reconnectForConnectionOptionChange()
-    }
-
     private fun applyFragmentSettings() {
         val previous = connectionOptionsPreferenceStore.read().fragments
         val settings = runCatching { readFragmentInputs() }.getOrElse { error ->
@@ -6760,24 +6754,34 @@ class MainActivity : Activity() {
         fragmentJsonInput.setText(defaults.rawJson)
         fragmentAlpnInput.setText(defaults.alpn)
         fragmentCipherSuitesInput.setText(defaults.cipherSuites)
-        renderingFragmentControls = true
-        fragmentSafetyGroup.check(fragmentSafeButton.id)
-        renderingFragmentControls = false
         applyFragmentSettings()
     }
 
     private fun readFragmentInputs(
         enabled: Boolean = fragmentEnabledCheckbox.isChecked,
-        safe: Boolean = fragmentSafetyGroup.checkedButtonId != fragmentUnsafeButton.id,
     ): FragmentSettings = MihomoConnectionOptionsPolicy.validateFragments(
         FragmentSettings(
             enabled = enabled,
-            safe = safe,
+            safe = true,
             rawJson = fragmentJsonInput.text.toString(),
             alpn = fragmentAlpnInput.text.toString(),
             cipherSuites = fragmentCipherSuitesInput.text.toString(),
         ),
     )
+
+    private fun selectFragmentSuggestion(index: Int) {
+        val suggestion = MihomoConnectionOptionsPolicy.FRAGMENT_SUGGESTIONS.getOrNull(index) ?: return
+        fragmentJsonInput.setText(MihomoConnectionOptionsPolicy.parseFragmentJson(suggestion).formattedJson)
+        fragmentErrorText.visibility = View.GONE
+    }
+
+    private fun updateFragmentSuggestionState(rawJson: String) {
+        val index = MihomoConnectionOptionsPolicy.fragmentSuggestionIndex(rawJson)
+        if (index != null) {
+            fragmentSuggestionInput.setText(getString(R.string.fragments_suggestion_item, index + 1), false)
+        }
+        fragmentCustomisedText.visibility = if (index == null) View.VISIBLE else View.GONE
+    }
 
     private fun showFragmentError(error: Throwable) {
         fragmentErrorText.text = getString(
@@ -6888,16 +6892,9 @@ class MainActivity : Activity() {
     private fun renderConnectionOptionsControls(settingsEnabled: Boolean) {
         if (!::amneziaNoiseCheckbox.isInitialized) return
         val options = connectionOptionsPreferenceStore.read()
-        renderingFragmentControls = true
         fragmentEnabledCheckbox.isChecked = options.fragments.enabled
-        fragmentSafetyGroup.check(
-            if (options.fragments.safe) fragmentSafeButton.id else fragmentUnsafeButton.id,
-        )
-        renderingFragmentControls = false
         fragmentEnabledCheckbox.isEnabled = settingsEnabled
-        fragmentSafetyGroup.isEnabled = settingsEnabled
-        fragmentSafeButton.isEnabled = settingsEnabled
-        fragmentUnsafeButton.isEnabled = settingsEnabled
+        fragmentSuggestionInput.isEnabled = settingsEnabled
         listOf(fragmentJsonInput, fragmentAlpnInput, fragmentCipherSuitesInput).forEach {
             it.isEnabled = settingsEnabled
         }

@@ -1239,8 +1239,9 @@ class MihomoRuntimeConfigBuilderTest {
 
         assertEquals(2, Regex("fragments:").findAll(patched).count())
         assertTrue(patched.contains("packets: 'tlshello'"))
-        assertTrue(patched.contains("lengths: ['0', '104', '1']"))
-        assertTrue(patched.contains("maxSplit: '11'"))
+        assertTrue(patched.contains("lengths: ['13-23']"))
+        assertTrue(patched.contains("packets: '1-5'"))
+        assertTrue(patched.contains("maxSplit: '0'"))
         assertEquals(1, Regex("client-fingerprint: 'unsafe'").findAll(patched).count())
         assertEquals(1, Regex("client-fingerprint: 'chrome'").findAll(patched).count())
         assertEquals(2, Regex("client-fingerprint:").findAll(patched).count())
@@ -1269,6 +1270,29 @@ class MihomoRuntimeConfigBuilderTest {
                 """{"tcp":[{"type":"fragment","settings":{"lengths":["1"],"delays":["1001-1"]}}]}""",
             )
         }
+    }
+
+    @Test
+    fun fragmentSuggestionsAreValidAndDetectCustomValues() {
+        assertEquals(6, MihomoConnectionOptionsPolicy.FRAGMENT_SUGGESTIONS.size)
+        MihomoConnectionOptionsPolicy.FRAGMENT_SUGGESTIONS.forEachIndexed { index, suggestion ->
+            assertEquals(index, MihomoConnectionOptionsPolicy.fragmentSuggestionIndex(suggestion))
+            assertEquals(2, MihomoConnectionOptionsPolicy.parseFragmentJson(suggestion).stages.size)
+        }
+        assertEquals(
+            0,
+            MihomoConnectionOptionsPolicy.fragmentSuggestionIndex(
+                MihomoConnectionOptionsPolicy.parseFragmentJson(
+                    MihomoConnectionOptionsPolicy.FRAGMENT_SUGGESTIONS.first(),
+                ).formattedJson,
+            ),
+        )
+        assertEquals(
+            null,
+            MihomoConnectionOptionsPolicy.fragmentSuggestionIndex(
+                MihomoConnectionOptionsPolicy.FRAGMENT_SUGGESTIONS.first().replace("13-23", "13-24"),
+            ),
+        )
     }
 
     @Test
