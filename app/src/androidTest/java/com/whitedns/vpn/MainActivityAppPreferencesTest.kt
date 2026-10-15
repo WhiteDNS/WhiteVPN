@@ -186,6 +186,42 @@ class MainActivityAppPreferencesTest {
         }
     }
 
+    @Test
+    fun fragmentSuggestionSelectionPersistsAcrossRecreation() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val store = MihomoConnectionOptionsPreferenceStore(context)
+        val original = store.read().fragments
+        store.saveFragments(
+            original.copy(
+                enabled = false,
+                rawJson = MihomoConnectionOptionsPolicy.FRAGMENT_SUGGESTIONS.first(),
+            ),
+        )
+
+        try {
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                scenario.onActivity { activity ->
+                    MainActivity::class.java.getDeclaredMethod(
+                        "selectFragmentSuggestion",
+                        Int::class.javaPrimitiveType,
+                    ).apply { isAccessible = true }.invoke(activity, 1)
+                }
+
+                assertEquals(
+                    1,
+                    MihomoConnectionOptionsPolicy.fragmentSuggestionIndex(store.read().fragments.rawJson),
+                )
+
+                scenario.recreate()
+                openConnections()
+                onView(withHint("Fragment suggestions")).perform(scrollTo())
+                    .check(matches(withText("Suggestion 2")))
+            }
+        } finally {
+            store.saveFragments(original)
+        }
+    }
+
     private fun openAppPreferences() {
         onView(allOf(withContentDescription("Settings"), isDisplayed())).perform(click())
         onView(allOf(withContentDescription("App preferences"), isDisplayed())).perform(click())
@@ -193,6 +229,6 @@ class MainActivityAppPreferencesTest {
 
     private fun openConnections() {
         onView(allOf(withContentDescription("Settings"), isDisplayed())).perform(click())
-        onView(allOf(withContentDescription("Connections"), isDisplayed())).perform(click())
+        onView(withContentDescription("Connections")).perform(scrollTo(), click())
     }
 }

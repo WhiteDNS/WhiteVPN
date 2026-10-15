@@ -6820,7 +6820,7 @@ class MainActivity : Activity() {
     private fun selectFragmentSuggestion(index: Int) {
         val suggestion = MihomoConnectionOptionsPolicy.FRAGMENT_SUGGESTIONS.getOrNull(index) ?: return
         fragmentJsonInput.setText(MihomoConnectionOptionsPolicy.parseFragmentJson(suggestion).formattedJson)
-        fragmentErrorText.visibility = View.GONE
+        applyFragmentSettings()
     }
 
     private fun updateFragmentSuggestionState(rawJson: String) {
