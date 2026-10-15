@@ -7,7 +7,7 @@ MIHOMO_REPOSITORY="https://github.com/WhiteDNS/mihomo.git"
 FLCLASH_BRANCH="whitedns"
 MIHOMO_BRANCH="whitedns"
 FLCLASH_COMMIT="8f08f6e2d732c58bcbb9d13771af4456c039fe46"
-MIHOMO_COMMIT="46a826bc6bfb958ccd48a75f2d029085031f35a2"
+MIHOMO_COMMIT="05fb40f89637aa27d81b638bff765a6d57797cdb"
 MIHOMO_VERSION="v1.19.30"
 OUT_JNI_DIR="${ROOT_DIR}/app/src/main/jniLibs"
 OUT_INCLUDE_DIR="${ROOT_DIR}/app/src/main/cpp/includes"
@@ -130,6 +130,14 @@ if ! command -v go >/dev/null 2>&1; then
   echo "Go is required to build the FlClash Mihomo core." >&2
   exit 1
 fi
+
+# FlClash's wrapper module must follow the dependency graph of the pinned
+# Mihomo replacement. The checkout is temporary, so keep it synchronized here.
+(
+  cd "${CORE_DIR}"
+  go mod tidy
+  go mod verify
+)
 
 read_local_property() {
   local key="$1"
