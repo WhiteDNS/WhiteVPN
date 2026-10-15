@@ -119,6 +119,7 @@ object MihomoConnectionOptionsPolicy {
     const val MAX_FAKE_TTL = 255
     const val MAX_FRAGMENT_STAGES = 8
     const val MAX_FRAGMENT_DELAY_MS = 1_000
+    const val MAX_FRAGMENT_SPLITS = 256
     val DEFAULT_NOISE = AmneziaNoiseSettings(count = 5, minSize = 50, maxSize = 100)
     const val DEFAULT_FRAGMENT_ALPN = "http/1.1"
     const val DEFAULT_FRAGMENT_CIPHER_SUITES =
@@ -237,7 +238,22 @@ object MihomoConnectionOptionsPolicy {
             val maxKeys = listOf("maxSplit", "max-split").filter(values::has)
             require(maxKeys.size <= 1) { "Use only one of maxSplit or max-split" }
             val maxKey = maxKeys.singleOrNull()
-            val maxSplit = maxKey?.let { fragmentRange(values.get(it), it) }
+            val maxSplit = maxKey?.let { key ->
+                val parsed = fragmentRange(values.get(key), key)
+                val minimum = rangeMinimum(parsed)
+                val maximum = rangeMaximum(parsed)
+                val normalized = if (minimum == 0L && maximum == 0L) {
+                    // v1.7.0 presets used Xray's legacy "unlimited" value. Mihomo uses 256 for that cap.
+                    MAX_FRAGMENT_SPLITS.toString()
+                } else {
+                    require(minimum >= 1 && maximum <= MAX_FRAGMENT_SPLITS) {
+                        "$key must be between 1 and $MAX_FRAGMENT_SPLITS"
+                    }
+                    parsed
+                }
+                values.put(key, normalized)
+                normalized
+            }
             FragmentStage(packets, lengthKey, lengths, delayKey, delays, maxKey, maxSplit)
         }
         return ValidatedFragmentJson(root.toString(2), stages)
@@ -304,7 +320,7 @@ object MihomoConnectionOptionsPolicy {
                 "packets": "tlshello",
                 "lengths": ["$helloLengths"],
                 "delays": ["0"],
-                "maxSplit": "0"
+                "maxSplit": "$MAX_FRAGMENT_SPLITS"
               }
             },
             {
@@ -313,7 +329,7 @@ object MihomoConnectionOptionsPolicy {
                 "packets": "$packets",
                 "lengths": ["$lengths"],
                 "delays": ["$delays"],
-                "maxSplit": "0"
+                "maxSplit": "$MAX_FRAGMENT_SPLITS"
               }
             }
           ]

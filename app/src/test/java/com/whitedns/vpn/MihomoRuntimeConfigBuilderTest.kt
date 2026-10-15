@@ -1241,7 +1241,7 @@ class MihomoRuntimeConfigBuilderTest {
         assertTrue(patched.contains("packets: 'tlshello'"))
         assertTrue(patched.contains("lengths: ['13-23']"))
         assertTrue(patched.contains("packets: '1-5'"))
-        assertTrue(patched.contains("maxSplit: '0'"))
+        assertTrue(patched.contains("maxSplit: '256'"))
         assertEquals(1, Regex("client-fingerprint: 'unsafe'").findAll(patched).count())
         assertEquals(1, Regex("client-fingerprint: 'chrome'").findAll(patched).count())
         assertEquals(2, Regex("client-fingerprint:").findAll(patched).count())
@@ -1293,6 +1293,23 @@ class MihomoRuntimeConfigBuilderTest {
                 MihomoConnectionOptionsPolicy.FRAGMENT_SUGGESTIONS.first().replace("13-23", "13-24"),
             ),
         )
+    }
+
+    @Test
+    fun fragmentMaxSplitMatchesCoreLimitsAndMigratesLegacyZero() {
+        val legacy = MihomoConnectionOptionsPolicy.parseFragmentJson(
+            """{"tcp":[{"type":"fragment","settings":{"lengths":["1"],"maxSplit":"0"}}]}""",
+        )
+        assertEquals("256", legacy.stages.single().maxSplit)
+        assertTrue(legacy.formattedJson.contains("\"maxSplit\": \"256\""))
+
+        listOf("0-1", "257").forEach { invalid ->
+            assertThrows(IllegalArgumentException::class.java) {
+                MihomoConnectionOptionsPolicy.parseFragmentJson(
+                    """{"tcp":[{"type":"fragment","settings":{"lengths":["1"],"maxSplit":"$invalid"}}]}""",
+                )
+            }
+        }
     }
 
     @Test

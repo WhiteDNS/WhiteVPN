@@ -244,7 +244,7 @@
     <string name="fragments_suggestion_item">پیشنهاد %1$d</string>
     <string name="fragments_customised">شخصی‌سازی‌شده</string>
     <string name="fragments_json_title">Finalmask raw JSON</string>
-    <string name="fragments_json_guide">در tcp، مرحله‌های Fragment به‌ترتیب اجرا می‌شوند. packets مشخص می‌کند tlshello یا کدام ارسال‌ها مثل 1-1 تکه‌تکه شوند. lengths اندازهٔ تکه‌ها، delays مکث برحسب میلی‌ثانیه و maxSplit سقف تقسیم‌های اضافه را تعیین می‌کند. پیش از اتصال، «بررسی و مرتب‌سازی» را بزنید.</string>
+    <string name="fragments_json_guide">در tcp، مرحله‌های Fragment به‌ترتیب اجرا می‌شوند. packets مشخص می‌کند tlshello یا کدام ارسال‌ها مثل 1-1 تکه‌تکه شوند. lengths اندازهٔ تکه‌ها، delays مکث برحسب میلی‌ثانیه و maxSplit باید بین ۱ تا ۲۵۶ باشد. پیش از اتصال، «بررسی و مرتب‌سازی» را بزنید.</string>
     <string name="fragments_alpn_title">ALPN</string>
     <string name="fragments_alpn_guide">چند مقدار را با ویرگول جدا کنید. http/1.1 ممکن است برای Cloudflare مفید باشد، اما با بعضی سرورهای REALITY کار نمی‌کند. برای حفظ مقدار سرور، این بخش را خالی بگذارید.</string>
     <string name="fragments_cipher_title">Cipher suites</string>

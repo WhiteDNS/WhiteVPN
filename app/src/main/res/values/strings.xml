@@ -243,7 +243,7 @@
     <string name="fragments_suggestion_item">Suggestion %1$d</string>
     <string name="fragments_customised">Customised</string>
     <string name="fragments_json_title">Finalmask raw JSON</string>
-    <string name="fragments_json_guide">tcp lists fragment stages in order. packets chooses tlshello or write numbers such as 1-1. lengths controls piece sizes; delays controls wait time in milliseconds; maxSplit limits extra splits. Tap Validate &amp; format before connecting.</string>
+    <string name="fragments_json_guide">tcp lists fragment stages in order. packets chooses tlshello or write numbers such as 1-1. lengths controls piece sizes; delays controls wait time in milliseconds; maxSplit must be 1–256. Tap Validate &amp; format before connecting.</string>
     <string name="fragments_alpn_title">ALPN</string>
     <string name="fragments_alpn_guide">Use comma-separated values. http/1.1 can help Cloudflare but may not work with some REALITY servers. Leave blank to keep the server value.</string>
     <string name="fragments_cipher_title">Cipher suites</string>
