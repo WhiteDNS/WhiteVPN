@@ -18,7 +18,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Tor, OpenSSL and the Go engines are built from source on a cache miss.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
 
@@ -42,6 +43,7 @@ jobs:
         run: |
           sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
           echo "ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
 
       - name: Cache FlClash core
         uses: actions/cache@v5
@@ -52,6 +54,31 @@ jobs:
           # Exact fork branches, source/compiler pins, and validation live in the
           # build script; the workflow pins the NDK.
           key: ${{ runner.os }}-${{ runner.arch }}-flclash-${{ hashFiles('scripts/build-flclash-core.sh', '.github/workflows/android.yml') }}
+
+      # Engines are loaded by reflection, so a build without them still compiles; build and verify them here.
+      - name: Cache connection engines
+        id: engines-cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            app/libs/enginecore.aar
+            app/src/main/jniLibs/*/libtor.so
+            app/src/main/jniLibs/*/libobfs4proxy.so
+            app/src/main/jniLibs/*/libsnowflake.so
+            app/src/main/jniLibs/*/libconjure.so
+            app/src/main/jniLibs/*/libamneziawg.so
+          key: ${{ runner.os }}-${{ runner.arch }}-engines-${{ hashFiles('native/**', 'scripts/build-enginecore.py', 'scripts/build-tor-engine.sh', 'scripts/build-tor-transports.py', 'scripts/fetch-tor-input.py', 'scripts/build-amneziawg.py') }}
+
+      - name: Build connection engines
+        if: steps.engines-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 scripts/build-enginecore.py
+          NDK="$ANDROID_NDK_HOME" bash scripts/build-tor-engine.sh
+          python3 scripts/build-tor-transports.py
+          python3 scripts/build-amneziawg.py
+
+      - name: Verify connection engines
+        run: python3 scripts/verify-engine-artifacts.py --require core tor amneziawg
 
       - name: Configure Firebase
         env:
@@ -67,6 +94,10 @@ jobs:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: ./gradlew testDebugUnitTest assembleDebug
+
+      - name: Verify engines in debug APK
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        run: python3 scripts/verify-engine-artifacts.py --apk app/build/outputs/apk/debug/app-universal-debug.apk --require core tor amneziawg
 
       - name: Configure release signing
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
@@ -103,6 +134,13 @@ jobs:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: ./scripts/release.sh
+
+      - name: Verify engines in release APK
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        run: |
+          apk="$(find release -maxdepth 1 -name '*-universal.apk' -print -quit)"
+          [[ -n "$apk" ]] || { echo "Universal release APK was not found" >&2; exit 1; }
+          python3 scripts/verify-engine-artifacts.py --apk "$apk" --require core tor amneziawg
 
       - name: Verify private subscription injection
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'

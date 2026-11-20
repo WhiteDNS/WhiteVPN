@@ -520,6 +520,42 @@ class ConnectionChainTest {
         }
     }
 
+    @Test
+    fun pickerIssuesExplainWhichNodesCannotFillASlot() {
+        val warp = source("warp", proxy("WARP", "wireguard", udp = true))
+        val public = source("pub", proxy("tcp", "vless") + proxy("udp", "vless", udp = true))
+        val sources = listOf(warp, public)
+
+        // Node 1 is a TCP-only VLESS: WARP cannot be node 2, the UDP-capable VLESS can.
+        val tcpFirst = ConnectionChainSettings(
+            enabled = true,
+            base = ConnectionChainHop.fixed("pub", public.ref("tcp").fingerprint),
+        )
+        val afterIssues = ConnectionChainPlanner.pickerIssues(tcpFirst, ConnectionChainSlot.After, sources)
+        assertEquals(ConnectionChainCompatibilityIssue.DownstreamRequiresUdpCapableUpstream, afterIssues[warp.ref("WARP")])
+        assertEquals(ConnectionChainCompatibilityIssue.SameConnection, afterIssues[public.ref("tcp")])
+        assertEquals(null, afterIssues[public.ref("udp")])
+
+        // WARP as node 1 accepts any public node 2.
+        val warpFirst = ConnectionChainSettings(
+            enabled = true,
+            base = ConnectionChainHop.fixed("warp", warp.ref("WARP").fingerprint),
+        )
+        val warpIssues = ConnectionChainPlanner.pickerIssues(warpFirst, ConnectionChainSlot.After, sources)
+        assertEquals(null, warpIssues[public.ref("tcp")])
+        assertEquals(null, warpIssues[public.ref("udp")])
+
+        // Picking node 1 against a fixed WARP node 2 rules out TCP-only nodes.
+        val warpSecond = fixedBaseAfterSettings(public.ref("udp"), warp.ref("WARP"))
+        val baseIssues = ConnectionChainPlanner.pickerIssues(warpSecond, ConnectionChainSlot.Base, sources)
+        assertEquals(ConnectionChainCompatibilityIssue.DownstreamRequiresUdpCapableUpstream, baseIssues[public.ref("tcp")])
+        assertEquals(null, baseIssues[public.ref("udp")])
+
+        // An automatic other node blocks nothing.
+        assertEquals(emptyMap<ConnectionChainProfileRef, ConnectionChainCompatibilityIssue>(),
+            ConnectionChainPlanner.pickerIssues(ConnectionChainSettings(enabled = true), ConnectionChainSlot.After, sources))
+    }
+
     private fun plans(
         settings: ConnectionChainSettings,
         vararg sources: ConnectionChainSource,

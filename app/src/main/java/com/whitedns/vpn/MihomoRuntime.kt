@@ -805,6 +805,7 @@ internal data class MihomoRuntimeDocument(
     val routingMode: RoutingMode,
     val dns: DnsRuntimeSettings,
     val selectedMap: Map<String, String>,
+    val rejectProxiedUdp: Boolean = false,
 )
 
 internal fun SessionPlan.toMihomoRuntimeDocument(): MihomoRuntimeDocument = MihomoRuntimeDocument(
@@ -840,7 +841,7 @@ internal class MihomoRuntimeConfigBuilder(private val context: Context) {
         secret = secret,
     )
 
-    private fun write(
+    internal fun write(
         document: MihomoRuntimeDocument,
         secret: String,
     ): MihomoRuntimePaths {
@@ -871,6 +872,7 @@ internal class MihomoRuntimeConfigBuilder(private val context: Context) {
                 dnsPrivacyMode = document.dns.mode,
                 dohUrl = document.dns.dohUrl,
                 dotEndpoint = document.dns.dotEndpoint,
+                rejectProxiedUdp = document.rejectProxiedUdp,
             ),
         )
         patchFinal.writeText(
@@ -1024,6 +1026,7 @@ internal class MihomoRuntimeConfigBuilder(private val context: Context) {
             dnsPrivacyMode: DnsPrivacyMode = DnsPrivacyMode.Automatic,
             dohUrl: String = DnsPrivacyPolicy.DEFAULT_DOH_URL,
             dotEndpoint: String = DnsPrivacyPolicy.DEFAULT_DOT_ENDPOINT,
+            rejectProxiedUdp: Boolean = false,
         ): String {
             val routingTarget = routingTarget(rawYaml)
             val requiredRoutingTarget = if (routingMode == RoutingMode.Subscription) {
@@ -1074,10 +1077,12 @@ internal class MihomoRuntimeConfigBuilder(private val context: Context) {
                         append("    size-limit: 10485760\n")
                         append("rules:\n")
                         append("  - 'RULE-SET,whitedns-iran,DIRECT'\n")
+                        if (rejectProxiedUdp) append("  - 'NETWORK,UDP,REJECT'\n")
                         append("  - ${yamlSingleQuoted("MATCH,$requiredRoutingTarget")}\n\n")
                     }
                     RoutingMode.GlobalProxy -> {
                         append("rules:\n")
+                        if (rejectProxiedUdp) append("  - 'NETWORK,UDP,REJECT'\n")
                         append("  - ${yamlSingleQuoted("MATCH,$requiredRoutingTarget")}\n\n")
                     }
                 }
@@ -2203,6 +2208,10 @@ class MihomoControllerClient(
     val endpoint: String
         get() = "core-actions"
 
+    internal fun proxyTraffic(): EngineTrafficRate = EngineTrafficRate.parse(
+        invokeAction("getTraffic", data = true).getString("data"),
+    )
+
     fun getProxies(timeoutMs: Int = CORE_ACTION_TIMEOUT_MS): JSONObject {
         return invokeAction("getProxies", timeoutMs = timeoutMs)
             .optJSONObject("data")
@@ -2249,7 +2258,7 @@ class MihomoControllerClient(
 
     private fun invokeAction(
         method: String,
-        data: String? = null,
+        data: Any? = null,
         timeoutMs: Int = CORE_ACTION_TIMEOUT_MS,
     ): JSONObject {
         val action = JSONObject()

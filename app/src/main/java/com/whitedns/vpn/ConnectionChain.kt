@@ -415,6 +415,34 @@ object ConnectionChainPlanner {
         }.toMap()
     }.getOrDefault(emptyMap())
 
+    /**
+     * Why each picker option cannot fill [slot] next to the other node's fixed choice.
+     * Options missing from the map are compatible; an Automatic or empty other node blocks nothing.
+     */
+    fun pickerIssues(
+        settings: ConnectionChainSettings,
+        slot: ConnectionChainSlot,
+        sources: List<ConnectionChainSource>,
+    ): Map<ConnectionChainProfileRef, ConnectionChainCompatibilityIssue> {
+        val otherSlot = if (slot == ConnectionChainSlot.Base) ConnectionChainSlot.After else ConnectionChainSlot.Base
+        val otherRef = settings.normalized().hop(otherSlot)
+            .takeIf { it.mode == ConnectionChainHopMode.Fixed }?.profileRef ?: return emptyMap()
+        val candidates = sources.flatMap { source ->
+            val blocks = runCatching {
+                MihomoProxyBlockParser.parse(source.snapshot.rawConfig).associateBy(MihomoProxyBlock::name)
+            }.getOrNull() ?: return@flatMap emptyList()
+            source.snapshot.catalog.profiles.mapNotNull { profile ->
+                val chain = resolveProxyChain(profile.tag, blocks) ?: return@mapNotNull null
+                ConnectionChainCandidate(source.subscriptionId, source.subscriptionName, profile, chain)
+            }
+        }
+        val other = candidates.firstOrNull { it.ref == otherRef } ?: return emptyMap()
+        return candidates.mapNotNull { candidate ->
+            val issue = if (slot == ConnectionChainSlot.Base) pairIssue(candidate, other) else pairIssue(other, candidate)
+            issue?.let { candidate.ref to it }
+        }.toMap()
+    }
+
     fun selectedCompatibilityIssue(
         settings: ConnectionChainSettings,
         sources: List<ConnectionChainSource>,
@@ -657,7 +685,7 @@ object ConnectionChainPlanner {
     }
 }
 
-private fun proxyFieldValue(lines: List<String>, key: String): String? {
+internal fun proxyFieldValue(lines: List<String>, key: String): String? {
     lines.forEach { line ->
         val content = line.trimStart()
         val value = when {
