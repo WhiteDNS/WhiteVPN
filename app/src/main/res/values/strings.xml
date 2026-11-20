@@ -233,6 +233,8 @@
     <string name="tls_integrity_section">Connection security</string>
     <string name="tls_integrity_title">TLS integrity</string>
     <string name="tls_integrity_description">Checks secure sites and blocks routes with invalid certificates.</string>
+    <string name="auto_ech_title">Automatic ECH</string>
+    <string name="auto_ech_description">Hides the site name of CDN connections (WebSocket, gRPC, XHTTP) when the server supports ECH. Falls back to normal TLS when it does not.</string>
     <string name="fragments_section">Fragments</string>
     <string name="fragments_title">Connection fragments</string>
     <string name="fragments_enable">Enable connection fragments</string>

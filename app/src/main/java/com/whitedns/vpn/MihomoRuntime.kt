@@ -85,6 +85,7 @@ data class MihomoConnectionOptions(
     val amneziaNoiseEnabled: Boolean = false,
     val amneziaNoise: AmneziaNoiseSettings = MihomoConnectionOptionsPolicy.DEFAULT_NOISE,
     val fragments: FragmentSettings = MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENTS,
+    val autoEch: Boolean = true,
 )
 
 data class FragmentSettings(
@@ -408,8 +409,30 @@ object MihomoConnectionOptionsPolicy {
         }
     }
 
+    /** CDN TLS proxies that get optional ECH unless the subscription sets `ech-opts` itself. */
+    fun autoEchEligible(
+        type: String,
+        tlsEnabled: Boolean,
+        realityEnabled: Boolean,
+        network: String?,
+        serverName: String?,
+    ): Boolean {
+        val tls = when (type.lowercase()) {
+            "trojan" -> true
+            "vless", "vmess" -> tlsEnabled
+            else -> false
+        }
+        if (!tls || realityEnabled || network?.lowercase() !in AUTO_ECH_NETWORKS) return false
+        val name = serverName?.trim()?.takeIf(String::isNotEmpty) ?: return false
+        return !IPV4_LITERAL.matches(name) && ':' !in name
+    }
+
+    private val AUTO_ECH_NETWORKS = setOf("ws", "grpc", "xhttp")
+    private val IPV4_LITERAL = Regex("""\d{1,3}(\.\d{1,3}){3}""")
+
     fun applyTo(profile: ConnectionProfile, options: MihomoConnectionOptions): ConnectionProfile {
         return profile.copy(
+            echEnabled = profile.echEnabled || (options.autoEch && profile.autoEchEligible),
             amneziaNoise = if (options.amneziaNoiseEnabled && profile.type.equals("wireguard", true)) {
                 options.amneziaNoise
             } else {
@@ -467,7 +490,12 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
                     ),
                 )
             }.getOrDefault(MihomoConnectionOptionsPolicy.DEFAULT_FRAGMENTS),
+            autoEch = prefs.getBoolean(KEY_AUTO_ECH, true),
         )
+    }
+
+    fun saveAutoEch(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_ECH, enabled).apply()
     }
 
     fun saveFragments(settings: FragmentSettings) {
@@ -535,6 +563,7 @@ class MihomoConnectionOptionsPreferenceStore(context: Context) {
         const val KEY_RANDOM_TRAILERS = "amnezia_random_trailers"
         const val KEY_DISABLE_COOKIES = "amnezia_disable_cookies"
         const val KEY_FRAGMENTS_ENABLED = "fragments_enabled"
+        const val KEY_AUTO_ECH = "auto_ech_enabled"
         const val KEY_FRAGMENTS_SAFE = "fragments_safe"
         const val KEY_FRAGMENT_JSON = "fragment_json"
         const val KEY_FRAGMENT_ALPN = "fragment_alpn"
@@ -1701,7 +1730,6 @@ object MihomoFrontingPatcher {
 
 object MihomoConnectionOptionsPatcher {
     fun patch(rawYaml: String, options: MihomoConnectionOptions): String {
-        if (!options.amneziaNoiseEnabled && !options.fragments.enabled) return rawYaml
         val output = mutableListOf<String>()
         var inProxies = false
         var currentProxy = mutableListOf<String>()
@@ -1788,6 +1816,11 @@ object MihomoConnectionOptionsPatcher {
                 patched = upsertNestedOptions(patched, "ip-stack", ipStackFields)
             }
         }
+        if (options.autoEch && wantsOptionalEch(patched, type)) {
+            // Iran cuts CDN TLS without ECH after the handshake; optional ECH falls back to plain TLS
+            // in the core when the domain publishes no ECH config.
+            patched = upsertNestedOptions(patched, "ech-opts", linkedMapOf("enable" to "true", "optional" to "true"))
+        }
         if (options.fragments.enabled) {
             val stages = MihomoConnectionOptionsPolicy.parseFragmentJson(options.fragments.rawJson).stages
             patched = upsertProxyField(patched, "fragments", fragmentYaml(stages))
@@ -1832,6 +1865,16 @@ object MihomoConnectionOptionsPatcher {
             stage.maxSplitKey?.let { add("$it: ${yamlSingleQuoted(stage.maxSplit.orEmpty())}") }
         }.joinToString(", ", "{", "}")
     }
+
+    private fun wantsOptionalEch(lines: List<String>, type: String): Boolean =
+        !hasProxyField(lines, "ech-opts") && MihomoConnectionOptionsPolicy.autoEchEligible(
+            type = type,
+            tlsEnabled = proxyFieldValue(lines, "tls").equals("true", ignoreCase = true),
+            realityEnabled = hasProxyField(lines, "reality-opts"),
+            network = proxyFieldValue(lines, "network"),
+            serverName = listOf("servername", "sni", "server")
+                .firstNotNullOfOrNull { key -> proxyFieldValue(lines, key)?.takeIf(String::isNotBlank) },
+        )
 
     private fun upsertProxyField(lines: List<String>, key: String, value: String): List<String> {
         if (lines.size == 1 && lines.single().trimStart().startsWith("- {")) {

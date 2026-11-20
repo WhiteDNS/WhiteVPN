@@ -234,6 +234,8 @@
     <string name="tls_integrity_section">امنیت اتصال</string>
     <string name="tls_integrity_title">یکپارچگی TLS</string>
     <string name="tls_integrity_description">سایت‌های امن را بررسی می‌کند و مسیرهای دارای گواهی نامعتبر را مسدود می‌کند.</string>
+    <string name="auto_ech_title">ECH خودکار</string>
+    <string name="auto_ech_description">اگر سرور از ECH پشتیبانی کند، نام سایت را در اتصال‌های CDN (WebSocket، gRPC و XHTTP) پنهان می‌کند. در غیر این صورت با TLS معمولی وصل می‌شود.</string>
     <string name="fragments_section">Fragment</string>
     <string name="fragments_title">تکه‌تکه کردن اتصال</string>
     <string name="fragments_enable">فعال‌سازی Fragment</string>
