@@ -1,5 +1,12 @@
 name: Android
 
+# One workflow for every build:
+# - pull_request: build natives (cached), unit tests, debug APKs, release R8 check.
+# - push to main: only refresh the native caches. Caches made in a pull request are
+#   not visible to release runs, so main must own them or every release builds cold.
+# - release / workflow_dispatch: signed release from cached natives, attached to the release.
+# The FlClash core and the three engine groups build in parallel; each is skipped on a cache hit.
+
 on:
   pull_request:
   push:
@@ -15,11 +22,125 @@ concurrency:
   group: android-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  NDK_VERSION: 29.0.14206865
+  GO_VERSION: 1.26.8
+  # Full stack traces, so a failed Gradle task (e.g. APK packaging) shows its cause in the log.
+  GRADLE_OPTS: -Dorg.gradle.logging.stacktrace=all
+
 jobs:
-  build:
+  core:
+    name: FlClash core
     runs-on: ubuntu-latest
-    # Tor, OpenSSL and the Go engines are built from source on a cache miss.
-    timeout-minutes: 150
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore core
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            app/src/main/jniLibs/*/libclash.so
+            app/src/main/jniLibs/.mihomo-version
+            app/src/main/cpp/includes
+          # The script pins the fork commits and Go; the NDK is pinned here.
+          key: flclash-${{ env.NDK_VERSION }}-${{ hashFiles('scripts/build-flclash-core.sh') }}
+
+      - uses: actions/setup-go@v7
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Build core
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          ANDROID_NDK="$ANDROID_HOME/ndk/$NDK_VERSION" bash scripts/build-flclash-core.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-core
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            app/src/main/jniLibs/*/libclash.so
+            app/src/main/jniLibs/.mihomo-version
+            app/src/main/cpp/includes
+
+  engines:
+    name: Engines (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - group: enginecore
+            outputs: app/libs/enginecore.aar
+            inputs: scripts/build-enginecore.py
+          - group: tor
+            outputs: |
+              app/src/main/jniLibs/*/libtor.so
+              app/src/main/jniLibs/*/libobfs4proxy.so
+              app/src/main/jniLibs/*/libsnowflake.so
+              app/src/main/jniLibs/*/libconjure.so
+            inputs: scripts/build-tor-engine.sh
+          - group: amneziawg
+            outputs: app/src/main/jniLibs/*/libamneziawg.so
+            inputs: scripts/build-amneziawg.py
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore ${{ matrix.group }}
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ matrix.outputs }}
+          key: engine-${{ matrix.group }}-${{ env.NDK_VERSION }}-${{ hashFiles(matrix.inputs, 'scripts/build-tor-transports.py', 'scripts/fetch-tor-input.py', 'native/**') }}
+
+      - uses: actions/setup-java@v5
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: actions/setup-go@v7
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Build ${{ matrix.group }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/$NDK_VERSION"
+          case "${{ matrix.group }}" in
+            enginecore) python3 scripts/build-enginecore.py ;;
+            tor)
+              NDK="$ANDROID_NDK_HOME" bash scripts/build-tor-engine.sh
+              python3 scripts/build-tor-transports.py
+              ;;
+            amneziawg) python3 scripts/build-amneziawg.py ;;
+          esac
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-${{ matrix.group }}
+          if-no-files-found: error
+          retention-days: 1
+          path: ${{ matrix.outputs }}
+
+  build:
+    name: ${{ github.event_name == 'pull_request' && 'Test and debug build' || 'Signed release' }}
+    needs: [core, engines]
+    # A push to main only refreshes the native caches above.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
 
@@ -29,56 +150,41 @@ jobs:
           java-version: '21'
           cache: gradle
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26.8'
-          # Native outputs are cached below; Go sources are fetched during the build.
-          cache: false
-
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools'
 
       - name: Install Android toolchain
         run: |
-          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;29.0.14206865' 'cmake;3.22.1'
-          echo "ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' "ndk;$NDK_VERSION" 'cmake;3.22.1' > /dev/null
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
 
-      - name: Cache FlClash core
-        uses: actions/cache@v5
+      # Each artifact keeps paths relative to the common parent of its uploaded files.
+      - uses: actions/download-artifact@v5
         with:
-          path: |
-            app/src/main/jniLibs
-            app/src/main/cpp/includes
-          # Exact fork branches, source/compiler pins, and validation live in the
-          # build script; the workflow pins the NDK.
-          key: ${{ runner.os }}-${{ runner.arch }}-flclash-${{ hashFiles('scripts/build-flclash-core.sh', '.github/workflows/android.yml') }}
-
-      # Engines are loaded by reflection, so a build without them still compiles; build and verify them here.
-      - name: Cache connection engines
-        id: engines-cache
-        uses: actions/cache@v5
+          name: native-core
+          path: app/src/main
+      - uses: actions/download-artifact@v5
         with:
-          path: |
-            app/libs/enginecore.aar
-            app/src/main/jniLibs/*/libtor.so
-            app/src/main/jniLibs/*/libobfs4proxy.so
-            app/src/main/jniLibs/*/libsnowflake.so
-            app/src/main/jniLibs/*/libconjure.so
-            app/src/main/jniLibs/*/libamneziawg.so
-          key: ${{ runner.os }}-${{ runner.arch }}-engines-${{ hashFiles('native/**', 'scripts/build-enginecore.py', 'scripts/build-tor-engine.sh', 'scripts/build-tor-transports.py', 'scripts/fetch-tor-input.py', 'scripts/build-amneziawg.py') }}
+          name: native-enginecore
+          path: app/libs
+      - uses: actions/download-artifact@v5
+        with:
+          name: native-tor
+          path: app/src/main/jniLibs
+      - uses: actions/download-artifact@v5
+        with:
+          name: native-amneziawg
+          path: app/src/main/jniLibs
 
-      - name: Build connection engines
-        if: steps.engines-cache.outputs.cache-hit != 'true'
+      # Engines load by reflection, so a build without them would still compile; fail here instead.
+      - name: Verify natives
         run: |
-          python3 scripts/build-enginecore.py
-          NDK="$ANDROID_NDK_HOME" bash scripts/build-tor-engine.sh
-          python3 scripts/build-tor-transports.py
-          python3 scripts/build-amneziawg.py
-
-      - name: Verify connection engines
-        run: python3 scripts/verify-engine-artifacts.py --require core tor amneziawg
+          find app/src/main/jniLibs -name '*.so' -exec chmod +x {} +
+          python3 scripts/verify-engine-artifacts.py --require core tor amneziawg
+          for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+            test -f "app/src/main/jniLibs/$abi/libclash.so" || { echo "Missing $abi/libclash.so" >&2; exit 1; }
+          done
 
       - name: Configure Firebase
         env:
@@ -88,19 +194,29 @@ jobs:
             printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
           fi
 
-      - name: Build debug
-        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      - name: Test and build debug
+        if: github.event_name == 'pull_request'
         env:
           WHITEDNS_MIHOMO_SUBSCRIPTION_URL: ${{ vars.WHITEDNS_MIHOMO_SUBSCRIPTION_URL }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
-        run: ./gradlew testDebugUnitTest assembleDebug
+        # minifyReleaseWithR8 catches release-only shrinker failures before a release is tagged.
+        run: ./gradlew testDebugUnitTest assembleDebug minifyReleaseWithR8 compileDebugAndroidTestKotlin
 
       - name: Verify engines in debug APK
-        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        if: github.event_name == 'pull_request'
         run: python3 scripts/verify-engine-artifacts.py --apk app/build/outputs/apk/debug/app-universal-debug.apk --require core tor amneziawg
 
+      - name: Upload debug APKs
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: whitevpn-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Configure release signing
-        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        if: github.event_name != 'pull_request'
         env:
           WHITEDNS_RELEASE_KEYSTORE_BASE64: ${{ secrets.WHITEDNS_RELEASE_KEYSTORE_BASE64 }}
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
@@ -125,7 +241,7 @@ jobs:
           }
 
       - name: Build signed release
-        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        if: github.event_name != 'pull_request'
         env:
           WHITEDNS_RELEASE_STORE_FILE: ${{ runner.temp }}/whitedns-release.jks
           WHITEDNS_RELEASE_STORE_PASSWORD: ${{ secrets.WHITEDNS_RELEASE_STORE_PASSWORD }}
@@ -135,45 +251,24 @@ jobs:
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: ./scripts/release.sh
 
-      - name: Verify engines in release APK
-        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
-        run: |
-          apk="$(find release -maxdepth 1 -name '*-universal.apk' -print -quit)"
-          [[ -n "$apk" ]] || { echo "Universal release APK was not found" >&2; exit 1; }
-          python3 scripts/verify-engine-artifacts.py --apk "$apk" --require core tor amneziawg
-
-      - name: Verify private subscription injection
-        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+      - name: Verify release APK
+        if: github.event_name != 'pull_request'
         env:
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: |
           apk="$(find release -maxdepth 1 -name '*-universal.apk' -print -quit)"
-          [[ -n "$apk" ]] || {
-            echo "Universal release APK was not found" >&2
-            exit 1
-          }
+          [[ -n "$apk" ]] || { echo "Universal release APK was not found" >&2; exit 1; }
+          python3 scripts/verify-engine-artifacts.py --apk "$apk" --require core tor amneziawg
           dex_dir="$RUNNER_TEMP/whitevpn-release-dex"
           mkdir -p "$dex_dir"
           unzip -q "$apk" 'classes*.dex' -d "$dex_dir"
-          dex_strings="$RUNNER_TEMP/whitevpn-release-dex-strings.txt"
-          find "$dex_dir" -type f -name 'classes*.dex' -exec strings {} + > "$dex_strings"
-          if ! grep -Fq -- "$WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL" "$dex_strings"; then
+          if ! find "$dex_dir" -type f -name 'classes*.dex' -exec strings {} + | grep -Fq -- "$WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL"; then
             echo "Private subscription URL was not injected into release bytecode" >&2
             exit 1
           fi
-          echo "Private subscription URL is present in release bytecode"
-
-      - name: Upload debug APKs
-        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        uses: actions/upload-artifact@v7
-        with:
-          name: whitevpn-debug-${{ github.sha }}
-          path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          retention-days: 14
 
       - name: Upload signed release
-        if: github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: whitevpn-release-${{ github.run_id }}
