@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -65,7 +66,9 @@ def main():
     suffix = '.exe' if os.name == 'nt' else ''
     if not (java / 'bin' / ('javac' + suffix)).exists():
         raise RuntimeError('Set JAVA_HOME to JDK 17 or 21')
-    android_jars = sorted((sdk / 'platforms').glob('android-*/android.jar'), key=lambda p: int(p.parent.name.split('-')[1]))
+    # Platform folders may carry minor versions (android-37.2) or codenames; compare the numeric parts.
+    android_jars = sorted((sdk / 'platforms').glob('android-*/android.jar'),
+                          key=lambda p: tuple(int(part) for part in re.findall(r'\d+', p.parent.name)))
     if not android_jars:
         raise RuntimeError('Install an Android SDK platform')
     module = WORK / 'module'
