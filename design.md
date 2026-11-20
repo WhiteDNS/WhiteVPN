@@ -15,14 +15,17 @@ instrument detail for the roughly half of users who rely on advanced controls.
   then ruled controls. Cards are reserved for containment, not every row.
 - VPN surface: asymmetrical connection field · live metric strip · essential
   settings list.
-- Subscriptions surface: edge-aligned heading · ruled source list · inline actions.
+- Profiles surface: edge-aligned heading · one saved-profile list · inline actions.
+  Subscriptions and standalone engine profiles share this destination.
+- VPN surface has one selected-profile row. Provisioning and source/node selection
+  live under Profiles; tapping the home row navigates there.
 - Advanced surface: spacious section groups for security, WARP, fronting, and DNS.
 - Content/marketing pages: not in this redesign.
 
 ## Navigation and close
 
 - Navigation: **N9 edge discipline**, adapted to a native, edge-to-edge bottom
-  rail with VPN, Subscriptions, and Advanced as equal destinations. No floating
+  rail with VPN, Profiles, and Settings as equal destinations. No floating
   pill or detached glass dock.
 - Legal close: **Ft2 single line** — one quiet copyright/link row, no footer card.
 
@@ -61,7 +64,8 @@ with text or a mark so colour is never the only signal.
 - Body: Android `sans-serif`, regular; bold only for hierarchy.
 - Data: Android `monospace`, bold, limited to the route instrument and metric
   strip so it stays an outlier rather than becoming a third body face.
-- Portable mapping: IBM Plex Sans Condensed · IBM Plex Sans · IBM Plex Mono.
+- Earlier portable exports below retain IBM Plex mappings; the Android runtime
+  uses the bundled Vazirmatn family for English and Persian.
 - Scale: 12 · 14 · 16 · 20 · 28 · 36 sp. No italic headings.
 
 ## Spacing
@@ -94,14 +98,17 @@ with text or a mark so colour is never the only signal.
 ## What every surface shares
 
 - Green signal accent used sparingly.
-- Condensed display, sans body, mono data.
+- Vazirmatn display/body, mono data.
 - Small radii, visible rules, asymmetrical composition.
 - Edge-to-edge bottom rail and the same focus/pressed/disabled language.
 
 ## What surfaces may vary
 
 - VPN may use one state-responsive current line.
-- Subscriptions uses a quiet ruled list and no ambient motion.
+- Profiles uses one quiet list and no ambient motion. Creation, editing and
+  selection occur here. Creating a profile does not select or connect it.
+- Psiphon exit country is a localized dropdown with Automatic first; other engine
+  selectors use the same Material field style and preserve draft values.
 - Advanced controls may use native Material fields and switches, but inherit the
   tighter radius and ruled grouping.
 

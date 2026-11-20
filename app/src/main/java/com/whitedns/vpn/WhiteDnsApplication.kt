@@ -20,7 +20,10 @@ class WhiteDnsApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        if (EngineWorkerService.isWorkerProcess(this)) return
         initializeWhiteDnsTypefaces(this)
+        AppCrashDiagnostics.record(this)
+        PlatformIkev2Controller.restore(this)
         File(filesDir, "mihomo").mkdirs()
         File(cacheDir, "mihomo").mkdirs()
         DiagnosticLogger.info(this, "mihomo.app.ready", "basePath=${filesDir.absolutePath}")

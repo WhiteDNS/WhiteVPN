@@ -108,11 +108,28 @@ class SubscriptionQrCaptureActivity : CaptureActivity() {
 
 /* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app · tone: utilitarian · anchor hue: green */
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 · contrast: pass (40–41) · slop: pass */
-class MainActivity : Activity() {
+open class MainActivity : Activity() {
     private val palette: WhiteDnsPalette by lazy { WhiteDnsDesignTokens.forContext(this) }
     private val buttonModel = ConnectButtonModel()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val activityScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val engineProfilesUi by lazy {
+        EngineProfilesUi(this, activityScope,
+            { buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping },
+            onChanged = { renderSubscriptions() },
+            onSelected = {
+                closeConnectionTestingPage()
+                renderSubscriptions()
+                renderConnectionSelection()
+                renderLocationSelection()
+                renderAdvancedControls()
+                appTabs.getTabAt(1)?.select()
+                if (buttonModel.state == VpnState.Started) {
+                    Toast.makeText(this, R.string.profile_selected_reconnect, Toast.LENGTH_LONG).show()
+                }
+            },
+        )
+    }
     private var updateSettingsBadge: TextView? = null
     private val appUpdateUi by lazy {
         AppUpdateUi(this, activityScope, palette) { available ->
@@ -207,6 +224,10 @@ class MainActivity : Activity() {
     private lateinit var dashboardLocalEndpointText: TextView
     private lateinit var dashboardChainText: TextView
     private lateinit var dashboardConnectionMetadataSection: View
+    private var engineSettingsNotice: TextView? = null
+    private var engineCategoryNotice: TextView? = null
+    private var engineChainSettingsView: View? = null
+    private var chainControlsSuppressed = false
     private lateinit var tlsIntegrityCheckbox: MaterialSwitch
     private lateinit var autoEchCheckbox: MaterialSwitch
     private lateinit var alwaysOnStatusText: TextView
@@ -343,6 +364,7 @@ class MainActivity : Activity() {
         )
         configureSystemBars()
         setContentView(buildAppShell())
+        (lastNonConfigurationInstance as? EngineEditorState)?.let(engineProfilesUi::restoreEditor)
         renderState(VpnState.Stopped)
         refreshLocationOptions()
         fetchPrivateSubscriptionOnLoad()
@@ -369,6 +391,10 @@ class MainActivity : Activity() {
             if (!showPrivacyPolicyIfNeeded(checkUpdatesAfterStartup)) checkUpdatesAfterStartup()
         }
     }
+
+    // Unsaved engine credentials survive rotation in memory; never serialize them into a Bundle.
+    @Deprecated("Deprecated in Android API")
+    override fun onRetainNonConfigurationInstance(): Any? = engineProfilesUi.retainEditor()
 
     private fun buildAppShell(): View {
         val (tvInsetX, tvInsetY) = televisionSafeInsets(
@@ -660,6 +686,7 @@ class MainActivity : Activity() {
         subscriptionsList.removeAllViews()
         val store = SubscriptionStore(this)
         val selectedId = store.readSelectedSubscriptionId()
+        val selectedEngine = EngineProfileStore(this).selectedEngineId()
         val selectedName = selectedSubscriptionName()
         homeSubscriptionSelectorRow.setValue(selectedName)
         homeSubscriptionSelectorRow.contentDescription =
@@ -684,7 +711,7 @@ class MainActivity : Activity() {
                 subscriptionCard(
                     title = name,
                     detail = getString(R.string.subscription_builtin_detail, connectionCountLabel(count)),
-                    selected = selectedId == subscriptionId,
+                    selected = selectedEngine == null && selectedId == subscriptionId,
                     error = "",
                     onTestConnections = { openSubscriptionConnectionTesting(subscriptionId) },
                     actions = listOf(
@@ -715,7 +742,7 @@ class MainActivity : Activity() {
                         connectionCountLabel(item.connectionCount),
                         updated,
                     ),
-                    selected = selectedId == item.id,
+                    selected = selectedEngine == null && selectedId == item.id,
                     error = localizedSubscriptionError(item.lastError),
                     onTestConnections = { openSubscriptionConnectionTesting(item.id) },
                     actions = listOf(
@@ -728,6 +755,39 @@ class MainActivity : Activity() {
                         R.string.subscription_action_delete to { confirmDeleteSubscription(item) },
                     ),
                 ),
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
+            )
+        }
+        val engineProfiles = runCatching { EngineProfileStore(this).profiles() }.getOrElse { error ->
+            DiagnosticLogger.warn(this, "engine.profiles.readFailed", error = error)
+            emptyList()
+        }
+        engineProfiles.forEach { profile ->
+            val unavailable = engineProfilesUi.unavailableReason(profile)
+            subscriptionsList.addView(
+                subscriptionCard(
+                    title = profile.name,
+                    detail = profile.kind.title + " · " + getString(
+                        if (profile.kind.socks) R.string.profile_tcp_route else R.string.profile_vpn_route,
+                    ),
+                    selected = selectedEngine == profile.id,
+                    error = unavailable?.let(::getString).orEmpty(),
+                    onTestConnections = { engineProfilesUi.showTests(profile) },
+                    actions = listOf(
+                        R.string.subscription_action_select to { engineProfilesUi.select(profile) },
+                        R.string.engine_edit to { engineProfilesUi.editProfile(profile) },
+                        R.string.engine_delete to { engineProfilesUi.deleteProfile(profile) },
+                    ),
+                ),
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
+            )
+        }
+        if (selectedEngine != null && engineProfiles.none { it.id == selectedEngine }) {
+            subscriptionsList.addView(
+                TextView(this).apply {
+                    setText(R.string.engine_missing_profile)
+                    setTextColor(TEXT_SECONDARY)
+                },
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
             )
         }
@@ -907,7 +967,7 @@ class MainActivity : Activity() {
     private fun openSubscriptionConnectionTesting(subscriptionId: String) {
         if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
         val store = SubscriptionStore(this)
-        if (store.readSelectedSubscriptionId() != subscriptionId) {
+        if (store.readSelectedSubscriptionId() != subscriptionId || EngineProfileStore(this).selectedEngineId() != null) {
             userSubscriptionManager.select(subscriptionId)
             onSubscriptionSelected()
         }
@@ -944,6 +1004,12 @@ class MainActivity : Activity() {
             menu.add(R.string.subscription_from_clipboard).setOnMenuItemClickListener {
                 addSubscriptionFromClipboard()
                 true
+            }
+            EngineKind.selectable.forEach { kind ->
+                menu.add(kind.title).setOnMenuItemClickListener {
+                    engineProfilesUi.addProfile(kind)
+                    true
+                }
             }
             show()
         }
@@ -1160,6 +1226,7 @@ class MainActivity : Activity() {
     }
 
     private fun onSubscriptionSelected() {
+        EngineProfileStore(this).selectMihomo()
         locationPreferenceStore.clearSelectedCountry()
         renderSubscriptions()
         renderConnectionDetails(buttonModel.state)
@@ -1179,6 +1246,10 @@ class MainActivity : Activity() {
     }
 
     private fun selectedSubscriptionName(): String {
+        EngineProfileStore(this).selectedEngineId()?.let { id ->
+            return runCatching { EngineProfileStore(this).profile(id)?.name }.getOrNull()
+                ?: getString(R.string.engine_missing_profile)
+        }
         val store = SubscriptionStore(this)
         val selectedId = store.readSelectedSubscriptionId()
         return store.readUserSubscription(selectedId)?.name ?: builtInSubscriptionName(selectedId)
@@ -1201,6 +1272,9 @@ class MainActivity : Activity() {
             dashboardChainText.text = when {
                 state == VpnState.Started && activeChainHopCount > 1 ->
                     getString(R.string.connection_chain_active, activeChainHopCount)
+                connectionChainPreferenceStore.read().enabled &&
+                    (activeRuntimeSubscriptionId == EngineProfile.SOURCE_ID || EngineProfileStore(this).selectedEngineId() != null) ->
+                    getString(R.string.engine_chains_paused)
                 connectionChainPreferenceStore.read().enabled ->
                     getString(R.string.connection_chain_enabled)
                 else -> ""
@@ -1245,6 +1319,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        engineProfilesUi.observe()
         VpnWidgetProvider.refresh(this)
         DiagnosticLogger.info(this, "activity.onStart")
         // Resume orb animation when app comes to foreground
@@ -1288,6 +1363,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        engineProfilesUi.stopObserving()
         VpnWidgetProvider.refresh(this)
         DiagnosticLogger.info(this, "activity.onStop")
         // Pause orb animation when app goes to background to save battery
@@ -1332,6 +1408,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        engineProfilesUi.dispose()
         delayFailureNetworkMonitor.stop()
         activityScope.cancel()
         super.onDestroy()
@@ -1356,6 +1433,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Android API")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (engineProfilesUi.handleActivityResult(requestCode, resultCode, data)) return
         if (appUpdateUi.onActivityResult(requestCode)) return
         val scanResult = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
         if (scanResult != null) {
@@ -1995,7 +2073,7 @@ class MainActivity : Activity() {
         val appPreferencesSettings = settingsContent()
         val testingSettings = settingsContent()
         val connectionSettings = settingsContent()
-        val chainSettings = buildConnectionChainSettings()
+        val chainSettings = buildConnectionChainSettings().also { engineChainSettingsView = it }
         val splitTunnelSettings = settingsContent()
         val sharingSettings = settingsContent()
         val systemSettings = settingsContent()
@@ -2045,6 +2123,7 @@ class MainActivity : Activity() {
             advancedSectionLabel(getString(R.string.config_test_section)),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(32) },
         )
+        testingSettings.addView(advancedSectionDetail(getString(R.string.engine_test_settings_note)))
         val connectionTestPanel = advancedSettingsPanel()
         fun testIntegerInput(
             title: String,
@@ -3133,6 +3212,9 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) },
             )
         }
+        engineSettingsNotice = engineSettingsNoticeView().also {
+            indexBody.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
+        }
         val indexScrollView = ScrollView(this).apply {
             isFillViewport = true
             clipToPadding = false
@@ -3194,6 +3276,9 @@ class MainActivity : Activity() {
                 View(this).apply { setBackgroundColor(OUTLINE) },
                 LinearLayout.LayoutParams(-1, dp(1)).apply { topMargin = dp(16) },
             )
+            engineCategoryNotice = engineSettingsNoticeView().also {
+                advancedBody.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+            }
             advancedBody.addView(content, LinearLayout.LayoutParams(-1, -2))
             indexScrollView.visibility = View.GONE
             ViewCompat.setAccessibilityPaneTitle(scrollView, getString(titleRes))
@@ -4412,6 +4497,10 @@ class MainActivity : Activity() {
         chainSlot: ConnectionChainSlot? = null,
         pickerSubscriptionId: String? = null,
     ) {
+        if (chainSlot == null && EngineProfileStore(this).selectedEngineId() != null) {
+            showProfilesPage()
+            return
+        }
         if (connectionTestingPageVisible && !rebuild) return
         if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
         val subscriptionStore = SubscriptionStore(this)
@@ -5693,6 +5782,7 @@ class MainActivity : Activity() {
         profile: ConnectionProfile?,
         selectedTypes: Set<String>,
     ) {
+        EngineProfileStore(this).selectMihomo()
         val selectedSubscriptionId = SubscriptionStore(this).readSelectedSubscriptionId()
         val previous = connectionSelectionPreferenceStore.readSelectedProfile(
             selectedSubscriptionId,
@@ -5754,6 +5844,15 @@ class MainActivity : Activity() {
 
     private fun renderConnectionSelection() {
         if (!::connectionSelectorRow.isInitialized) return
+        EngineProfileStore(this).selectedEngineId()?.let { id ->
+            val engine = runCatching { EngineProfileStore(this).profile(id) }.getOrNull()
+            val value = engine?.let { it.name + " · " + it.kind.title } ?: getString(R.string.engine_missing_profile)
+            connectionSelectorRow.setValue(value)
+            connectionSelectorRow.contentDescription = getString(R.string.connection_content_description, value)
+            renderHomeConnectionRows()
+            renderHomeFragmentRow()
+            return
+        }
         val selectedSubscriptionId = SubscriptionStore(this).readSelectedSubscriptionId()
         val profile = connectionSelectionPreferenceStore.readSelectedProfile(
             selectedSubscriptionId,
@@ -7121,6 +7220,119 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showProfilesPage() {
+        closeConnectionTestingPage()
+        appTabs.getTabAt(2)?.select()
+    }
+
+    private fun engineSettingsNoticeView() = TextView(this).apply {
+        textSize = 13f
+        typeface = WhiteDnsBodyTypeface
+        setTextColor(TEXT_SECONDARY)
+        setPadding(dp(12), dp(12), dp(12), dp(12))
+        setLineSpacing(dp(2).toFloat(), 1f)
+        background = GradientDrawable().apply {
+            setColor(withAlpha(TEAL, 14))
+            cornerRadius = dp(8).toFloat()
+        }
+    }
+
+    private fun selectedEngineForSettings(): EngineProfile? = EngineProfileStore(this).selectedEngineId()?.let {
+        runCatching { EngineProfileStore(this).profile(it) }.getOrNull()
+    }
+
+    private fun applyEngineSettingsPolicy(idle: Boolean) {
+        val profile = selectedEngineForSettings()
+        // A missing engine selection cannot silently expose Mihomo-only preferences.
+        val kind = profile?.kind ?: EngineKind.OPENCONNECT.takeIf { EngineProfileStore(this).selectedEngineId() != null }
+        val subscriptionId = SubscriptionStore(this).readSelectedSubscriptionId()
+        val fixed = connectionSelectionPreferenceStore.readSelectedProfile(subscriptionId, connectionProfiles)
+        val candidates = fixed?.let(::listOf) ?: ConnectionTypeSelectionPolicy.filterProfiles(
+            connectionProfiles,
+            connectionSelectionPreferenceStore.readAutomaticTypes(subscriptionId, connectionProfiles),
+        )
+        val chain = connectionChainPreferenceStore.read()
+        val chainWireGuard = kind == null && chain.isActive && run {
+            val hops = listOf(chain.base, chain.after).filter { it.mode != ConnectionChainHopMode.Off }
+            val refs = hops.mapNotNull { it.profileRef }
+            val automatic = hops.any { it.mode == ConnectionChainHopMode.Automatic }
+            cachedConnectionChainPickerOptions(if (automatic) null else refs.map { it.subscriptionId }.toSet()).any { option ->
+                option.profile.type.equals("wireguard", true) && (automatic || refs.any {
+                    it.subscriptionId == option.subscriptionId && it.fingerprint == option.profile.fingerprint
+                })
+            }
+        }
+        val policy = EngineSettingsPolicy.forRoute(kind, chainWireGuard || candidates.any { it.type.equals("wireguard", true) })
+        fun gate(view: View, supported: Boolean) {
+            view.isEnabled = idle && supported
+            view.alpha = if (idle && supported) 1f else 0.45f
+            view.tooltipText = if (supported) null else getString(R.string.engine_setting_inactive)
+        }
+        if (::tlsIntegrityCheckbox.isInitialized) gate(tlsIntegrityCheckbox, policy.tlsIntegrity)
+        // Automatic ECH only patches Mihomo proxies, like TLS integrity.
+        if (::autoEchCheckbox.isInitialized) gate(autoEchCheckbox, policy.tlsIntegrity)
+        renderConnectionOptionsControls(idle && policy.mihomoNoise)
+        if (::routingModeRow.isInitialized) gate(routingModeRow, policy.routing)
+        if (::dnsPrivacyRow.isInitialized) gate(dnsPrivacyRow, policy.dns)
+        if (::dnsPrivacyEndpointLayout.isInitialized) gate(dnsPrivacyEndpointLayout, policy.dns)
+        if (::dnsPrivacyEndpointInput.isInitialized) gate(dnsPrivacyEndpointInput, policy.dns)
+        if (::frontingIpInputLayout.isInitialized) gate(frontingIpInputLayout, policy.fronting)
+        if (::frontingIpInput.isInitialized) gate(frontingIpInput, policy.fronting)
+        if (::frontingIpChipGroup.isInitialized) {
+            gate(frontingIpChipGroup, policy.fronting)
+            for (index in 0 until frontingIpChipGroup.childCount) gate(frontingIpChipGroup.getChildAt(index), policy.fronting)
+        }
+        updateSplitTunnelControlsEnabled?.invoke(idle && policy.apps)
+        if (::connectionModeGroup.isInitialized) {
+            gate(proxyModeButton, policy.proxy && !alwaysOnMode && !lockdownMode)
+            gate(vpnModeButton, !alwaysOnMode && !lockdownMode)
+        }
+        if (::lanSharingCheckbox.isInitialized) {
+            gate(lanSharingCheckbox, policy.sharing)
+            gate(lanSharingPasswordCheckbox, policy.sharing)
+            gate(lanSharingRegenerateButton, policy.sharing)
+            gate(lanSharingDetailsText, policy.sharing)
+            if (!policy.sharing) lanSharingDetailsText.setText(R.string.engine_setting_inactive)
+        }
+        fun tree(view: View, enabled: Boolean) {
+            view.isEnabled = enabled
+            if (view is ViewGroup) for (i in 0 until view.childCount) tree(view.getChildAt(i), enabled)
+        }
+        engineChainSettingsView?.let { view ->
+            if (!policy.chains) {
+                tree(view, false)
+                view.alpha = 0.45f
+                chainControlsSuppressed = true
+            } else if (chainControlsSuppressed) {
+                tree(view, idle)
+                view.alpha = if (idle) 1f else 0.45f
+                chainControlsSuppressed = false
+                renderChainSettingsPage?.invoke()
+            }
+        }
+        val details = when {
+            profile == null && kind != null -> getString(R.string.engine_missing_profile)
+            kind == null -> getString(R.string.engine_mihomo_settings)
+            kind.socks -> getString(R.string.engine_tcp_features)
+            kind == EngineKind.AMNEZIAWG -> getString(R.string.engine_amnezia_features) + profile?.let {
+                runCatching { "\n\n" + AmneziaProfile.publicSummary(AmneziaProfile.parse(it.value("config"))) }.getOrDefault("")
+            }.orEmpty()
+            kind == EngineKind.IKEV2 -> getString(R.string.engine_ikev2_features)
+            else -> getString(R.string.engine_retired)
+        }
+        val title = if (profile == null && kind != null) getString(R.string.engine_profiles) else kind?.title ?: "Mihomo"
+        val notice = getString(R.string.engine_effective_settings, title, details)
+        engineSettingsNotice?.text = notice
+        engineCategoryNotice?.text = notice
+        if (profile != null && !profile.kind.socks) {
+            if (::routingModeValueText.isInitialized) routingModeValueText.setText(R.string.engine_profile_settings)
+            if (::dnsPrivacyValueText.isInitialized) dnsPrivacyValueText.setText(R.string.engine_profile_settings)
+            if (::routingModeDetailText.isInitialized) routingModeDetailText.setText(R.string.engine_setting_inactive)
+            if (::dnsPrivacyDetailText.isInitialized) dnsPrivacyDetailText.setText(R.string.engine_setting_inactive)
+            if (::dashboardLocalEndpointText.isInitialized) dashboardLocalEndpointText.visibility = View.GONE
+        }
+    }
+
     private fun renderAdvancedControls() {
         val settingsEnabled = buttonModel.state != VpnState.Starting && buttonModel.state != VpnState.Stopping
         if (::tlsIntegrityCheckbox.isInitialized) {
@@ -7141,6 +7353,7 @@ class MainActivity : Activity() {
         }
         renderDnsPrivacySelection()
         updateSplitTunnelControlsEnabled?.invoke(settingsEnabled)
+        applyEngineSettingsPolicy(settingsEnabled)
     }
 
     private fun beginConnectFlow(action: String = Actions.CONNECT) {
@@ -7172,6 +7385,39 @@ class MainActivity : Activity() {
     }
 
     private fun requestVpnPermissionThenConnect() {
+        val selectedEngine = selectedEngineForSettings()
+        if (selectedEngine != null) {
+            try {
+                EnginePreflight.validate(
+                    selectedEngine,
+                    EngineNativeAvailability.check(this, selectedEngine),
+                    ConnectionModePolicy.shouldStartTun(connectionModePreferenceStore.read(), alwaysOnMode, lockdownMode),
+                    lockdownMode,
+                )
+            } catch (_: Throwable) {
+                connectFlowPending = false
+                Toast.makeText(this, R.string.engine_access_conflict, Toast.LENGTH_LONG).show()
+                buttonModel.onStateChanged(VpnRuntimeStateStore.read(this))
+                renderState(buttonModel.state)
+                return
+            }
+            if (selectedEngine.kind == EngineKind.IKEV2 && Build.VERSION.SDK_INT >= 30) {
+                activityScope.launch {
+                    try {
+                        val consent = PlatformIkev2Controller.prepare(this@MainActivity, selectedEngine)
+                        if (!connectFlowPending) return@launch
+                        if (consent == null) startPendingConnectAction()
+                        else startActivityForResult(consent, REQUEST_VPN_PERMISSION)
+                    } catch (_: Throwable) {
+                        connectFlowPending = false
+                        Toast.makeText(this@MainActivity, R.string.engine_invalid, Toast.LENGTH_LONG).show()
+                        buttonModel.onStateChanged(VpnRuntimeStateStore.read(this@MainActivity))
+                        renderState(buttonModel.state)
+                    }
+                }
+                return
+            }
+        }
         if (!connectFlowPending) {
             DiagnosticLogger.info(this, "permission.vpn.skip", "reason=connect-canceled")
             return
@@ -7206,14 +7452,8 @@ class MainActivity : Activity() {
 
     private fun startVpnService(action: String) {
         DiagnosticLogger.info(this, "service.intent", "action=$action")
-        val intent = Intent(this, WhiteDnsVpnService::class.java)
-            .setAction(action)
-            .putExtra(Actions.EXTRA_APP_INITIATED, true)
-        if (action == Actions.CONNECT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
-        }
+        // Routes to the platform IKEv2 service when it owns the session; otherwise starts WhiteDnsVpnService.
+        RouteServiceDispatcher.dispatch(this, action)
     }
 
     private fun requestActiveConnectionSwitch(subscriptionId: String, fingerprint: String) {
@@ -7322,6 +7562,7 @@ class MainActivity : Activity() {
             }
         }
         renderLocationSelection()
+        applyEngineSettingsPolicy(settingsEnabled)
         if (
             state == VpnState.Stopped ||
             state == VpnState.DailyLimitReached ||
@@ -7356,6 +7597,21 @@ class MainActivity : Activity() {
             resetTransferSpeeds()
             return
         }
+        if (VpnRuntimeStateStore.readActiveSubscriptionId(this) == EngineProfile.SOURCE_ID) {
+            val rate = EngineTrafficState.registry.read(
+                VpnRuntimeStateStore.readActiveConnectionFingerprint(this),
+                SystemClock.elapsedRealtime(),
+            )
+            downloadSpeedText.text = rate?.let { formatTransferSpeed(it.downloadBytesPerSecond) } ?: "—"
+            uploadSpeedText.text = rate?.let { formatTransferSpeed(it.uploadBytesPerSecond) } ?: "—"
+            val description = if (rate == null) getString(R.string.engine_metrics_unavailable) else null
+            downloadSpeedText.contentDescription = description
+            uploadSpeedText.contentDescription = description
+            lastTransferSampleElapsedMs = 0L
+            return
+        }
+        downloadSpeedText.contentDescription = null
+        uploadSpeedText.contentDescription = null
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val rxBytes = TrafficStats.getUidRxBytes(Process.myUid())
         val txBytes = TrafficStats.getUidTxBytes(Process.myUid())
@@ -7419,7 +7675,7 @@ class MainActivity : Activity() {
         DiagnosticLogger.info(this, "diagnostics.copy", "chars=${diagnostics.length}")
     }
 
-    private fun checkForUpdates() {
+    protected open fun checkForUpdates() {
         appUpdateUi.check(manual = false)
     }
 

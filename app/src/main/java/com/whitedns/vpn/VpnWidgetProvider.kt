@@ -40,11 +40,15 @@ class VpnWidgetProvider : AppWidgetProvider() {
             VpnWidgetAction.None -> Unit
             VpnWidgetAction.Connect, VpnWidgetAction.Disconnect -> {
                 val expected = if (currentVpnServiceState == VpnState.Started) Actions.DISCONNECT else Actions.CONNECT
-                if (intent.action == expected) {
-                    val service = Intent(context, WhiteDnsVpnService::class.java)
-                        .setAction(expected).putExtra(Actions.EXTRA_APP_INITIATED, true)
+                val selectedEngine = runCatching {
+                    EngineProfileStore(context).selectedEngineId()?.let { EngineProfileStore(context).profile(it) }
+                }.getOrNull()
+                // IKEv2 needs its own platform consent, which only the app can request.
+                if (intent.action == expected && expected == Actions.CONNECT && selectedEngine?.kind == EngineKind.IKEV2) {
+                    context.startActivity(appIntent(context))
+                } else if (intent.action == expected) {
                     runCatching {
-                        if (expected == Actions.CONNECT) context.startForegroundService(service) else context.startService(service)
+                        RouteServiceDispatcher.dispatch(context, expected)
                     }.onFailure {
                         DiagnosticLogger.warn(context, "widget.action.failed", error = it)
                         context.startActivity(appIntent(context))

@@ -1,0 +1,9 @@
+vendor/AndroidLibXrayLite       https://github.com/CluvexStudio/AndroidLibXrayLite.git    69966de475f26ca85ec76bdd73ff2b319b0f1557
+vendor/xray-core                https://github.com/CluvexStudio/Xray-core.git             f07d48ab7cbb2aac7c231bde9e7c0fa8aff0beba
+vendor/qpack-patched            https://github.com/CluvexStudio/qpack.git                 9442fc625d9485b450bc7f4c0e314b3648a0c4d4
+reference/psiphon-tunnel-core   https://github.com/CluvexStudio/psiphon-tunnel-core.git   83aa73b9b982e7421e00117f5b0c5aceb5dda452
+reference/sing-openvpn          https://github.com/CluvexStudio/sing-openvpn.git          2f7ee8c3f0b98faa4ed7e1f9a7c8a0f82267b1a7
+reference/MasterDnsVPN          https://github.com/CluvexStudio/MasterDnsVPN.git          50b447bc41e6c930a0027507a1a9f492b6fc63b9
+reference/vaydns                https://github.com/anonvector/vaydns.git                  a0ff70110d5e96686ab8f4c8e1c44cd09be07a75
+reference/amneziawg-go          https://github.com/amnezia-vpn/amneziawg-go.git           b5928efb6ca19f0153958460c3d141f04abc5c2e
+reference/openconnect           https://github.com/CluvexStudio/Openconnect.git            be071398541d9b6bf5c29a50b41c489f2905db7c
