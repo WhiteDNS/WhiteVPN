@@ -25,6 +25,8 @@ concurrency:
 env:
   NDK_VERSION: 29.0.14206865
   GO_VERSION: 1.26.8
+  # Full stack traces, so a failed Gradle task (e.g. APK packaging) shows its cause in the log.
+  GRADLE_OPTS: -Dorg.gradle.logging.stacktrace=all
 
 jobs:
   core:
