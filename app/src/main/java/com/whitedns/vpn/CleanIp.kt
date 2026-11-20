@@ -64,6 +64,7 @@ data class ConnectionProfile(
     val echEnabled: Boolean = false,
     val echCapable: Boolean = false,
     val amneziaNoise: AmneziaNoiseSettings? = null,
+    val autoEchEligible: Boolean = false,
 ) {
     val cacheKey: String
         get() = listOf(fingerprint, type, port.toString(), validationHost.lowercase()).joinToString("|")

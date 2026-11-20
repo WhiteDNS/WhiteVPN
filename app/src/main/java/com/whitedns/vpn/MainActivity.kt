@@ -208,6 +208,7 @@ class MainActivity : Activity() {
     private lateinit var dashboardChainText: TextView
     private lateinit var dashboardConnectionMetadataSection: View
     private lateinit var tlsIntegrityCheckbox: MaterialSwitch
+    private lateinit var autoEchCheckbox: MaterialSwitch
     private lateinit var alwaysOnStatusText: TextView
     private lateinit var fragmentEnabledCheckbox: MaterialSwitch
     private lateinit var fragmentSettingsFields: LinearLayout
@@ -2181,6 +2182,19 @@ class MainActivity : Activity() {
                 toggle = tlsIntegrityCheckbox,
             ),
             LinearLayout.LayoutParams(-1, -2),
+        )
+        autoEchCheckbox = MaterialSwitch(this).apply {
+            isChecked = connectionOptionsPreferenceStore.read().autoEch
+            contentDescription = getString(R.string.auto_ech_title)
+            setOnClickListener { saveAutoEchEnabled(isChecked) }
+        }
+        tlsIntegrityPanel.addView(
+            advancedToggleRow(
+                title = getString(R.string.auto_ech_title),
+                detail = getString(R.string.auto_ech_description),
+                toggle = autoEchCheckbox,
+            ),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
         )
         connectionSettings.addView(
             tlsIntegrityPanel,
@@ -6664,6 +6678,13 @@ class MainActivity : Activity() {
         reconnectForConnectionOptionChange()
     }
 
+    private fun saveAutoEchEnabled(enabled: Boolean) {
+        if (connectionOptionsPreferenceStore.read().autoEch == enabled) return
+        connectionOptionsPreferenceStore.saveAutoEch(enabled)
+        DiagnosticLogger.info(this, "activity.autoEch.saved", "enabled=$enabled")
+        reconnectForConnectionOptionChange()
+    }
+
     private fun saveLanSharingEnabled(enabled: Boolean) {
         if (lanSharingPreferenceStore.read().enabled == enabled) return
         lanSharingPreferenceStore.saveEnabled(enabled)
@@ -7106,6 +7127,10 @@ class MainActivity : Activity() {
             tlsIntegrityCheckbox.isChecked = tlsIntegrityPreferenceStore.isEnabled()
             tlsIntegrityCheckbox.isEnabled = settingsEnabled
         }
+        if (::autoEchCheckbox.isInitialized) {
+            autoEchCheckbox.isChecked = connectionOptionsPreferenceStore.read().autoEch
+            autoEchCheckbox.isEnabled = settingsEnabled
+        }
         renderConnectionOptionsControls(settingsEnabled)
         renderLanSharingControls(settingsEnabled)
         renderChainSettingsPage?.invoke()
@@ -7266,6 +7291,7 @@ class MainActivity : Activity() {
         homeChainAfterSelectorRow.isEnabled = settingsEnabled
         updateSplitTunnelControlsEnabled?.invoke(settingsEnabled)
         if (::tlsIntegrityCheckbox.isInitialized) tlsIntegrityCheckbox.isEnabled = settingsEnabled
+        if (::autoEchCheckbox.isInitialized) autoEchCheckbox.isEnabled = settingsEnabled
         renderConnectionOptionsControls(settingsEnabled)
         renderLanSharingControls(settingsEnabled)
         renderChainSettingsPage?.invoke()

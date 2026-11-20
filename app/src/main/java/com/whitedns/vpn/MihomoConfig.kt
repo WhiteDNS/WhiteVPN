@@ -22,6 +22,7 @@ data class MihomoProxy(
     val echEnabled: Boolean = false,
     val echCapable: Boolean = false,
     val amneziaNoise: AmneziaNoiseSettings? = null,
+    val autoEchEligible: Boolean = false,
 )
 
 data class MihomoProxyGroup(
@@ -96,10 +97,11 @@ object MihomoConfigParser {
             if (indent == 4) {
                 parseKeyValue(content)?.let { (key, value) ->
                     nestedKey = key.takeIf { value.isBlank() }
-                    if (key in setOf("name", "type", "server", "port", "tls")) {
+                    if (key in setOf("name", "type", "server", "port", "tls", "network", "servername", "sni")) {
                         current[key] = decodeScalar(value)
-                    } else if (key == "ech-opts" && INLINE_ECH_ENABLED.containsMatchIn(value)) {
-                        current["ech-enabled"] = "true"
+                    } else if (key == "ech-opts") {
+                        current["ech-set"] = "true"
+                        if (INLINE_ECH_ENABLED.containsMatchIn(value)) current["ech-enabled"] = "true"
                     } else if (key == "reality-opts") {
                         current["reality-enabled"] = "true"
                     } else if (key == "amnezia-wg-option") {
@@ -148,6 +150,14 @@ object MihomoConfigParser {
                 minSize = this["amnezia-jmin"]?.toIntOrNull() ?: 0,
                 maxSize = this["amnezia-jmax"]?.toIntOrNull() ?: 0,
             ).takeIf(MihomoConnectionOptionsPolicy::isValidNoise),
+            autoEchEligible = this["ech-set"] == null && MihomoConnectionOptionsPolicy.autoEchEligible(
+                type = type,
+                tlsEnabled = tlsEnabled,
+                realityEnabled = realityEnabled,
+                network = this["network"],
+                serverName = listOf("servername", "sni", "server")
+                    .firstNotNullOfOrNull { key -> this[key]?.takeIf(String::isNotBlank) },
+            ),
         )
     }
 
@@ -185,6 +195,7 @@ object MihomoConfigParser {
             echEnabled = echEnabled,
             echCapable = echCapable,
             amneziaNoise = amneziaNoise,
+            autoEchEligible = autoEchEligible,
         )
     }
 

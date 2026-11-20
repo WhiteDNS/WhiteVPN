@@ -1770,4 +1770,78 @@ class MihomoRuntimeConfigBuilderTest {
         assertEquals(null, MihomoDelayPolicy.acceptedDelayMs(-1))
         assertEquals(null, MihomoDelayPolicy.acceptedDelayMs(null))
     }
+
+    @Test
+    fun connectionOptionsPatcherAddsOptionalEchOnlyToCdnTlsProxies() {
+        val yaml = """
+            proxies:
+              - name: WS
+                type: vless
+                server: 104.16.1.1
+                port: 443
+                tls: true
+                network: ws
+                servername: cdn.example.com
+              - { name: Trojan gRPC, type: trojan, server: grpc.example.com, port: 443, network: grpc }
+              - { name: Has ECH, type: vless, server: a.example.com, port: 443, tls: true, network: ws, ech-opts: { enable: false } }
+              - { name: Reality, type: vless, server: r.example.com, port: 443, tls: true, network: xhttp, reality-opts: { public-key: k } }
+              - { name: Plain WS, type: vmess, server: p.example.com, port: 80, network: ws }
+              - { name: TCP TLS, type: trojan, server: t.example.com, port: 443 }
+              - { name: IP only, type: vless, server: 1.2.3.4, port: 443, tls: true, network: ws }
+        """.trimIndent()
+
+        val patched = MihomoConnectionOptionsPatcher.patch(yaml, MihomoConnectionOptions())
+
+        val lines = patched.lines()
+        val ws = lines.indexOf("  - name: WS")
+        assertEquals("    ech-opts:", lines[ws + 7])
+        assertEquals("      enable: true", lines[ws + 8])
+        assertEquals("      optional: true", lines[ws + 9])
+        assertTrue(lines.single { "Trojan gRPC" in it }.contains("ech-opts: {enable: true, optional: true}"))
+        assertTrue(lines.single { "Has ECH" in it }.contains("ech-opts: { enable: false }"))
+        assertEquals(3, Regex("ech-opts").findAll(patched).count())
+        val disabled = MihomoConnectionOptionsPatcher.patch(yaml, MihomoConnectionOptions(autoEch = false))
+        assertEquals(1, Regex("ech-opts").findAll(disabled).count())
+    }
+
+    @Test
+    fun autoEchMarksOnlyEligibleProfilesAsEchEnabled() {
+        val yaml = """
+            proxies:
+              - name: CDN
+                type: vless
+                server: 104.16.1.1
+                port: 443
+                tls: true
+                network: ws
+                servername: cdn.example.com
+              - name: Explicit off
+                type: vless
+                server: off.example.com
+                port: 443
+                tls: true
+                network: ws
+                ech-opts:
+                  enable: false
+              - name: Raw TLS
+                type: trojan
+                server: t.example.com
+                port: 443
+        """.trimIndent()
+        val profiles = MihomoConfigParser.parse(yaml).catalog.profiles.associateBy { it.tag }
+
+        assertEquals(true, profiles.getValue("CDN").autoEchEligible)
+        assertEquals(false, profiles.getValue("Explicit off").autoEchEligible)
+        assertEquals(false, profiles.getValue("Raw TLS").autoEchEligible)
+        val cdn = profiles.getValue("CDN")
+        assertEquals(true, MihomoConnectionOptionsPolicy.applyTo(cdn, MihomoConnectionOptions()).echEnabled)
+        assertEquals(
+            false,
+            MihomoConnectionOptionsPolicy.applyTo(cdn, MihomoConnectionOptions(autoEch = false)).echEnabled,
+        )
+        assertEquals(
+            false,
+            MihomoConnectionOptionsPolicy.applyTo(profiles.getValue("Raw TLS"), MihomoConnectionOptions()).echEnabled,
+        )
+    }
 }

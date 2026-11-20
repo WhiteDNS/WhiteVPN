@@ -57,7 +57,7 @@ Requirements: JDK 17, Go, Android SDK and Android NDK.
 ./gradlew testDebugUnitTest assembleDebug
 ```
 
-The build script checks out the pinned [`WhiteDNS/FlClash`](https://github.com/WhiteDNS/FlClash/tree/whitedns) integration and its pinned [`WhiteDNS/mihomo`](https://github.com/WhiteDNS/mihomo/tree/whitedns) core, builds Mihomo v1.19.30 for all supported Android ABIs, and generates the JNI files consumed by the app.
+The build script checks out the pinned [`WhiteDNS/FlClash`](https://github.com/WhiteDNS/FlClash/tree/whitedns) integration and its pinned [`WhiteDNS/mihomo`](https://github.com/WhiteDNS/mihomo/tree/whitedns) core, builds Mihomo v1.19.34 for all supported Android ABIs, and generates the JNI files consumed by the app.
 
 ## Third-party software
 
