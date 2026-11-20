@@ -537,6 +537,18 @@ class DashboardDataRowView(context: Context) : LinearLayout(context) {
         valueText.text = value
     }
 
+    fun setLabel(label: String) {
+        labelText.text = label.uppercase()
+    }
+
+    /** A warning is red, may wrap to two lines and follows the app language direction for mixed text. */
+    fun setValueWarning(warning: Boolean) {
+        valueText.setTextColor(if (warning) palette.red else palette.textPrimary)
+        valueText.isSingleLine = !warning
+        valueText.maxLines = if (warning) 2 else 1
+        valueText.textDirection = if (warning) View.TEXT_DIRECTION_LOCALE else View.TEXT_DIRECTION_FIRST_STRONG
+    }
+
     fun setOnRowClickListener(listener: OnClickListener?) {
         isClickable = listener != null
         isFocusable = listener != null

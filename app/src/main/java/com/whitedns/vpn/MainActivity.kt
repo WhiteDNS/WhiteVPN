@@ -28,6 +28,7 @@ import android.os.PersistableBundle
 import android.os.Process
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.BidiFormatter
 import android.text.Editable
 import android.text.InputFilter
 import android.text.InputType
@@ -228,6 +229,9 @@ open class MainActivity : Activity() {
     private var engineCategoryNotice: TextView? = null
     private var engineChainSettingsView: View? = null
     private var chainControlsSuppressed = false
+    private var chainPickerRefreshAttempted = false
+    private var homeLocationDivider: View? = null
+    private var homeSubscriptionDivider: View? = null
     private lateinit var tlsIntegrityCheckbox: MaterialSwitch
     private lateinit var autoEchCheckbox: MaterialSwitch
     private lateinit var alwaysOnStatusText: TextView
@@ -883,7 +887,7 @@ open class MainActivity : Activity() {
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            textDirection = View.TEXT_DIRECTION_LOCALE
             gravity = Gravity.START
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
         if (error.isNotBlank()) addView(TextView(this@MainActivity).apply {
@@ -892,7 +896,7 @@ open class MainActivity : Activity() {
             typeface = WhiteDnsBodyBoldTypeface
             setTextColor(ERROR)
             layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            textDirection = View.TEXT_DIRECTION_LOCALE
             gravity = Gravity.START
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
 
@@ -1005,6 +1009,10 @@ open class MainActivity : Activity() {
                 addSubscriptionFromClipboard()
                 true
             }
+            menu.add(R.string.warp_add).setOnMenuItemClickListener {
+                addWarpSubscription()
+                true
+            }
             EngineKind.selectable.forEach { kind ->
                 menu.add(kind.title).setOnMenuItemClickListener {
                     engineProfilesUi.addProfile(kind)
@@ -1012,6 +1020,29 @@ open class MainActivity : Activity() {
                 }
             }
             show()
+        }
+    }
+
+    private fun addWarpSubscription() {
+        Toast.makeText(this, R.string.warp_registering, Toast.LENGTH_SHORT).show()
+        // The app is outside its own tunnel; while connected, reach the WARP API through Mihomo first.
+        val viaLocalProxy = buttonModel.state == VpnState.Started
+        activityScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val yaml = runCatching { WarpRegistration.register(viaLocalProxy) }
+                        .recoverCatching { error -> if (viaLocalProxy) WarpRegistration.register(false) else throw error }
+                        .getOrThrow()
+                    userSubscriptionManager.add(WarpRegistration.PROXY_NAME, yaml)
+                }
+            }
+            result.onSuccess {
+                renderSubscriptions()
+                Toast.makeText(this@MainActivity, R.string.warp_added, Toast.LENGTH_SHORT).show()
+            }.onFailure { error ->
+                DiagnosticLogger.warn(this@MainActivity, "warp.register.failed", error = error)
+                Toast.makeText(this@MainActivity, R.string.warp_failed, Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -1032,7 +1063,97 @@ open class MainActivity : Activity() {
     private fun showAddSubscriptionDialog(initialSource: String = "", initialName: String = "") =
         showSubscriptionDialog(initialSource = initialSource, initialName = initialName)
 
-    private fun showEditSubscriptionDialog(item: UserSubscription) = showSubscriptionDialog(item)
+    private fun showEditSubscriptionDialog(item: UserSubscription) {
+        // WARP gets plain fields; the raw text editor stays one tap away for advanced users.
+        val warp = WarpConfig.parse(item.input)
+        if (warp != null) showWarpEditDialog(item, warp) else showSubscriptionDialog(item)
+    }
+
+    private fun showWarpEditDialog(item: UserSubscription, warp: WarpConfig) {
+        fun field(@StringRes hintRes: Int, value: String, helper: String?, numeric: Boolean, ltr: Boolean): Pair<TextInputEditText, TextInputLayout> {
+            val input = TextInputEditText(this).apply {
+                setSingleLine(true)
+                background = null
+                setPaddingRelative(dp(16), dp(12), dp(16), dp(12))
+                setTextColor(TEXT_PRIMARY)
+                setHintTextColor(TEXT_SECONDARY)
+                if (numeric) inputType = InputType.TYPE_CLASS_NUMBER
+                if (ltr) {
+                    layoutDirection = View.LAYOUT_DIRECTION_LTR
+                    textDirection = View.TEXT_DIRECTION_LTR
+                }
+                setText(value)
+            }
+            return input to TextInputLayout(this).apply {
+                hint = getString(hintRes)
+                helper?.let { helperText = it }
+                boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+                boxBackgroundColor = withAlpha(SURFACE, if (palette.isDark) 232 else 246)
+                boxStrokeColor = TEAL
+                defaultHintTextColor = ColorStateList.valueOf(TEXT_SECONDARY)
+                setBoxCornerRadii(dp(8).toFloat(), dp(8).toFloat(), dp(8).toFloat(), dp(8).toFloat())
+                addView(input)
+            }
+        }
+        val (nameInput, nameLayout) = field(R.string.subscription_name_hint, item.name, null, numeric = false, ltr = false)
+        val (serverInput, serverLayout) = field(R.string.warp_server_hint, warp.server, getString(R.string.warp_server_helper), numeric = false, ltr = true)
+        val (portInput, portLayout) = field(R.string.warp_port_hint, warp.port.toString(), getString(R.string.warp_port_helper), numeric = true, ltr = true)
+        val noiseSwitch = MaterialSwitch(this).apply {
+            isChecked = warp.noise
+            contentDescription = getString(R.string.warp_noise_title)
+        }
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(nameLayout, LinearLayout.LayoutParams(-1, -2))
+            addView(serverLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+            addView(portLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+            addView(
+                advancedToggleRow(
+                    title = getString(R.string.warp_noise_title),
+                    detail = getString(R.string.warp_noise_detail),
+                    toggle = noiseSwitch,
+                ),
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) },
+            )
+        }
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.warp_edit_title)
+            .setView(ScrollView(this).apply { addView(body) })
+            .setNegativeButton(R.string.split_tunnel_cancel, null)
+            .setNeutralButton(R.string.warp_advanced) { _, _ -> showSubscriptionDialog(item) }
+            .setPositiveButton(R.string.split_tunnel_save, null)
+            .create()
+        dialog.showWhiteDnsDialog {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = nameInput.text.toString().trim()
+                val server = serverInput.text.toString().trim()
+                val port = portInput.text.toString().trim().toIntOrNull()
+                if (name.isBlank() || !WarpConfig.isValidServer(server) || port == null || port !in 1..65535) {
+                    Toast.makeText(this@MainActivity, R.string.warp_invalid, Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val yaml = warp.copy(server = server, port = port, noise = noiseSwitch.isChecked).toYaml()
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
+                activityScope.launch {
+                    runCatching { withContext(Dispatchers.IO) { userSubscriptionManager.update(item.id, name, yaml) } }
+                        .onSuccess { updated ->
+                            dialog.dismiss()
+                            renderSubscriptions()
+                            renderConnectionDetails(buttonModel.state)
+                            if (updated.id == userSubscriptionManager.selectedId()) refreshLocationOptions()
+                            Toast.makeText(this@MainActivity, getString(R.string.subscription_updated, updated.name), Toast.LENGTH_SHORT).show()
+                        }
+                        .onFailure { error ->
+                            DiagnosticLogger.warn(this@MainActivity, "warp.edit.failed", error = error)
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                            Toast.makeText(this@MainActivity, R.string.subscription_operation_failed, Toast.LENGTH_LONG).show()
+                        }
+                }
+            }
+        }
+    }
 
     private fun showSubscriptionDialog(
         existing: UserSubscription? = null,
@@ -1272,9 +1393,9 @@ open class MainActivity : Activity() {
             dashboardChainText.text = when {
                 state == VpnState.Started && activeChainHopCount > 1 ->
                     getString(R.string.connection_chain_active, activeChainHopCount)
+                // The red "After" row already explains this; a second message only confuses.
                 connectionChainPreferenceStore.read().enabled &&
-                    (activeRuntimeSubscriptionId == EngineProfile.SOURCE_ID || EngineProfileStore(this).selectedEngineId() != null) ->
-                    getString(R.string.engine_chains_paused)
+                    (activeRuntimeSubscriptionId == EngineProfile.SOURCE_ID || EngineProfileStore(this).selectedEngineId() != null) -> ""
                 connectionChainPreferenceStore.read().enabled ->
                     getString(R.string.connection_chain_enabled)
                 else -> ""
@@ -1902,7 +2023,7 @@ open class MainActivity : Activity() {
             setRow(getString(R.string.connection_label), getString(R.string.option_automatic))
             setOnRowClickListener {
                 if (connectionChainPreferenceStore.read().enabled) {
-                    openConnectionChainSettingsFromHome()
+                    showChainNodePicker(ConnectionChainSlot.Base)
                 } else {
                     showConnectionTestingPage()
                 }
@@ -1913,7 +2034,11 @@ open class MainActivity : Activity() {
                 getString(R.string.connection_chain_after),
                 getString(R.string.connection_chain_optional_detail),
             )
-            setOnRowClickListener { openConnectionChainSettingsFromHome() }
+            setOnRowClickListener {
+                // An engine route cannot be chained; send the user to pick a public config instead.
+                if (EngineProfileStore(this@MainActivity).selectedEngineId() != null) showProfilesPage()
+                else showChainNodePicker(ConnectionChainSlot.After)
+            }
         }
         homeChainSelectorRows = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1982,14 +2107,16 @@ open class MainActivity : Activity() {
             }
             clipToOutline = true
             addView(locationSelectorRow, LinearLayout.LayoutParams(-1, -2))
-            addView(View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+            homeLocationDivider = View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) }
+            addView(homeLocationDivider,
                 LinearLayout.LayoutParams(-1, dp(1)).apply {
                     marginStart = dp(18)
                     marginEnd = dp(18)
                 })
             addView(connectionSelectorRow, LinearLayout.LayoutParams(-1, -2))
             addView(homeChainSelectorRows, LinearLayout.LayoutParams(-1, -2))
-            addView(View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) },
+            homeSubscriptionDivider = View(this@MainActivity).apply { setBackgroundColor(withAlpha(OUTLINE, 150)) }
+            addView(homeSubscriptionDivider,
                 LinearLayout.LayoutParams(-1, dp(1)).apply {
                     marginStart = dp(18)
                     marginEnd = dp(18)
@@ -3737,7 +3864,7 @@ open class MainActivity : Activity() {
                 hop.mode == ConnectionChainHopMode.Off && slot == ConnectionChainSlot.After ->
                     getString(R.string.connection_chain_add_after)
                 slot == ConnectionChainSlot.Before -> getString(R.string.connection_chain_before)
-                slot == ConnectionChainSlot.Base -> getString(R.string.connection_label)
+                slot == ConnectionChainSlot.Base -> getString(R.string.chain_node_first)
                 else -> getString(R.string.connection_chain_after)
             }
             val detail = when (hop.mode) {
@@ -3755,7 +3882,7 @@ open class MainActivity : Activity() {
                 isEnabled = controlsEnabled
                 isClickable = controlsEnabled
                 isFocusable = controlsEnabled
-                if (controlsEnabled) setOnClickListener { showConnectionTestingPage(chainSlot = slot) }
+                if (controlsEnabled) setOnClickListener { showChainNodePicker(slot) }
                 addView(
                     LinearLayout(this@MainActivity).apply {
                         orientation = LinearLayout.VERTICAL
@@ -5911,7 +6038,26 @@ open class MainActivity : Activity() {
         if (!::homeChainSelectorRows.isInitialized) return
         val settings = connectionChainPreferenceStore.read()
         homeChainSelectorRows.visibility = if (settings.enabled) View.VISIBLE else View.GONE
+        // Location and subscription do not steer a chain; in chain mode only the two nodes are shown.
+        val normalRowsVisibility = if (settings.enabled) View.GONE else View.VISIBLE
+        listOfNotNull(locationSelectorRow, homeLocationDivider, homeSubscriptionSelectorRow, homeSubscriptionDivider)
+            .forEach { it.visibility = normalRowsVisibility }
+        connectionSelectorRow.setLabel(getString(if (settings.enabled) R.string.chain_node_first else R.string.connection_label))
         if (!settings.enabled) return
+        val selectedEngine = selectedEngineForSettings()
+        if (selectedEngine != null || EngineProfileStore(this).selectedEngineId() != null) {
+            // The engine name is already shown in the connection row; keep this short and single-language.
+            val warning = getString(R.string.connection_chain_after_engine_unsupported)
+            homeChainAfterSelectorRow.setValue(warning)
+            homeChainAfterSelectorRow.setValueWarning(true)
+            homeChainAfterSelectorRow.contentDescription = getString(
+                R.string.connection_chain_home_content_description,
+                getString(R.string.connection_chain_after),
+                warning,
+            )
+            return
+        }
+        homeChainAfterSelectorRow.setValueWarning(false)
 
         val fixedSubscriptionIds = listOf(settings.base, settings.after)
             .filter { it.mode == ConnectionChainHopMode.Fixed }
@@ -7220,12 +7366,326 @@ open class MainActivity : Activity() {
         }
     }
 
+    private fun showChainNodePicker(slot: ConnectionChainSlot) {
+        if (buttonModel.state == VpnState.Starting || buttonModel.state == VpnState.Stopping) return
+        val allSubscriptionCount = SubscriptionStore.BUILT_IN_SUBSCRIPTION_IDS.size + userSubscriptionManager.list().size
+        if (cachedConnectionChainSources().size < allSubscriptionCount && !chainPickerRefreshAttempted) {
+            // Configs that were never downloaded cannot be listed; fetch them once before opening.
+            chainPickerRefreshAttempted = true
+            Toast.makeText(this, R.string.connection_selector_loading, Toast.LENGTH_SHORT).show()
+            activityScope.launch {
+                runCatching { ConfigRepository(this@MainActivity).refreshAllSubscriptions() }
+                    .onFailure { DiagnosticLogger.warn(this@MainActivity, "chain.picker.refresh.failed", error = it) }
+                if (cachedConnectionChainSources().size < allSubscriptionCount) {
+                    Toast.makeText(this@MainActivity, R.string.connection_chain_picker_unavailable, Toast.LENGTH_LONG).show()
+                }
+                showChainNodePicker(slot)
+                chainPickerRefreshAttempted = false
+            }
+            return
+        }
+        val sources = cachedConnectionChainSources()
+        val settings = connectionChainPreferenceStore.read()
+        val current = settings.hop(slot)
+        val options = connectionChainPickerOptions(sources)
+        val issues = ConnectionChainPlanner.pickerIssues(settings, slot, sources)
+        val store = SubscriptionStore(this)
+        val delays = sources.associate { source ->
+            source.subscriptionId to delayRecordsForUi(store, source.subscriptionId, source.snapshot.catalog.profiles)
+        }.toMutableMap()
+        var dialog: AlertDialog? = null
+        var query = ""
+        var testId: String? = null
+        var testSubscriptionId: String? = null
+        var renderPending = false
+        fun choose(hop: ConnectionChainHop) {
+            dialog?.dismiss()
+            updateConnectionChainSettings(connectionChainPreferenceStore.read().withHop(slot, hop))
+        }
+        fun issueText(issue: ConnectionChainCompatibilityIssue): String = getString(
+            when (issue) {
+                ConnectionChainCompatibilityIssue.SameConnection -> R.string.chain_issue_same
+                ConnectionChainCompatibilityIssue.SharedProxyDependency -> R.string.chain_issue_shared
+                ConnectionChainCompatibilityIssue.DownstreamRequiresUdpCapableUpstream ->
+                    if (slot == ConnectionChainSlot.After) R.string.chain_issue_udp_first else R.string.chain_issue_udp_second
+                ConnectionChainCompatibilityIssue.SelectedConnectionUnavailable -> R.string.connection_chain_error_unavailable
+            },
+        )
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+        }
+        fun row(title: String, detail: String, selected: Boolean, reason: String?, onClick: (() -> Unit)?) =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                setPaddingRelative(dp(16), dp(12), dp(16), dp(12))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(10).toFloat()
+                    setColor(if (selected) withAlpha(TEAL, 28) else SURFACE)
+                    setStroke(dp(1), if (selected) TEAL else OUTLINE)
+                }
+                addView(TextView(this@MainActivity).apply {
+                    text = title
+                    textSize = 15f
+                    typeface = WhiteDnsBodyBoldTypeface
+                    setTextColor(TEXT_PRIMARY)
+                    textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+                    textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = detail
+                    textSize = 12f
+                    typeface = WhiteDnsBodyTypeface
+                    setTextColor(TEXT_SECONDARY)
+                    textDirection = View.TEXT_DIRECTION_LOCALE
+                    textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+                reason?.let {
+                    addView(TextView(this@MainActivity).apply {
+                        text = it
+                        textSize = 12f
+                        typeface = WhiteDnsBodyBoldTypeface
+                        setTextColor(ERROR)
+                        textDirection = View.TEXT_DIRECTION_LOCALE
+                        textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                    }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+                }
+                alpha = if (onClick == null) 0.55f else 1f
+                isClickable = onClick != null
+                isFocusable = onClick != null
+                onClick?.let { action -> setOnClickListener { action() } }
+            }
+        lateinit var render: () -> Unit
+        fun reloadDelays(subscriptionId: String) {
+            val source = sources.firstOrNull { it.subscriptionId == subscriptionId } ?: return
+            delays[subscriptionId] = delayRecordsForUi(store, subscriptionId, source.snapshot.catalog.profiles)
+        }
+        fun startTest(subscriptionId: String, profiles: List<ConnectionProfile>) {
+            when {
+                testId != null || ConnectionDelayTestState.isAnyRunning() -> {
+                    Toast.makeText(this, R.string.chain_test_busy, Toast.LENGTH_SHORT).show()
+                    return
+                }
+                // A connected runtime can only test its own single-hop subscription.
+                buttonModel.state == VpnState.Started &&
+                    (activeChainHopCount > 1 || activeRuntimeSubscriptionId != subscriptionId) -> {
+                    Toast.makeText(this, R.string.chain_test_disconnect_first, Toast.LENGTH_LONG).show()
+                    return
+                }
+            }
+            val id = SystemClock.elapsedRealtimeNanos().toString()
+            val types = ConnectionTypeSelectionPolicy.availableTypes(profiles).toSet()
+            testId = id
+            testSubscriptionId = subscriptionId
+            ConnectionDelayTestState.replace(
+                ConnectionDelayTestSession(
+                    testId = id,
+                    subscriptionId = subscriptionId,
+                    connectionTypes = types,
+                    targetFingerprints = profiles.map(ConnectionProfile::fingerprint),
+                    status = Actions.DELAY_TEST_PREPARING,
+                    total = profiles.size,
+                ),
+            )
+            render()
+            startForegroundService(
+                Intent(this, WhiteDnsVpnService::class.java)
+                    .setAction(Actions.TEST_CONNECTION_DELAYS)
+                    .putExtra(Actions.EXTRA_APP_INITIATED, true)
+                    .putExtra(Actions.EXTRA_DELAY_TEST_ID, id)
+                    .putExtra(Actions.EXTRA_SUBSCRIPTION_ID, subscriptionId)
+                    .putStringArrayListExtra(Actions.EXTRA_CONNECTION_TYPES, ArrayList(types.sorted()))
+                    .putStringArrayListExtra(
+                        Actions.EXTRA_CONNECTION_FINGERPRINTS,
+                        ArrayList(profiles.map(ConnectionProfile::fingerprint)),
+                    ),
+            )
+        }
+        val pickerTestListener: (Intent) -> Unit = listener@{ intent ->
+            if (intent.action != Actions.CONNECTION_DELAY_TEST_CHANGED) return@listener
+            val id = testId ?: return@listener
+            if (intent.getStringExtra(Actions.EXTRA_DELAY_TEST_ID) != id) return@listener
+            val subscriptionId = testSubscriptionId ?: return@listener
+            val session = ConnectionDelayTestState.snapshot(subscriptionId)?.takeIf { it.testId == id } ?: return@listener
+            reloadDelays(subscriptionId)
+            if (!session.isRunning) {
+                testId = null
+                testSubscriptionId = null
+                if (session.status == Actions.DELAY_TEST_FAILED) {
+                    Toast.makeText(this, R.string.connection_test_failed, Toast.LENGTH_SHORT).show()
+                }
+                render()
+            } else if (!renderPending) {
+                // Results arrive one by one; redraw the long list at most a few times a second.
+                renderPending = true
+                mainHandler.postDelayed({
+                    renderPending = false
+                    render()
+                }, 600)
+            }
+        }
+        render = render@{
+            list.removeAllViews()
+            var target = list
+            fun add(view: View, top: Int) = target.addView(view, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top) })
+            if (query.isBlank()) {
+                if (slot == ConnectionChainSlot.After) {
+                    add(row(getString(R.string.chain_node_none), getString(R.string.chain_node_none_detail),
+                        current.mode == ConnectionChainHopMode.Off, null) { choose(ConnectionChainHop.off()) }, 0)
+                }
+                add(row(getString(R.string.option_automatic), getString(R.string.chain_node_automatic_detail),
+                    current.mode == ConnectionChainHopMode.Automatic, null) { choose(ConnectionChainHop.automatic()) }, 8)
+            }
+            fun renderGroup(subscriptionId: String, group: List<ConnectionChainPickerOption>) {
+                val visible = group.filter {
+                    query.isBlank() || it.profile.tag.contains(query, ignoreCase = true) ||
+                        it.profile.type.contains(query, ignoreCase = true)
+                }
+                if (visible.isEmpty()) return
+                val headerRow = TextView(this).apply {
+                    text = getString(R.string.chain_node_group, group.first().subscriptionName, visible.size)
+                    textSize = 13f
+                    typeface = WhiteDnsBodyBoldTypeface
+                    setTextColor(TEAL)
+                    textDirection = View.TEXT_DIRECTION_LOCALE
+                    textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                }
+                val groupDelays = delays[subscriptionId].orEmpty()
+                val running = testSubscriptionId == subscriptionId
+                val session = if (running) ConnectionDelayTestState.snapshot(subscriptionId) else null
+                val ordered = ConnectionTestResultOrder.order(visible.map { it.profile }, groupDelays)
+                    .mapNotNull { profile -> visible.firstOrNull { it.profile.fingerprint == profile.fingerprint } }
+                add(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(headerRow, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(MaterialButton(this@MainActivity).apply {
+                        backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+                        setAllCaps(false)
+                        text = if (running) {
+                            getString(R.string.chain_test_progress, session?.completed ?: 0, session?.total ?: visible.size)
+                        } else {
+                            getString(R.string.chain_test_button)
+                        }
+                        setTextColor(TEAL)
+                        isEnabled = !running
+                        setOnClickListener { startTest(subscriptionId, group.map { it.profile }) }
+                    }, LinearLayout.LayoutParams(-2, -2))
+                }, 20)
+                ordered.forEach { option ->
+                    val ref = ConnectionChainProfileRef(subscriptionId, option.profile.fingerprint)
+                    val issue = issues[ref]
+                    val record = groupDelays[option.profile.fingerprint]
+                    val delay = record?.takeIf { it.status == ConnectionDelayStatus.Success }?.delayMs
+                    val detail = option.profile.type.uppercase(Locale.US) + when {
+                        delay != null -> " · " + getString(R.string.chain_node_delay, delay)
+                        record != null -> " · " + getString(R.string.chain_node_failed)
+                        else -> ""
+                    }
+                    add(row(option.profile.tag, detail, current.mode == ConnectionChainHopMode.Fixed && current.profileRef == ref,
+                        issue?.let(::issueText),
+                        if (issue == null) ({ choose(ConnectionChainHop.fixed(subscriptionId, option.profile.fingerprint)) }) else null), 8)
+                }
+            }
+            // Profiles the user made (WARP, own subscriptions) sit in their own box above the public list.
+            val (mine, builtIn) = options.groupBy(ConnectionChainPickerOption::subscriptionId).entries
+                .partition { !SubscriptionStore.isBuiltInSubscription(it.key) }
+            if (mine.isNotEmpty()) {
+                val box = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutDirection = View.LAYOUT_DIRECTION_LOCALE
+                    setPadding(dp(12), dp(4), dp(12), dp(12))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(14).toFloat()
+                        setColor(withAlpha(TEAL, 12))
+                        setStroke(dp(1), withAlpha(TEAL, 90))
+                    }
+                }
+                target = box
+                mine.forEach { (subscriptionId, group) -> renderGroup(subscriptionId, group) }
+                target = list
+                if (box.childCount > 0) {
+                    add(TextView(this).apply {
+                        setText(R.string.chain_node_my_profiles)
+                        textSize = 14f
+                        typeface = WhiteDnsBodyBoldTypeface
+                        setTextColor(TEXT_PRIMARY)
+                        textDirection = View.TEXT_DIRECTION_LOCALE
+                        textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+                    }, 20)
+                    add(box, 8)
+                }
+            }
+            builtIn.forEach { (subscriptionId, group) -> renderGroup(subscriptionId, group) }
+        }
+        val search = TextInputEditText(this).apply {
+            setSingleLine(true)
+            background = null
+            setPaddingRelative(dp(16), dp(12), dp(16), dp(12))
+            setTextColor(TEXT_PRIMARY)
+            setHintTextColor(TEXT_SECONDARY)
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(s: Editable?) {
+                    query = s?.toString().orEmpty().trim()
+                    render()
+                }
+            })
+        }
+        val searchLayout = TextInputLayout(this).apply {
+            hint = getString(R.string.chain_node_search)
+            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+            boxStrokeColor = TEAL
+            addView(search)
+        }
+        render()
+        connectionDelayTestListener = pickerTestListener
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(TextView(this@MainActivity).apply {
+                setText(R.string.chain_route_hint)
+                textSize = 13f
+                setTextColor(TEXT_SECONDARY)
+                textDirection = View.TEXT_DIRECTION_LOCALE
+                textAlignment = View.TEXT_ALIGNMENT_VIEW_START
+            })
+            addView(searchLayout, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+            addView(ScrollView(this@MainActivity).apply { addView(list) },
+                LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.55f).toInt()).apply { topMargin = dp(12) })
+        }
+        dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(if (slot == ConnectionChainSlot.Base) R.string.chain_node_first else R.string.connection_chain_after)
+            .setView(content)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnDismissListener {
+            if (connectionDelayTestListener === pickerTestListener) connectionDelayTestListener = null
+            testId?.let { id ->
+                startService(
+                    Intent(this, WhiteDnsVpnService::class.java)
+                        .setAction(Actions.CANCEL_CONNECTION_DELAY_TEST)
+                        .putExtra(Actions.EXTRA_APP_INITIATED, true)
+                        .putExtra(Actions.EXTRA_DELAY_TEST_ID, id),
+                )
+            }
+        }
+        dialog.showWhiteDnsDialog()
+    }
+
     private fun showProfilesPage() {
         closeConnectionTestingPage()
         appTabs.getTabAt(2)?.select()
     }
 
     private fun engineSettingsNoticeView() = TextView(this).apply {
+        textDirection = View.TEXT_DIRECTION_LOCALE
+        textAlignment = View.TEXT_ALIGNMENT_VIEW_START
         textSize = 13f
         typeface = WhiteDnsBodyTypeface
         setTextColor(TEXT_SECONDARY)
@@ -7321,9 +7781,13 @@ open class MainActivity : Activity() {
             else -> getString(R.string.engine_retired)
         }
         val title = if (profile == null && kind != null) getString(R.string.engine_profiles) else kind?.title ?: "Mihomo"
-        val notice = getString(R.string.engine_effective_settings, title, details)
+        val notice = getString(R.string.engine_effective_settings, BidiFormatter.getInstance().unicodeWrap(title), details)
         engineSettingsNotice?.text = notice
         engineCategoryNotice?.text = notice
+        // The notice only explains engine limits; Mihomo users do not need it.
+        val noticeVisibility = if (kind == null) View.GONE else View.VISIBLE
+        engineSettingsNotice?.visibility = noticeVisibility
+        engineCategoryNotice?.visibility = noticeVisibility
         if (profile != null && !profile.kind.socks) {
             if (::routingModeValueText.isInitialized) routingModeValueText.setText(R.string.engine_profile_settings)
             if (::dnsPrivacyValueText.isInitialized) dnsPrivacyValueText.setText(R.string.engine_profile_settings)
