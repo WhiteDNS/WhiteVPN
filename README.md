@@ -3,6 +3,13 @@
 [![Latest release](https://img.shields.io/github/v/release/WhiteDNS/WhiteVPN?label=download)](https://github.com/WhiteDNS/WhiteVPN/releases/latest)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
 
+<p>
+  <a href="https://whitedns.github.io/WhiteDNS-F-Droid/">
+    <img src="https://f-droid.org/assets/fdroid-logo.svg" alt="" width="40" align="middle">
+    <strong>Add the WhiteDNS repository to F-Droid</strong>
+  </a>
+</p>
+
 A simple, open-source Android VPN client powered by [Mihomo](https://github.com/MetaCubeX/mihomo). WhiteVPN works out of the box with a built-in WhiteDNS subscription and also lets you bring your own.
 
 <p align="center">
