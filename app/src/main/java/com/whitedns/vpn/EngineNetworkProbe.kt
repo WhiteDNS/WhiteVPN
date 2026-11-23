@@ -14,6 +14,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.Socket
 import java.net.URL
 import java.util.concurrent.Executors
@@ -32,6 +34,13 @@ internal object EngineNetworkProbe {
         return cm.allNetworks.firstOrNull { network -> cm.getNetworkCapabilities(network)?.let { caps ->
             caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && (Build.VERSION.SDK_INT < 30 || caps.ownerUid == Process.myUid())
         } == true }
+    }
+
+    fun egressCountryCode(context: Context): String? {
+        val network = ownedVpn(context) ?: return null
+        return MihomoRuntimeHealth.egressCountryCode { url ->
+            network.openConnection(url, Proxy.NO_PROXY) as HttpURLConnection
+        }
     }
     suspend fun verifyDefaultVpn(context: Context, timeout: Long): Network =
         withTimeoutOrNull(timeout) {

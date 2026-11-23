@@ -1,0 +1,61 @@
+diff --git a/config/whitevpn_policy.go b/config/whitevpn_policy.go
+--- a/config/whitevpn_policy.go
++++ b/config/whitevpn_policy.go
+@@ -32,6 +32,8 @@
+ 			return fmt.Errorf("WhiteVPN config keys must be strings; root merges are unsupported")
+ 		}
+ 		switch key.Value {
++		case "rule-anchor", "external-ui", "external-ui-url", "external-ui-name":
++			// Keep anchors available to rule providers and discard dashboard settings after decoding.
+ 		case "proxies", "proxy-groups", "proxy-providers", "rules", "rule-providers", "sub-rules",
+ 			"hosts", "sniffer", "profile", "tls", "experimental",
+ 			"mode", "unified-delay", "log-level", "ipv6", "tcp-concurrent", "find-process-mode",
+@@ -48,6 +50,7 @@
+ 	if err := root.Decode(raw); err != nil {
+ 		return err
+ 	}
++	raw.ExternalUI, raw.ExternalUIURL, raw.ExternalUIName = "", "", ""
+ 	host, port, err := net.SplitHostPort(raw.ExternalController)
+ 	portNumber, portErr := strconv.Atoi(port)
+ 	if err != nil || host != "127.0.0.1" || portErr != nil || portNumber < 1 || portNumber > 65535 || raw.Secret == "" {
+diff --git a/config/whitevpn_policy_test.go b/config/whitevpn_policy_test.go
+--- a/config/whitevpn_policy_test.go
++++ b/config/whitevpn_policy_test.go
+@@ -4,6 +4,28 @@
+ 	"strings"
+ 	"testing"
+ )
++
++func TestWhiteVPNGeneratorConfig(t *testing.T) {
++	input := whitevpnControl + `external-ui: ui
++external-ui-url: https://example.com/dashboard.zip
++external-ui-name: dashboard
++rule-anchor:
++  domain: &domain {type: http, interval: 86400, behavior: domain, format: mrs}
++rule-providers:
++  example: {<<: *domain, url: 'https://example.com/rules.mrs'}
++`
++	raw := DefaultRawConfig()
++	if err := unmarshalWhiteVPNConfig([]byte(input), raw); err != nil {
++		t.Fatal(err)
++	}
++	if raw.ExternalUI != "" || raw.ExternalUIURL != "" || raw.ExternalUIName != "" {
++		t.Fatal("dashboard settings reached the Android runtime")
++	}
++	provider := raw.RuleProvider["example"]
++	if provider["type"] != "http" || provider["behavior"] != "domain" || provider["format"] != "mrs" || provider["url"] != "https://example.com/rules.mrs" {
++		t.Fatalf("rule provider lost merged fields: %v", provider)
++	}
++}
+ 
+ const whitevpnControl = `mixed-port: 2080
+ external-controller: 127.0.0.1:19090
+@@ -37,7 +59,7 @@
+ 		"alternate port":  "socks-port: 18082\n",
+ 		"controller unix": "external-controller-unix: /tmp/controller.sock\n",
+ 		"controller tls":  "external-controller-tls: '0.0.0.0:8443'\n",
+-		"ui updater":      "external-ui-url: https://example.com/ui.zip\n",
++		"duplicate UI":    "external-ui: first\nexternal-ui: second\n",
+ 		"ntp":             "ntp: {enable: true, write-to-system: true}\n",
+ 		"tls server":      "tls: {certificate: certificate, private-key: key}\n",
+ 		"duplicate":       "mixed-port: 8080\n",

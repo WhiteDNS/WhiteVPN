@@ -44,8 +44,8 @@ jobs:
             app/src/main/jniLibs/*/libclash.so
             app/src/main/jniLibs/.mihomo-version
             app/src/main/cpp/includes
-          # The script pins the fork commits and Go; the NDK is pinned here.
-          key: flclash-${{ env.NDK_VERSION }}-${{ hashFiles('scripts/build-flclash-core.sh') }}
+          # Key the cached core to the pinned sources, compatibility patch, Go and NDK.
+          key: flclash-${{ env.NDK_VERSION }}-${{ hashFiles('scripts/build-flclash-core.sh', 'native/patches/mihomo-generator-compatibility.patch') }}
 
       - uses: actions/setup-go@v7
         if: steps.cache.outputs.cache-hit != 'true'

@@ -204,7 +204,8 @@ internal object PlatformIkev2Controller {
             else { EngineProfileStore(context).rememberPlatformProfile(null); publish(context, VpnState.Stopped) }
         }
     }
-    private fun publish(context: Context, state: VpnState) {
+    private fun publish(context: Context, state: VpnState, countryFlag: String = "") {
+        val started = state == VpnState.Started && currentState != VpnState.Started
         currentState = state
         if (context is EnginePlatformService) when (state) {
             VpnState.Starting -> context.updateNotification(context.getString(R.string.notification_starting))
@@ -216,15 +217,30 @@ internal object PlatformIkev2Controller {
         val alwaysOn = managerState?.isAlwaysOn ?: VpnRuntimeStateStore.readAlwaysOn(context)
         val lockdown = managerState?.isLockdownEnabled ?: VpnRuntimeStateStore.readLockdown(context)
         val profile = activeProfile
-        VpnRuntimeStateStore.save(context, state, startedAt, connectionDetails = profile?.let { it.name + " · IKEv2" }.orEmpty(),
+        VpnRuntimeStateStore.save(context, state, startedAt, connectionCountryFlag = countryFlag,
+            connectionDetails = profile?.let { it.name + " · IKEv2" }.orEmpty(),
             activeSubscriptionId = EngineProfile.SOURCE_ID, activeConnectionTag = profile?.name.orEmpty(), activeConnectionFingerprint = profile?.id.orEmpty(),
             chainHopCount = 1, alwaysOn = alwaysOn, lockdown = lockdown)
         context.sendBroadcast(Intent(Actions.STATE_CHANGED).setPackage(context.packageName).putExtra(Actions.EXTRA_STATE, state.wireName)
             .putExtra(Actions.EXTRA_ERROR, (state as? VpnState.Error)?.message.orEmpty()).putExtra(Actions.EXTRA_SESSION_STARTED_AT_ELAPSED_MS, startedAt)
+            .putExtra(Actions.EXTRA_CONNECTION_COUNTRY_FLAG, countryFlag)
             .putExtra(Actions.EXTRA_CONNECTION_DETAILS, profile?.let { it.name + " · IKEv2" }.orEmpty())
             .putExtra(Actions.EXTRA_ACTIVE_SUBSCRIPTION_ID, EngineProfile.SOURCE_ID).putExtra(Actions.EXTRA_ACTIVE_CONNECTION_TAG, profile?.name.orEmpty())
             .putExtra(Actions.EXTRA_ACTIVE_CONNECTION_FINGERPRINT, profile?.id.orEmpty()).putExtra(Actions.EXTRA_ALWAYS_ON, alwaysOn).putExtra(Actions.EXTRA_LOCKDOWN, lockdown))
         WhiteDnsTileService.requestTileRefresh(context)
+        if (started) {
+            val token = generations.get()
+            val sessionStart = startedAt
+            scope.launch {
+                val code = withContext(Dispatchers.IO) {
+                    runCatching { EngineNetworkProbe.egressCountryCode(context) }.getOrNull()
+                }
+                val country = ConnectionLocationPolicy.countryFromCode(code) ?: return@launch
+                if (currentState == VpnState.Started && generations.get() == token && startedAt == sessionStart) {
+                    publish(context, VpnState.Started, country.flag)
+                }
+            }
+        }
     }
 }
 

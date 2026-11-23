@@ -1884,14 +1884,11 @@ open class MainActivity : Activity() {
             includeFontPadding = false
         }
         connectionCountryText = TextView(this).apply {
-            setText(R.string.output_automatic)
-            gravity = Gravity.START
-            layoutDirection = View.LAYOUT_DIRECTION_LOCALE
-            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
-            textSize = 12f
-            typeface = WhiteDnsBodyBoldTypeface
-            setTextColor(TEXT_SECONDARY)
+            gravity = Gravity.CENTER
+            textDirection = View.TEXT_DIRECTION_LTR
+            textSize = 18f
             includeFontPadding = false
+            visibility = View.GONE
         }
         connectionDetailsText = TextView(this).apply {
             gravity = Gravity.START
@@ -2016,6 +2013,9 @@ open class MainActivity : Activity() {
                 timerText,
                 LinearLayout.LayoutParams(-2, -2),
             )
+            addView(connectionCountryText, LinearLayout.LayoutParams(-2, -2).apply {
+                marginStart = dp(8)
+            })
         }
 
         val statusCard = LinearLayout(this).apply {
@@ -8008,17 +8008,14 @@ open class MainActivity : Activity() {
         statusText.text = getString(presentation.titleRes)
         statusText.setTextColor(TEXT_SECONDARY)
         timerText.setTextColor(if (state == VpnState.Started) TEXT_PRIMARY else TEXT_SECONDARY)
-        connectionCountryText.text = when {
-            state == VpnState.Started && connectionCountryFlag.isNotBlank() ->
-                getString(R.string.route_location, connectionCountryFlag)
-            state == VpnState.Started -> getString(R.string.route_automatic)
-            state == VpnState.Starting -> getString(R.string.route_selecting)
-            state == VpnState.Stopping -> getString(R.string.route_closing)
-            state is VpnState.Error -> getString(R.string.route_unavailable)
-            state == VpnState.DailyLimitReached -> getString(R.string.state_daily_limit)
-            else -> getString(R.string.route_automatic)
+        val egressCountry = if (state == VpnState.Started) {
+            ConnectionLocationPolicy.countryFromText(connectionCountryFlag)
+        } else null
+        connectionCountryText.text = egressCountry?.flag.orEmpty()
+        connectionCountryText.contentDescription = egressCountry?.let {
+            getString(R.string.egress_country_description, it.country)
         }
-        connectionCountryText.setTextColor(if (state == VpnState.Started) accent else TEXT_SECONDARY)
+        connectionCountryText.visibility = if (egressCountry == null) View.GONE else View.VISIBLE
         publicServerNotice.visibility = if (
             state == VpnState.Started &&
             activeRuntimeSubscriptionId == SubscriptionStore.PUBLIC_SUBSCRIPTION_ID
