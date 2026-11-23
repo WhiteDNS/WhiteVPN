@@ -3,6 +3,7 @@ package com.whitedns.vpn
 import android.Manifest
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipDescription
@@ -27,6 +28,7 @@ import android.os.Looper
 import android.os.PersistableBundle
 import android.os.Process
 import android.os.SystemClock
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.BidiFormatter
 import android.text.Editable
@@ -86,6 +88,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.util.Locale
 import java.text.DateFormat
 
@@ -1009,6 +1012,10 @@ open class MainActivity : Activity() {
                 addSubscriptionFromClipboard()
                 true
             }
+            menu.add(R.string.subscription_from_file).setOnMenuItemClickListener {
+                pickSubscriptionFile()
+                true
+            }
             menu.add(R.string.warp_add).setOnMenuItemClickListener {
                 addWarpSubscription()
                 true
@@ -1057,6 +1064,40 @@ open class MainActivity : Activity() {
             Toast.makeText(this, R.string.subscription_clipboard_empty, Toast.LENGTH_SHORT).show()
         } else {
             showAddSubscriptionDialog(source, scannedSubscriptionName(source).orEmpty())
+        }
+    }
+
+    private fun pickSubscriptionFile() {
+        try {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                // Document providers may use a generic MIME type for config files.
+                type = "*/*"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }, REQUEST_SUBSCRIPTION_FILE)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.engine_file_picker_unavailable, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun addSubscriptionFromFile(uri: Uri) {
+        activityScope.launch {
+            try {
+                val (name, source) = withContext(Dispatchers.IO) {
+                    val source = contentResolver.openInputStream(uri)?.use { it.readSubscriptionFile() }
+                        ?: throw IOException("Subscription file cannot be opened")
+                    val filename = runCatching {
+                        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                            ?.use { if (it.moveToFirst()) it.getString(0) else null }
+                    }.getOrNull().orEmpty()
+                    filename.substringBeforeLast('.').trim().take(60) to source
+                }
+                showAddSubscriptionDialog(source, name)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                Toast.makeText(this@MainActivity, R.string.subscription_file_read_failed, Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -1554,6 +1595,10 @@ open class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Android API")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == REQUEST_SUBSCRIPTION_FILE) {
+            if (resultCode == RESULT_OK) data?.data?.let(::addSubscriptionFromFile)
+            return
+        }
         if (engineProfilesUi.handleActivityResult(requestCode, resultCode, data)) return
         if (appUpdateUi.onActivityResult(requestCode)) return
         val scanResult = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
@@ -8255,6 +8300,7 @@ open class MainActivity : Activity() {
     private companion object {
         const val REQUEST_VPN_PERMISSION = 10
         const val REQUEST_NOTIFICATION_PERMISSION = 11
+        private const val REQUEST_SUBSCRIPTION_FILE = 12
         const val TIMER_TICK_MS = 1_000L
         const val KEYBOARD_SCROLL_DELAY_MS = 250L
         const val CONNECTION_TESTING_PAGE_ANIMATION_MS = 300L

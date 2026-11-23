@@ -56,6 +56,8 @@
     <string name="subscription_scan_qr">Scan QR Code</string>
     <string name="subscription_scan_qr_prompt">Scan a subscription or configuration QR code</string>
     <string name="subscription_from_clipboard">From Clipboard</string>
+    <string name="subscription_from_file">Import file</string>
+    <string name="subscription_file_read_failed">Choose a readable UTF-8 configuration file up to 2 MB.</string>
     <string name="subscription_clipboard_empty">The clipboard does not contain a subscription or configuration.</string>
     <string name="subscription_builtin_detail">Built-in · %1$s</string>
     <string name="subscription_private_name">WhiteVPN Private</string>
