@@ -382,7 +382,6 @@ class WhiteDnsVpnService : VpnService() {
         val paths: MihomoRuntimePaths,
         val delayProbeName: String,
         val cacheEndpoint: Boolean,
-        val selectedCountryCode: String?,
         val availableProfiles: List<ConnectionProfile>,
         val nativeAutomaticStart: Boolean,
         val subscriptionId: String,
@@ -680,8 +679,10 @@ class WhiteDnsVpnService : VpnService() {
             activeConnectionFingerprint = profile.id
             activeChainHopCount = 1
             activeSelectorReady = false
+            activeConnectionCountryFlag = ""
             sessionStartedAtElapsedMs = SystemClock.elapsedRealtime()
             publishState(VpnState.Started)
+            refreshEgressCountryInBackground()
             getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, serviceNotification(getString(R.string.notification_connected)))
             engineWatchJob = scope.launch {
                 var ticks = 0
@@ -846,7 +847,9 @@ class WhiteDnsVpnService : VpnService() {
                             selectedAt = System.currentTimeMillis(),
                         ),
                     )
+                    activeConnectionCountryFlag = ""
                     publishState(VpnState.Started)
+                    refreshEgressCountryInBackground()
                     DiagnosticLogger.info(
                         this@WhiteDnsVpnService,
                         "connection.switch.ok",
@@ -2880,7 +2883,6 @@ class WhiteDnsVpnService : VpnService() {
             paths = paths,
             delayProbeName = delayProbeName,
             cacheEndpoint = topEndpoint != null,
-            selectedCountryCode = ConnectionLocationPolicy.normalizeCountryCode(selectedCountryCode),
             availableProfiles = availableProfiles,
             nativeAutomaticStart = nativeAutomaticStart,
             subscriptionId = selectedSubscriptionId,
@@ -3313,10 +3315,7 @@ class WhiteDnsVpnService : VpnService() {
             ?: startedRuntime.profile.tag.takeIf { activeConnectionChained }.orEmpty()
         activeConnectionFingerprint = initialLeaf?.fingerprint
             ?: startedRuntime.profile.fingerprint.takeIf { activeConnectionChained }.orEmpty()
-        activeConnectionCountryFlag = startedRuntime.selectedCountryCode
-            ?.let(ConnectionLocationPolicy::countryFromCode)
-            ?.flag
-            ?: startedRuntime.profile.let(ConnectionLocationPolicy::countryForProfile)?.flag.orEmpty()
+        activeConnectionCountryFlag = ""
         val configuredFrontingIps = frontingIpPreferenceStore.readFrontingIps()
         activeFrontingIp = FrontingIpPolicy.matchingValue(
             configuredFrontingIps,
@@ -3355,9 +3354,7 @@ class WhiteDnsVpnService : VpnService() {
         startBackgroundSubscriptionRefresh()
         startPostConnectHealthWatchdog()
         refreshDelayInBackground(startedRuntime)
-        if (startedRuntime.selectedCountryCode == null) {
-            refreshEgressCountryInBackground(startedRuntime)
-        }
+        refreshEgressCountryInBackground()
     }
 
     private fun refreshDelayInBackground(startedRuntime: StartedMihomoRuntime) {
@@ -3522,11 +3519,13 @@ class WhiteDnsVpnService : VpnService() {
                 )
             }
         }
-        val changed = !previousReady ||
-            previousSelectable != selectableFingerprints ||
-            previousTag != activeName ||
-            previousFingerprint != activeConnectionFingerprint
-        if (changed && publishIfChanged) publishState(VpnState.Started)
+        val routeChanged = previousTag != activeName || previousFingerprint != activeConnectionFingerprint
+        val changed = !previousReady || previousSelectable != selectableFingerprints || routeChanged
+        if (changed && publishIfChanged) {
+            if (routeChanged) activeConnectionCountryFlag = ""
+            publishState(VpnState.Started)
+            if (routeChanged) refreshEgressCountryInBackground()
+        }
         if (changed) {
             DiagnosticLogger.info(
                 this,
@@ -3537,26 +3536,31 @@ class WhiteDnsVpnService : VpnService() {
         return resolvedProfile
     }
 
-    private fun refreshEgressCountryInBackground(startedRuntime: StartedMihomoRuntime) {
-        scope.launch(Dispatchers.IO) {
-            val country = runCatching {
-                MihomoRuntimeHealth.egressCountryCodeThroughMixedProxy()
-                    ?.let(ConnectionLocationPolicy::countryFromCode)
-            }.onFailure { error ->
-                DiagnosticLogger.warn(this@WhiteDnsVpnService, "mihomo.egress.country.failed", error = error)
-            }.getOrNull() ?: return@launch
-
-            if (state != VpnState.Started || activeRuntimePaths != startedRuntime.paths) return@launch
-            val previousFlag = activeConnectionCountryFlag
-            activeConnectionCountryFlag = country.flag
-            if (previousFlag != country.flag) {
-                publishState(VpnState.Started)
+    private fun refreshEgressCountryInBackground() {
+        val paths = activeRuntimePaths
+        val lease = engineBackend?.lease
+        if (paths == null && lease == null) return
+        val startedAt = sessionStartedAtElapsedMs
+        val tag = activeConnectionTag
+        val fingerprint = activeConnectionFingerprint
+        scope.launch {
+            val code = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (paths != null) MihomoRuntimeHealth.egressCountryCodeThroughMixedProxy()
+                    else EngineNetworkProbe.egressCountryCode(this@WhiteDnsVpnService)
+                }.onFailure { error ->
+                    DiagnosticLogger.warn(this@WhiteDnsVpnService, "vpn.egress.country.failed", error = error)
+                }.getOrNull()
             }
-            DiagnosticLogger.info(
-                this@WhiteDnsVpnService,
-                "mihomo.egress.country.ok",
-                "code=${country.code} flag=${country.flag} previousFlag=$previousFlag",
-            )
+            val country = ConnectionLocationPolicy.countryFromCode(code) ?: return@launch
+            if (state != VpnState.Started || sessionStartedAtElapsedMs != startedAt ||
+                activeRuntimePaths != paths || engineBackend?.lease != lease ||
+                activeConnectionTag != tag || activeConnectionFingerprint != fingerprint ||
+                activeConnectionCountryFlag == country.flag
+            ) return@launch
+            activeConnectionCountryFlag = country.flag
+            publishState(VpnState.Started)
+            DiagnosticLogger.info(this@WhiteDnsVpnService, "vpn.egress.country.ok", "code=${country.code}")
         }
     }
 

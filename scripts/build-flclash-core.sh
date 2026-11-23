@@ -7,6 +7,7 @@ MIHOMO_REPOSITORY="https://github.com/WhiteDNS/mihomo.git"
 FLCLASH_COMMIT="6631f476312c6b5da0418178f3d4c3f47ba2d52b"
 MIHOMO_COMMIT="deef0cffd2fdc136c30e5ed887b4f77fae6fa6c9"
 MIHOMO_VERSION="v1.19.34"
+MIHOMO_PATCH="${ROOT_DIR}/native/patches/mihomo-generator-compatibility.patch"
 OUT_JNI_DIR="${ROOT_DIR}/app/src/main/jniLibs"
 OUT_INCLUDE_DIR="${ROOT_DIR}/app/src/main/cpp/includes"
 VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
@@ -14,7 +15,8 @@ VERSION_FILE="${OUT_JNI_DIR}/.mihomo-version"
 # must never reuse an old libclash.so.
 export GOTOOLCHAIN=go1.26.8
 API_LEVEL="${ANDROID_API_LEVEL:-26}"
-CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}-${GOTOOLCHAIN}"
+MIHOMO_PATCH_HASH="$(sha256sum "${MIHOMO_PATCH}")"
+CORE_BUILD_ID="${FLCLASH_COMMIT}-${MIHOMO_COMMIT}-${GOTOOLCHAIN}-${MIHOMO_PATCH_HASH%% *}"
 ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
 
 outputs_exist() {
@@ -64,6 +66,12 @@ git -C "${SUBMODULE_DIR}" checkout -q --detach FETCH_HEAD
 
 if [[ "$(git -C "${SUBMODULE_DIR}" rev-parse HEAD)" != "${MIHOMO_COMMIT}" ]]; then
   echo "FlClash Mihomo checkout must be pinned to ${MIHOMO_COMMIT}: ${SUBMODULE_DIR}" >&2
+  exit 1
+fi
+
+git -C "${SUBMODULE_DIR}" apply --index "${MIHOMO_PATCH}"
+if [[ "$(git -C "${SUBMODULE_DIR}" diff --cached --name-only -- config/whitevpn_policy.go)" != "config/whitevpn_policy.go" ]]; then
+  echo "Mihomo compatibility patch did not modify the Android config policy." >&2
   exit 1
 fi
 

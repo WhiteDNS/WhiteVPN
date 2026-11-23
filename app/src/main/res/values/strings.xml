@@ -356,6 +356,7 @@
     <string name="connect_action_usage_limit">Usage limit</string>
     <string name="connect_action_always_on">Always on</string>
     <string name="route_location">%1$s  Location</string>
+    <string name="egress_country_description">Exit IP country, %1$s</string>
     <string name="route_automatic">Output / automatic</string>
     <string name="route_selecting">Selecting route</string>
     <string name="route_closing">Closing route</string>

@@ -10,6 +10,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.nio.file.Files
 import java.security.cert.CertPathValidatorException
@@ -1761,6 +1762,26 @@ class MihomoRuntimeConfigBuilderTest {
         """.trimIndent()
 
         assertEquals("NL", MihomoRuntimeHealth.countryCodeFromTrace(trace))
+        assertNull(MihomoRuntimeHealth.countryCodeFromTrace("ip=203.0.113.1\nloc=XX"))
+        assertNull(MihomoRuntimeHealth.countryCodeFromTrace("ip=203.0.113.1\nloc=ZZ"))
+        assertNull(MihomoRuntimeHealth.countryCodeFromTrace("ip=203.0.113.1"))
+    }
+
+    @Test
+    fun countryLookupTriesTheAlternateTraceHostWhenRedirected() {
+        val disconnectedHosts = mutableListOf<String>()
+        val country = MihomoRuntimeHealth.egressCountryCode { endpoint ->
+            object : HttpURLConnection(endpoint) {
+                override fun connect() = Unit
+                override fun disconnect() { disconnectedHosts.add(endpoint.host) }
+                override fun usingProxy() = true
+                override fun getResponseCode() = if (endpoint.host == "www.cloudflare.com") 302 else 200
+                override fun getInputStream() = ByteArrayInputStream("loc=de\n".toByteArray())
+            }
+        }
+
+        assertEquals("DE", country)
+        assertEquals(listOf("www.cloudflare.com", "cloudflare.com"), disconnectedHosts)
     }
 
     @Test

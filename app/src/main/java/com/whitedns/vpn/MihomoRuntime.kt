@@ -2727,23 +2727,29 @@ object MihomoRuntimeHealth {
         return httpStatus(url, proxy, timeoutMs)
     }
 
-    fun egressCountryCodeThroughMixedProxy(
-        url: String = MihomoRuntimeDefaults.EGRESS_TRACE_URL,
-        timeoutMs: Int = 2_000,
-    ): String? {
+    fun egressCountryCodeThroughMixedProxy(): String? {
         val proxy = Proxy(
             Proxy.Type.HTTP,
             InetSocketAddress(MihomoRuntimeDefaults.CONTROLLER_HOST, MihomoRuntimeDefaults.MIXED_PORT),
         )
-        val connection = URL(url).openConnection(proxy) as HttpURLConnection
-        connection.connectTimeout = timeoutMs
-        connection.readTimeout = timeoutMs
-        connection.instanceFollowRedirects = false
-        return connection.use {
-            if (responseCode !in 200..299) return@use null
-            countryCodeFromTrace(inputStream.bufferedReader().use { it.readText() })
-        }
+        return egressCountryCode { url -> url.openConnection(proxy) as HttpURLConnection }
     }
+
+    internal fun egressCountryCode(openConnection: (URL) -> HttpURLConnection): String? =
+        listOf(MihomoRuntimeDefaults.EGRESS_TRACE_URL, "https://cloudflare.com/cdn-cgi/trace")
+            .firstNotNullOfOrNull { url ->
+                try {
+                    openConnection(URL(url)).use {
+                        connectTimeout = 2_000
+                        readTimeout = 2_000
+                        instanceFollowRedirects = false
+                        if (responseCode !in 200..299) return@use null
+                        countryCodeFromTrace(inputStream.bufferedReader().use { it.readText() })
+                    }
+                } catch (_: IOException) {
+                    null
+                }
+            }
 
     suspend fun downloadSpeedKbpsThroughMixedProxy(
         downloadBytes: Long = MihomoRuntimeDefaults.SPEED_TEST_BYTES,
@@ -2814,6 +2820,7 @@ object MihomoRuntimeHealth {
             .firstOrNull { it.startsWith("loc=") }
             ?.substringAfter("=")
             ?.let(ConnectionLocationPolicy::normalizeCountryCode)
+            ?.takeIf { it == "XK" || it in java.util.Locale.getISOCountries() }
     }
 
     private fun httpStatus(url: String, proxy: Proxy, timeoutMs: Int): Int {
