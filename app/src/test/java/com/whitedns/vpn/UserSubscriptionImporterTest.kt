@@ -5,9 +5,11 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.IOException
 import java.util.Base64
 
 class UserSubscriptionImporterTest {
@@ -44,6 +46,29 @@ class UserSubscriptionImporterTest {
 
         assertArrayEquals(bytes.copyOf(7), ByteArrayInputStream(bytes).readAtMost(7))
         assertArrayEquals(bytes, ByteArrayInputStream(bytes).readAtMost(32))
+    }
+
+    @Test
+    fun subscriptionFileUsesTheExistingImporterAndRejectsOversizeInput() {
+        val yaml = """
+            proxies:
+              - name: سرور
+                type: masque
+                server: 192.0.2.2
+                port: 443
+                network: h2
+        """.trimIndent()
+        assertEquals(yaml, ByteArrayInputStream("\uFEFF$yaml\n".toByteArray()).readSubscriptionFile())
+        val json = """
+            {"proxies":[{"name":"MASQUE","type":"masque","server":"192.0.2.2","port":443,"network":"h2"}]}
+        """.trimIndent()
+        for (content in listOf(yaml, json, "socks5://192.0.2.2:1080#SOCKS")) {
+            val text = ByteArrayInputStream(content.toByteArray()).readSubscriptionFile()
+            assertEquals(1, UserSubscriptionImporter.import(text).connectionCount)
+        }
+        assertThrows(IOException::class.java) {
+            ByteArrayInputStream(ByteArray(UserSubscriptionImporter.MAX_SUBSCRIPTION_BYTES + 1)).readSubscriptionFile()
+        }
     }
 
     @Test

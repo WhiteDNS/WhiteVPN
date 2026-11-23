@@ -8,6 +8,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.URI
 import java.net.URLDecoder
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -91,6 +92,16 @@ internal fun InputStream.readAtMost(maxBytes: Int): ByteArray {
     return output.toByteArray()
 }
 
+internal fun InputStream.readSubscriptionFile(): String {
+    val limit = UserSubscriptionImporter.MAX_SUBSCRIPTION_BYTES
+    val bytes = readAtMost(limit + 1)
+    if (bytes.size > limit) throw IOException("Subscription file exceeds the maximum size")
+    val text = Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString()
+        .removePrefix("\uFEFF").trim()
+    if (text.isEmpty()) throw IOException("Subscription file is empty")
+    return text
+}
+
 object UserSubscriptionImporter {
     fun import(content: String, nowMs: Long = System.currentTimeMillis()): ImportedUserSubscription {
         val trimmed = content.trim()
@@ -148,7 +159,7 @@ object JsonSubscriptionImporter {
                 proxy.put("type", "socks5")
                 if (!proxy.has("udp")) proxy.put("udp", true)
             }
-            proxy.takeIf(::isSupportedMihomoProxy)
+            proxy.takeIf(::hasMihomoProxyFields)
         }
     }
 
@@ -289,7 +300,7 @@ object JsonSubscriptionImporter {
                     val password = settings.opt("pass") as? String ?: return null
                     proxy.put("username", username).put("password", password)
                 }
-                return proxy.takeIf(::isSupportedMihomoProxy)
+                return proxy.takeIf(::hasMihomoProxyFields)
             }
         }
 
@@ -335,7 +346,7 @@ object JsonSubscriptionImporter {
                 )
             }
         }
-        return proxy.takeIf(::isSupportedMihomoProxy)
+        return proxy.takeIf(::hasMihomoProxyFields)
     }
 
     private fun xrayTcpHttpOptions(tcpSettings: JSONObject?): JSONObject? {
@@ -360,8 +371,8 @@ object JsonSubscriptionImporter {
             .apply { if (headers.length() > 0) put("headers", headers) }
     }
 
-    private fun isSupportedMihomoProxy(proxy: JSONObject): Boolean =
-        proxy.optString("type") in setOf("vless", "vmess", "trojan", "ss", "socks5", "wireguard") &&
+    private fun hasMihomoProxyFields(proxy: JSONObject): Boolean =
+        proxy.optString("type").isNotBlank() &&
             proxy.optString("name").isNotBlank() &&
             proxy.optString("server").isNotBlank() &&
             proxy.optInt("port") in 1..65535

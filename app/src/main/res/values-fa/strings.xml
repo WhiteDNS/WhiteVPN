@@ -57,6 +57,8 @@
     <string name="subscription_scan_qr">اسکن کد QR</string>
     <string name="subscription_scan_qr_prompt">کد QR سابسکریپشن یا کانفیگ را اسکن کنید</string>
     <string name="subscription_from_clipboard">از کلیپ‌بورد</string>
+    <string name="subscription_from_file">وارد کردن فایل</string>
+    <string name="subscription_file_read_failed">یک فایل کانفیگ خوانا با کدگذاری UTF-8 و حجم حداکثر ۲ مگابایت انتخاب کنید.</string>
     <string name="subscription_clipboard_empty">کلیپ‌بورد حاوی سابسکریپشن یا کانفیگ نیست.</string>
     <string name="subscription_builtin_detail">داخلی · %1$s</string>
     <string name="subscription_private_name">WhiteVPN اختصاصی</string>
