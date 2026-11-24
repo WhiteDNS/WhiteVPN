@@ -14,6 +14,10 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable tag to publish from main after verification. Leave blank to build an artifact only.
+        type: string
 
 permissions:
   contents: read
@@ -230,10 +234,16 @@ jobs:
           printf '%s' "$WHITEDNS_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/whitedns-release.jks"
 
       - name: Validate release tag
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$GITHUB_REF" == refs/heads/main && "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "A stable release tag must be built from main" >&2
+              exit 1
+            }
+          fi
           version_name="$(sed -n 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
           [[ "$RELEASE_TAG" == "v$version_name" ]] || {
             echo "Release tag $RELEASE_TAG must match app version v$version_name" >&2
@@ -251,13 +261,26 @@ jobs:
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: ./scripts/release.sh
 
-      - name: Verify release APK
+      - name: Verify release APKs
         if: github.event_name != 'pull_request'
         env:
           WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL: ${{ secrets.WHITEDNS_PRIVATE_MIHOMO_SUBSCRIPTION_URL }}
         run: |
+          aapt="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          version_code="$(sed -n 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -n 1)"
+          abis=(universal armeabi-v7a arm64-v8a x86 x86_64)
+          for offset in "${!abis[@]}"; do
+            abi="${abis[$offset]}"
+            apk="$(find release -maxdepth 1 -name "*-$abi.apk" -print -quit)"
+            [[ -n "$apk" ]] || { echo "$abi release APK was not found" >&2; exit 1; }
+            expected=$((version_code + offset))
+            badging="$("$aapt" dump badging "$apk")"
+            grep -Fq "versionCode='$expected'" <<< "$badging"
+            if [[ "$abi" != universal ]]; then
+              grep -Eq "^native-code: '$abi'[[:space:]]*$" <<< "$badging"
+            fi
+          done
           apk="$(find release -maxdepth 1 -name '*-universal.apk' -print -quit)"
-          [[ -n "$apk" ]] || { echo "Universal release APK was not found" >&2; exit 1; }
           python3 scripts/verify-engine-artifacts.py --apk "$apk" --require core tor amneziawg
           dex_dir="$RUNNER_TEMP/whitevpn-release-dex"
           mkdir -p "$dex_dir"
@@ -277,7 +300,7 @@ jobs:
           retention-days: 30
 
   publish:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && github.ref == 'refs/heads/main')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -293,5 +316,10 @@ jobs:
       - name: Attach builds to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" release/* --clobber
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            gh release create "$RELEASE_TAG" release/* --target "$GITHUB_SHA" --title "WhiteVPN $RELEASE_TAG" --generate-notes --latest
+          else
+            gh release upload "$RELEASE_TAG" release/* --clobber
+          fi

@@ -1,3 +1,4 @@
+import com.android.build.api.variant.FilterConfiguration.FilterType.ABI
 import java.io.File
 import java.util.Properties
 
@@ -73,8 +74,9 @@ android {
         applicationId = "com.whitedns.vpn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 91
-        versionName = "1.8.1"
+        // Reserve the last digit for APK architecture. Increase by ten per release.
+        versionCode = 920
+        versionName = "1.8.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "fa")
@@ -160,6 +162,18 @@ android {
 
     buildFeatures {
         buildConfig = true
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "x86" to 3, "x86_64" to 4)
+        variant.outputs.forEach { output ->
+            val abi = output.filters.find { it.filterType == ABI }?.identifier ?: return@forEach
+            val universalCode = output.versionCode.get()
+            require(universalCode % 10 == 0) { "Release versionCode must be a multiple of ten" }
+            output.versionCode.set(universalCode + abiCodes.getValue(abi))
+        }
     }
 }
 
