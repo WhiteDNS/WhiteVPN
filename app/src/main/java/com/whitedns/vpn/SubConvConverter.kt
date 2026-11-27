@@ -86,7 +86,7 @@ internal object SubConvConverter {
                 .put("skip-cert-verify", false)
                 .put("client-fingerprint", query["fp"].orEmpty().ifBlank { "chrome" })
             query["alpn"]?.takeIf(String::isNotBlank)?.let { proxy.put("alpn", it.split(',')) }
-            query["pcs"]?.takeIf(String::isNotBlank)?.let { proxy.put("fingerprint", it) }
+            pinnedCertificate(query)?.let { proxy.put("fingerprint", it) }
         }
         query["sni"]?.takeIf(String::isNotBlank)?.let { proxy.put("servername", it) }
         query["pbk"]?.takeIf(String::isNotBlank)?.let { publicKey ->
@@ -94,6 +94,11 @@ internal object SubConvConverter {
                 "reality-opts",
                 JSONObject().put("public-key", publicKey).apply {
                     query["sid"]?.takeIf(String::isNotBlank)?.let { put("short-id", it) }
+                    // Current REALITY servers reject a ClientHello without an X25519MLKEM768 key
+                    // share, and Mihomo strips that share unless this is set.
+                    if (query["support-x25519mlkem768"]?.lowercase() in setOf("true", "1")) {
+                        put("support-x25519mlkem768", true)
+                    }
                 },
             )
         }
@@ -233,9 +238,14 @@ internal object SubConvConverter {
                     )
                 }
                 put("client-fingerprint", query["fp"].orEmpty().ifBlank { "chrome" })
-                query["pcs"]?.takeIf(String::isNotBlank)?.let { put("fingerprint", it) }
+                pinnedCertificate(query)?.let { put("fingerprint", it) }
             }
     }
+
+    // shortcut: Mihomo pins one SHA-256, so only the first of a comma list is kept (the leaf on
+    // current panels); a list joined as-is fails every TLS dial. Upgrade if Mihomo accepts several.
+    private fun pinnedCertificate(query: Map<String, String>): String? =
+        query["pcs"]?.substringBefore(',')?.trim()?.takeIf(String::isNotBlank)
 
     private fun parseAnyTls(line: String, names: NameRegistry): JSONObject {
         val uri = parseUri(line)
