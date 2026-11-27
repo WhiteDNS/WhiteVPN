@@ -123,6 +123,7 @@ class UserSubscriptionImporterTest {
         assertEquals("grpc", vless.getString("network"))
         assertEquals("vpn", vless.getJSONObject("grpc-opts").getString("grpc-service-name"))
         assertTrue(vless.getBoolean("xudp"))
+        assertFalse(vless.getJSONObject("reality-opts").has("support-x25519mlkem768"))
 
         val trojan = proxies[1]
         assertEquals(
@@ -872,5 +873,19 @@ class UserSubscriptionImporterTest {
         assertTrue(migrated.contains("name: 'WhiteDNS Proxy'"))
         assertTrue(migrated.contains("cipher: 'auto'"))
         assertTrue(migrated.contains("- 'MATCH,WhiteDNS Proxy'"))
+    }
+
+    @Test
+    fun vlessLinksKeepOnePinAndPostQuantumRealityKeyShare() {
+        val leaf = "1ee096344a47b515d860ba3492d728ecaea486f014ea6a5dcc9e10da68a64d70"
+        val proxies = SubConvConverter.convert(
+            """
+            vless://00000000-0000-0000-0000-000000000001@ws.example.com:443?security=tls&type=ws&sni=ws.example.com&pcs=$leaf%2Ca2372d06431e9716365eeed47ec020351497d182fcc038e457e58168a03cac07#WS
+            vless://00000000-0000-0000-0000-000000000001@r.example.com:443?security=reality&type=tcp&sni=edge.example.com&pbk=public-key&sid=ab&support-x25519mlkem768=true#R
+            """.trimIndent(),
+        )
+
+        assertEquals(leaf, proxies[0].getString("fingerprint"))
+        assertTrue(proxies[1].getJSONObject("reality-opts").getBoolean("support-x25519mlkem768"))
     }
 }

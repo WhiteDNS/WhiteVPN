@@ -75,8 +75,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // Reserve the last digit for APK architecture. Increase by ten per release.
-        versionCode = 920
-        versionName = "1.8.2"
+        versionCode = 930
+        versionName = "1.8.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "fa")
